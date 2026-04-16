@@ -1,0 +1,64 @@
+# ============================================================
+# JellyfishBot Docker Compose
+#
+# 使用方式:
+#   1. 在项目目录创建 .env 文件（或从上级目录复制需要的变量）
+#   2. docker compose up -d --build
+#   3. 访问 https://example.ai (经 Cloudflare + Nginx)
+#
+# 架构:
+#   Cloudflare (SSL) → Nginx (:80) → Express (:3000) → FastAPI (:8000)
+#
+# 数据持久化:
+#   - ./data/       → checkpoints.db 等应用数据
+#   - ./data/users/ → 用户数据、对话、文件系统
+# ============================================================
+
+services:
+
+  # ==================== Nginx 反向代理 ====================
+  nginx:
+    image: nginx:alpine
+    container_name: jellyfishbot-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      jellyfishbot:
+        condition: service_healthy
+
+  # ==================== JellyfishBot 应用 ====================
+  jellyfishbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jellyfishbot
+    restart: unless-stopped
+    # 不直接对外暴露端口，由 nginx 反向代理
+    # 如需本机调试，取消下面的注释:
+    # ports:
+    #   - "127.0.0.1:3030:3000"   # Express 前端 (仅本机)
+    #   - "127.0.0.1:3033:8000"   # FastAPI 后端 (仅本机)
+    volumes:
+      - ./data:/app/data
+      - ./data/users:/app/users
+    env_file:
+      - ./.env
+    environment:
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-1}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - NODE_ENV=production
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    # 资源限制 (按需调整)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G
+    #       cpus: "2.0"

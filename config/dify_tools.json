@@ -1,0 +1,16 @@
+[
+  {
+    "name": "dify_analysis_tool",
+    "description": "调用 Dify 分析 Workflow，用于复杂的数据分析任务",
+    "api_url": "https://your-dify-api.com/v1",
+    "api_key": "your-api-key-here",
+    "timeout": 60,
+    "inputs_schema": {
+      "query": {
+        "type": "string",
+        "required": true,
+        "description": "分析查询内容"
+      }
+    }
+  }
+]

@@ -1,0 +1,33 @@
+{
+  "name": "jellyfishbot-frontend",
+  "version": "2.0.0",
+  "description": "JellyfishBot Frontend — React + TypeScript + Ant Design",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "legacy": "node server.js"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.6.1",
+    "@phosphor-icons/react": "^2.1.10",
+    "antd": "^5.24.6",
+    "dompurify": "^3.2.4",
+    "express": "^5.2.1",
+    "highlight.js": "^11.11.1",
+    "http-proxy-middleware": "^3.0.5",
+    "marked": "^15.0.7",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.5.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.7.2",
+    "vite": "^6.2.4"
+  }
+}

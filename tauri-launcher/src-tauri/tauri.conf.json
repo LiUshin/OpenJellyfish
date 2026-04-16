@@ -1,0 +1,60 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "JellyfishBot",
+  "identifier": "com.jellyfishbot.launcher",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "JellyfishBot",
+        "width": 720,
+        "height": 580,
+        "resizable": true,
+        "center": true,
+        "decorations": true,
+        "minWidth": 600,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "dmg"],
+    "resources": {
+      "../bundle-resources/app": "app",
+      "../bundle-resources/config": "config",
+      "../bundle-resources/frontend": "frontend",
+      "../bundle-resources/python": "python",
+      "../bundle-resources/node": "node",
+      "../bundle-resources/launcher.py": "launcher.py",
+      "../bundle-resources/requirements.txt": "requirements.txt"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

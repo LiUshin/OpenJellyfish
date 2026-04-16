@@ -1,0 +1,39 @@
+# Node modules / 构建产物 (在 Docker 中重新安装和构建)
+frontend/node_modules/
+frontend/dist/
+
+# 用户数据 (通过 volume 挂载)
+users/
+data/
+
+# Python 虚拟环境和缓存
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 环境文件 (通过 env_file 或 mount 注入)
+.env
+
+# IDE / 编辑器
+.vscode/
+.idea/
+.cursor/
+.cursorrules
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# 文档
+docs/
+*.md
+langfuse/

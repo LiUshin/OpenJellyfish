@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv/
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.staging
+.env.production
+!.env.example
+
+# User data & runtime state
+users/
+data/
+*.sqlite
+*.db
+wechat-bot/*
+# Sensitive config
+config/registration_keys.json
+
+# Node.js
+frontend/node_modules/
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+wechat-bot/
+# OS
+.DS_Store
+Thumbs.db
+
+# Langfuse generated
+langfuse/langfuse-env-generated.txt
+
+# Sensitive files
+example.py
+*.pem
+*.key
+*.p12
+
+# Business data (if accidentally placed here)
+fcndocs/
+
+# Build artifacts
+dist/
+!tauri-launcher/dist/
+build/
+*.egg-info/
+
+tauri-launcher/.cache/
+tauri-launcher/node_modules/
+tauri-launcher/src-tauri/target/
+tauri-launcher/bundle-resources/
+
+# Cursor project files
+.cursorrules
+.cursor/
+
+# External/embedded repos
+wechatskill/

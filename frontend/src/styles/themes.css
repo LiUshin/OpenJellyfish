@@ -1,0 +1,179 @@
+/**
+ * JellyfishBot — Theme Definitions
+ *
+ * Two-axis system:
+ *   data-color="dark" | "light"    — colour palette
+ *   data-style="regular" | "terminal" — visual style
+ *
+ * Components reference via var(--jf-*).
+ */
+
+/* ============================================================
+   Shared (theme-agnostic) tokens
+   ============================================================ */
+:root {
+  --jf-radius-sm: 4px;
+  --jf-radius-md: 8px;
+  --jf-radius-lg: 12px;
+  --jf-radius-bubble: 16px;
+  --jf-font-code: 'JetBrains Mono', Consolas, monospace;
+  --jf-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --jf-duration: 0.2s;
+}
+
+/* ============================================================
+   DARK colour palette
+   ============================================================ */
+[data-color='dark'] {
+  color-scheme: dark;
+
+  --jf-primary: #e89fd9;
+  --jf-primary-rgb: 232, 159, 217;
+  --jf-secondary: #8b7fd9;
+  --jf-secondary-rgb: 139, 127, 217;
+  --jf-accent: #5fc9e6;
+  --jf-accent-rgb: 95, 201, 230;
+  --jf-highlight: #ff8fcc;
+  --jf-highlight-rgb: 255, 143, 204;
+  --jf-legacy: #6c5ce7;
+  --jf-gradient-from: #e89fd9;
+  --jf-gradient-to: #8b7fd9;
+
+  --jf-bg-deep: #0f0f13;
+  --jf-bg-panel: #16161d;
+  --jf-bg-raised: #1c1c27;
+  --jf-bg-code: #111118;
+  --jf-bg-inset: #0b0b0f;
+
+  --jf-text: #e4e4ed;
+  --jf-text-muted: #9494a8;
+  --jf-text-dim: #66668a;
+  --jf-text-quaternary: #44445a;
+  --jf-text-on-primary: #fff;
+  --jf-text-on-gradient: #fff;
+
+  --jf-border: #2a2a3a;
+  --jf-border-rgb: 42, 42, 58;
+  --jf-border-strong: #33334a;
+
+  --jf-success: #3ecf8e;
+  --jf-success-rgb: 62, 207, 142;
+  --jf-warning: #FFB86C;
+  --jf-warning-rgb: 255, 184, 108;
+  --jf-error: #FF6B9D;
+  --jf-error-rgb: 255, 107, 157;
+  --jf-info: #8B7FD9;
+
+  --jf-link: #8B7FD9;
+  --jf-link-hover: #E89FD9;
+
+  --jf-shadow-float: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --jf-shadow-hover: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --jf-shadow-brand: 0 8px 24px rgba(232, 159, 217, 0.2);
+
+  --jf-scrollbar-thumb: #33334a;
+  --jf-scrollbar-thumb-hover: #44445a;
+
+  --jf-selection-bg: rgba(232, 159, 217, 0.3);
+
+  --jf-diff-add-bg: rgba(95, 201, 230, 0.12);
+  --jf-diff-add-text: #5ee4a8;
+  --jf-diff-del-bg: rgba(255, 107, 157, 0.1);
+  --jf-diff-del-text: #ff7b7b;
+  --jf-diff-eq-text: #66668a;
+
+  --jf-user-bubble-bg: linear-gradient(135deg, #e89fd9, #8b7fd9);
+  --jf-user-bubble-shadow: 0 2px 8px rgba(232, 159, 217, 0.25);
+  --jf-bot-avatar-bg: linear-gradient(145deg, #8b7fd9, #6a5fc4);
+  --jf-user-avatar-bg: linear-gradient(145deg, #e89fd9, #c77bb8);
+
+  --jf-menu-selected-bg: #2a2a3a;
+  --jf-menu-hover-bg: #22222f;
+  --jf-select-option-bg: #2a2a3a;
+}
+
+/* ============================================================
+   LIGHT colour palette
+   ============================================================ */
+[data-color='light'] {
+  color-scheme: light;
+
+  --jf-primary: #18269e;
+  --jf-primary-rgb: 24, 38, 158;
+  --jf-secondary: #4d8de8;
+  --jf-secondary-rgb: 77, 141, 232;
+  --jf-accent: #0070b8;
+  --jf-accent-rgb: 0, 112, 184;
+  --jf-highlight: #00c8ff;
+  --jf-highlight-rgb: 0, 200, 255;
+  --jf-legacy: #2a4bd7;
+  --jf-gradient-from: #00f6ff;
+  --jf-gradient-to: #18269e;
+
+  --jf-bg-deep: #f0f4f8;
+  --jf-bg-panel: #ffffff;
+  --jf-bg-raised: #e8edf4;
+  --jf-bg-code: #edf1f7;
+  --jf-bg-inset: #dde4ee;
+
+  --jf-text: #1a2a44;
+  --jf-text-muted: #5a6a80;
+  --jf-text-dim: #8898aa;
+  --jf-text-quaternary: #aab8c8;
+  --jf-text-on-primary: #fff;
+  --jf-text-on-gradient: #fff;
+
+  --jf-border: #d0dae6;
+  --jf-border-rgb: 208, 218, 230;
+  --jf-border-strong: #b8c8d8;
+
+  --jf-success: #0ea56f;
+  --jf-success-rgb: 14, 165, 111;
+  --jf-warning: #d4850a;
+  --jf-warning-rgb: 212, 133, 10;
+  --jf-error: #d63060;
+  --jf-error-rgb: 214, 48, 96;
+  --jf-info: #4d8de8;
+
+  --jf-link: #18269e;
+  --jf-link-hover: #4d8de8;
+
+  --jf-shadow-float: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --jf-shadow-hover: 0 4px 16px rgba(0, 0, 0, 0.1);
+  --jf-shadow-brand: 0 8px 24px rgba(24, 38, 158, 0.1);
+
+  --jf-scrollbar-thumb: #c0ccda;
+  --jf-scrollbar-thumb-hover: #a0b0c0;
+
+  --jf-selection-bg: rgba(0, 246, 255, 0.25);
+
+  --jf-diff-add-bg: rgba(14, 165, 111, 0.1);
+  --jf-diff-add-text: #0ea56f;
+  --jf-diff-del-bg: rgba(214, 48, 96, 0.08);
+  --jf-diff-del-text: #d63060;
+  --jf-diff-eq-text: #8898aa;
+
+  --jf-user-bubble-bg: linear-gradient(135deg, #00f6ff, #4d8de8);
+  --jf-user-bubble-shadow: 0 2px 8px rgba(0, 112, 184, 0.2);
+  --jf-bot-avatar-bg: linear-gradient(145deg, #4d8de8, #18269e);
+  --jf-user-avatar-bg: linear-gradient(145deg, #00d4e6, #4d8de8);
+
+  --jf-menu-selected-bg: rgba(24, 38, 158, 0.08);
+  --jf-menu-hover-bg: rgba(24, 38, 158, 0.04);
+  --jf-select-option-bg: rgba(24, 38, 158, 0.06);
+}
+
+/* ============================================================
+   TERMINAL style overlay (works on both dark and light)
+   ============================================================ */
+[data-style='terminal'] {
+  --jf-radius-sm: 0px;
+  --jf-radius-md: 0px;
+  --jf-radius-lg: 0px;
+  --jf-radius-bubble: 0px;
+  --jf-font-main: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+  --jf-glow: 0 0 5px rgba(var(--jf-primary-rgb), 0.5);
+  --jf-glow-strong: 0 0 10px rgba(var(--jf-primary-rgb), 0.6), 0 0 20px rgba(var(--jf-primary-rgb), 0.2);
+}
+

@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JellyfishBot Launcher</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --jf-primary: #E89FD9;
+  --jf-secondary: #8B7FD9;
+  --jf-accent: #5FC9E6;
+  --jf-success: #52c97b;
+  --jf-warning: #ffb86c;
+  --jf-error: #ff6b6b;
+  --jf-bg-deep: #0a0a0e;
+  --jf-bg-glass: rgba(22, 22, 29, 0.7);
+  --jf-bg-raised: rgba(255, 255, 255, 0.03);
+  --jf-bg-inset: rgba(0,0,0,0.25);
+  --jf-text: #f0f0f5;
+  --jf-text-muted: #a0a0b8;
+  --jf-text-dim: #5a5570;
+  --jf-border: rgba(255, 255, 255, 0.08);
+  --jf-gradient: linear-gradient(135deg, var(--jf-primary), var(--jf-secondary));
+  --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+* { box-sizing: border-box; -webkit-font-smoothing: antialiased; margin: 0; padding: 0; outline: none; }
+body {
+  background-color: var(--jf-bg-deep);
+  background-image:
+    radial-gradient(circle at 10% 20%, rgba(232, 159, 217, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 90% 80%, rgba(139, 127, 217, 0.05) 0%, transparent 40%);
+  color: var(--jf-text);
+  font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  height: 100vh; display: flex; overflow: hidden; user-select: none;
+}
+.mono { font-family: 'JetBrains Mono', 'Cascadia Code', monospace; }
+
+.drag-region {
+  position: absolute; top: 0; left: 0; right: 0; height: 32px;
+  -webkit-app-region: drag; z-index: 1000;
+}
+
+/* Sidebar */
+nav {
+  width: 76px;
+  background: var(--jf-bg-glass);
+  backdrop-filter: blur(20px);
+  border-right: 1px solid var(--jf-border);
+  display: flex; flex-direction: column; align-items: center;
+  padding: 40px 0 20px 0; z-index: 100; flex-shrink: 0;
+}
+.logo-wrap { position: relative; margin-bottom: 36px; }
+.logo-img {
+  width: 44px; height: 44px; image-rendering: pixelated;
+  filter: drop-shadow(0 0 12px var(--jf-primary));
+  animation: floating 3s ease-in-out infinite;
+}
+@keyframes floating { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
+
+.nav-item {
+  width: 50px; height: 50px; margin-bottom: 14px;
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--jf-text-muted);
+  transition: var(--transition); -webkit-app-region: no-drag;
+  background: transparent;
+}
+.nav-item:hover { color: var(--jf-text); background: var(--jf-bg-raised); transform: scale(1.08); }
+.nav-item.active { background: var(--jf-gradient); color: white; box-shadow: 0 8px 20px rgba(232, 159, 217, 0.3); }
+.nav-item svg { width: 22px; height: 22px; }
+.nav-spacer { flex: 1; }
+.nav-ver { font-size: 9px; color: var(--jf-text-dim); writing-mode: vertical-rl; letter-spacing: 1px; }
+
+/* Main */
+main {
+  flex: 1; padding: 36px 40px; overflow-y: overlay; scroll-behavior: smooth;
+  position: relative;
+}
+main::-webkit-scrollbar { width: 5px; }
+main::-webkit-scrollbar-track { background: transparent; }
+main::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+
+.page { display: none; animation: pageIn 0.45s cubic-bezier(0.16, 1, 0.3, 1); }
+.page.active { display: block; }
+@keyframes pageIn { from{opacity:0;transform:translateX(16px)} to{opacity:1;transform:translateX(0)} }
+
+/* Glass Card */
+.glass-card {
+  background: var(--jf-bg-glass);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--jf-border);
+  border-radius: 20px; padding: 24px; margin-bottom: 24px;
+  transition: var(--transition);
+}
+.glass-card:hover {
+  border-color: rgba(255,255,255,0.15);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+}
+.glass-card.no-hover:hover { transform: none; box-shadow: none; border-color: var(--jf-border); }
+
+/* Environment Status */
+.env-status { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 28px; }
+.env-item {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px; background: var(--jf-bg-raised); border-radius: 16px;
+}
+.env-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--jf-text-dim); flex-shrink: 0;
+  transition: all 0.4s;
+}
+.env-dot.ok { background: var(--jf-success); box-shadow: 0 0 10px var(--jf-success); animation: pulse 2s infinite; }
+.env-dot.err { background: var(--jf-error); box-shadow: 0 0 8px var(--jf-error); }
+@keyframes pulse { 0%{transform:scale(1);opacity:1} 50%{transform:scale(1.4);opacity:0.5} 100%{transform:scale(1);opacity:1} }
+.env-label { font-size: 11px; color: var(--jf-text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+.env-val { font-size: 13px; font-weight: 600; margin-top: 3px; }
+
+/* Hero Control */
+.hero-control {
+  text-align: center; padding: 36px 20px; margin-bottom: 28px;
+  border-radius: 24px;
+  background: radial-gradient(circle at center, rgba(139, 127, 217, 0.08) 0%, transparent 70%);
+}
+.power-btn {
+  width: 120px; height: 120px; border-radius: 50%;
+  border: 2px solid var(--jf-border);
+  background: var(--jf-bg-glass); backdrop-filter: blur(10px);
+  color: var(--jf-text-muted); cursor: pointer;
+  transition: var(--transition);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  margin: 0 auto 16px; position: relative;
+}
+.power-btn:hover { border-color: var(--jf-primary); color: var(--jf-primary); transform: scale(1.05); }
+.power-btn:active { transform: scale(0.97); }
+.power-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+.power-btn.running {
+  background: var(--jf-gradient); color: white;
+  border: none; box-shadow: 0 0 30px rgba(232, 159, 217, 0.4);
+}
+.power-btn.running:hover { transform: scale(1.05); filter: brightness(1.1); }
+.power-btn svg { width: 38px; height: 38px; margin-bottom: 4px; }
+.power-label { font-weight: 700; font-size: 13px; letter-spacing: 1px; }
+.power-sub {
+  margin-top: 10px; font-size: 13px; color: var(--jf-text-muted);
+  opacity: 0; transform: translateY(8px); transition: all 0.4s;
+}
+.power-sub.visible { opacity: 1; transform: translateY(0); }
+.power-sub a { color: var(--jf-accent); text-decoration: none; cursor: pointer; }
+.power-sub a:hover { text-decoration: underline; }
+
+/* Buttons */
+.btn {
+  border: none; padding: 10px 24px; border-radius: 12px;
+  font-size: 13px; cursor: pointer; font-weight: 600;
+  font-family: inherit; transition: all 0.15s;
+}
+.btn-main {
+  background: var(--jf-gradient); color: white; padding: 12px 28px;
+  border-radius: 14px; font-size: 14px;
+  box-shadow: 0 6px 20px rgba(139,127,217,0.25);
+}
+.btn-main:hover { transform: translateY(-2px); filter: brightness(1.1); }
+.btn-main:active { transform: translateY(0); }
+.btn-main:disabled { opacity: 0.5; cursor: default; transform: none; filter: none; }
+.btn-secondary {
+  background: var(--jf-bg-raised); border: 1px solid var(--jf-border); color: var(--jf-text);
+}
+.btn-secondary:hover { border-color: var(--jf-primary); }
+.btn-danger { background: rgba(255,107,107,0.12); color: var(--jf-error); }
+.btn-danger:hover { background: rgba(255,107,107,0.2); }
+.btn-sm { padding: 8px 16px; font-size: 12px; }
+.btn-text { color: var(--jf-accent); font-size: 12px; cursor: pointer; background: none; border: none; padding: 0; font-family: inherit; }
+.btn-text:hover { text-decoration: underline; }
+.btn-text.danger { color: var(--jf-error); }
+.btn-full {
+  width: 100%; padding: 14px; border-radius: 12px; border: none;
+  background: var(--jf-bg-raised); color: white; font-weight: 600;
+  cursor: pointer; font-family: inherit; transition: 0.2s;
+}
+.btn-full:hover { background: rgba(255,255,255,0.06); }
+
+/* Forms */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.input-box { display: flex; flex-direction: column; gap: 6px; }
+.input-box label { font-size: 11px; color: var(--jf-text-muted); font-weight: 500; }
+.input-box input {
+  background: var(--jf-bg-inset); border: 1px solid var(--jf-border);
+  padding: 12px 14px; border-radius: 12px;
+  color: var(--jf-text); font-size: 12px; transition: border 0.2s;
+  font-family: inherit;
+}
+.input-box input.mono { font-family: 'JetBrains Mono', monospace; }
+.input-box input:focus { border-color: var(--jf-primary); background: rgba(0,0,0,0.35); }
+.input-box input::placeholder { color: var(--jf-text-dim); }
+.test-row { display: flex; justify-content: space-between; align-items: center; }
+.test-result { font-size: 10px; }
+.test-result.ok { color: var(--jf-success); }
+.test-result.fail { color: var(--jf-error); }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; padding: 14px 16px; color: var(--jf-text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 500; border-bottom: 1px solid var(--jf-border); }
+td { padding: 14px 16px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+tr:hover td { background: rgba(255,255,255,0.02); }
+tr.used td { opacity: 0.4; }
+.badge { padding: 3px 10px; border-radius: 6px; font-size: 10px; font-weight: 600; display: inline-block; }
+.badge-ok { background: rgba(82,201,123,0.15); color: var(--jf-success); }
+.badge-used { background: rgba(138,130,160,0.15); color: var(--jf-text-muted); }
+.copy-btn {
+  background: none; border: none; color: var(--jf-text-dim); cursor: pointer;
+  padding: 2px 6px; font-size: 12px; transition: color 0.15s; font-family: inherit;
+}
+.copy-btn:hover { color: var(--jf-accent); }
+.copy-btn.copied { color: var(--jf-success); }
+
+/* Stats */
+.stats-bar { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; margin-bottom: 24px; }
+.stat-card {
+  background: var(--jf-bg-glass); backdrop-filter: blur(10px);
+  padding: 18px 20px; border-radius: 16px;
+  border: 1px solid var(--jf-border); text-align: center;
+  transition: var(--transition);
+}
+.stat-card:hover { border-color: rgba(255,255,255,0.15); transform: translateY(-1px); }
+.stat-card .label { font-size: 11px; color: var(--jf-text-muted); }
+.stat-card .num { font-size: 26px; font-weight: 800; display: block; margin-top: 6px; }
+
+/* Modal */
+.modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7); backdrop-filter: blur(4px);
+  display: none; align-items: center; justify-content: center;
+  z-index: 2000;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: var(--jf-bg-glass); backdrop-filter: blur(20px);
+  width: 420px; padding: 28px;
+  border-radius: 20px; border: 1px solid var(--jf-border);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+}
+.modal h3 { font-size: 17px; margin-bottom: 16px; font-weight: 700; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
+
+/* Toast */
+#toast-container { position: fixed; bottom: 28px; right: 28px; z-index: 3000; }
+.toast-item {
+  background: var(--jf-bg-glass); backdrop-filter: blur(12px);
+  border-left: 4px solid var(--jf-primary);
+  padding: 14px 22px; border-radius: 10px; margin-bottom: 10px;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.3);
+  font-size: 13px; animation: toastIn 0.35s ease forwards;
+  transition: all 0.3s;
+}
+.toast-item.warning { border-left-color: var(--jf-warning); }
+.toast-item.error { border-left-color: var(--jf-error); }
+@keyframes toastIn { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
+
+/* Spinner */
+.spinner {
+  display: inline-block; width: 14px; height: 14px;
+  border: 2px solid rgba(255,255,255,0.12);
+  border-top-color: var(--jf-accent); border-radius: 50%;
+  animation: spin 0.6s linear infinite; vertical-align: middle;
+}
+@keyframes spin { to{transform:rotate(360deg)} }
+
+/* First-run banner */
+.banner {
+  padding: 12px 18px; border-radius: 12px;
+  font-size: 12px; margin-bottom: 20px;
+}
+.banner-info { background: rgba(95,201,230,0.08); color: var(--jf-accent); border: 1px solid rgba(95,201,230,0.12); }
+</style>
+</head>
+<body>
+
+<div class="drag-region"></div>
+
+<!-- Sidebar -->
+<nav>
+  <div class="logo-wrap">
+    <img class="logo-img" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA5VJREFUWEftl01oE1EQx/+z2aSJTVqr1oPioYggKOhBFEFRPAjiRQQP4kEED6IX8eBZxJuIF8GDeBBBBBEUUfBDEPyoNqm2NbVN06Sfm83u+mY3m2za7LZbwYsDs8PM/N/M+5j3CL98xH/dv7wALy/A6wswcpTw2RRJV1aJ2CtN0xSWVf7SqyjA6EvwZnIPO7wAf7gAIxcIh+cJl78llD+T0Bi8Blm+BgAcJVT+gWC6Ael3ydYUfD6g0Hnr4nNF9Sdd7Ah4Pc2RRNK2GJtBSCaJk1IOQF+FIB40fJ7z+TvM+I8Uu4P+H7FnVIcXkwfGxMbzUAAAAAElFTkSuQmCC" alt="JellyfishBot" />
+  </div>
+
+  <div class="nav-item active" data-page="launcher" title="控制台">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+  </div>
+  <div class="nav-item" data-page="keys" title="注册码">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+  </div>
+  <div class="nav-item" data-page="admin" title="账户">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+  </div>
+
+  <div class="nav-spacer"></div>
+  <div class="nav-ver" id="navVer">v1.0</div>
+</nav>
+
+<!-- Main content -->
+<main>
+
+  <!-- PAGE: Launcher -->
+  <section id="page-launcher" class="page active">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:36px">
+      <div>
+        <h1 style="font-size:30px;font-weight:800;letter-spacing:-0.5px;margin:0">Jellyfish<span style="color:var(--jf-primary)">Bot</span></h1>
+        <p style="color:var(--jf-text-muted);margin:4px 0 0;font-size:13px" id="envSubtitle">检测环境中...</p>
+      </div>
+      <div class="glass-card no-hover" style="padding:8px 18px;margin:0;display:flex;align-items:center;gap:10px;border-radius:12px">
+        <div class="env-dot" id="systemDot"></div>
+        <span class="mono" style="font-size:11px;color:var(--jf-text-muted)" id="systemLabel">CHECKING...</span>
+      </div>
+    </div>
+
+    <div id="firstRunBanner"></div>
+
+    <div class="env-status">
+      <div class="env-item">
+        <div class="env-dot" id="pyDot"></div>
+        <div>
+          <div class="env-label">Python Runtime</div>
+          <div class="env-val mono" id="pyStatus"><span class="spinner"></span></div>
+        </div>
+      </div>
+      <div class="env-item">
+        <div class="env-dot" id="nodeDot"></div>
+        <div>
+          <div class="env-label">Node.js</div>
+          <div class="env-val mono" id="nodeStatus"><span class="spinner"></span></div>
+        </div>
+      </div>
+      <div class="env-item">
+        <div class="env-dot" id="depsDot"></div>
+        <div>
+          <div class="env-label">项目核心</div>
+          <div class="env-val mono" id="depsStatus"><span class="spinner"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero-control">
+      <button class="power-btn" id="powerBtn" onclick="toggleApp()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10"/></svg>
+        <span class="power-label" id="powerLabel">START</span>
+      </button>
+      <div class="power-sub" id="powerSub">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="mono" id="powerSubText"></span>
+            <a id="powerSubLink" style="display:none" onclick="openBrowser()">打开 →</a>
+          </div>
+          <div id="lanRow" style="display:none;align-items:center;gap:8px">
+            <span style="font-size:11px;color:var(--jf-text-dim)">局域网</span>
+            <span class="mono" id="lanAddr" style="font-size:12px;color:var(--jf-accent)"></span>
+            <button class="btn-text" style="font-size:11px;padding:2px 6px" onclick="copyLanAddr()">复制</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="glass-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <h3 style="font-size:16px;font-weight:700">核心服务密钥</h3>
+        <button class="btn btn-secondary btn-sm" id="btnSave" onclick="saveConfig()">保存配置</button>
+      </div>
+      <div class="form-grid">
+        <div class="input-box">
+          <label>Anthropic API Key</label>
+          <input type="password" id="anthropic_key" placeholder="sk-ant-..." class="mono">
+          <div class="test-row">
+            <span class="test-result" id="testAnthropicResult"></span>
+            <button class="btn-text" onclick="testKey('anthropic')">测试连接</button>
+          </div>
+        </div>
+        <div class="input-box">
+          <label>Anthropic Base URL</label>
+          <input type="text" id="anthropic_url" placeholder="默认 (留空)" class="mono">
+        </div>
+        <div class="input-box">
+          <label>OpenAI API Key</label>
+          <input type="password" id="openai_key" placeholder="sk-..." class="mono">
+          <div class="test-row">
+            <span class="test-result" id="testOpenaiResult"></span>
+            <button class="btn-text" onclick="testKey('openai')">测试连接</button>
+          </div>
+        </div>
+        <div class="input-box">
+          <label>OpenAI Base URL</label>
+          <input type="text" id="openai_url" placeholder="默认 (留空)" class="mono">
+        </div>
+        <div class="input-box">
+          <label>Tavily Search Key</label>
+          <input type="password" id="tavily_key" placeholder="tvly-..." class="mono">
+          <div class="test-row">
+            <span class="test-result" id="testTavilyResult"></span>
+            <button class="btn-text" onclick="testKey('tavily')">测试连接</button>
+          </div>
+        </div>
+        <div class="input-box">
+          <label>CloudsWay Search Key</label>
+          <input type="password" id="cloudsway_key" placeholder="可选" class="mono">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PAGE: Registration Keys -->
+  <section id="page-keys" class="page">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:30px">
+      <div>
+        <h2 style="font-size:24px;font-weight:800;letter-spacing:-0.3px">注册码库</h2>
+        <p style="color:var(--jf-text-muted);margin-top:4px;font-size:13px">管理用户注册邀请码</p>
+      </div>
+      <button class="btn btn-main btn-sm" onclick="showGenKeyModal()">+ 生成注册码</button>
+    </div>
+
+    <div class="glass-card no-hover" style="padding:0;overflow:hidden">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--jf-border);display:flex;justify-content:space-between;align-items:center">
+        <span style="color:var(--jf-text-muted);font-size:13px" id="keysCount">加载中...</span>
+      </div>
+      <table>
+        <thead><tr><th>注册码</th><th>状态</th><th>创建时间</th><th>使用者</th><th>操作</th></tr></thead>
+        <tbody id="keysTableBody">
+          <tr><td colspan="5" style="text-align:center;color:var(--jf-text-dim);padding:28px"><span class="spinner"></span> 加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- PAGE: Admin Users -->
+  <section id="page-admin" class="page">
+    <h2 style="font-size:24px;font-weight:800;letter-spacing:-0.3px;margin-bottom:24px">账户概览</h2>
+
+    <div class="stats-bar" id="statsBar">
+      <div class="stat-card"><span class="label">总用户数</span><span class="num" style="color:var(--jf-accent)" id="statTotal">-</span></div>
+      <div class="stat-card"><span class="label">活跃 (7天)</span><span class="num" style="color:var(--jf-primary)" id="statActive">-</span></div>
+      <div class="stat-card"><span class="label">已配 Key</span><span class="num" style="color:var(--jf-success)" id="statKeys">-</span></div>
+      <div class="stat-card"><span class="label">剩余注册码</span><span class="num" style="color:var(--jf-warning)" id="statRegKeys">-</span></div>
+    </div>
+
+    <div class="glass-card no-hover" style="padding:0;overflow:hidden">
+      <table>
+        <thead><tr><th>用户名</th><th>User ID</th><th>最后登录</th><th>API Key</th><th>操作</th></tr></thead>
+        <tbody id="adminTableBody">
+          <tr><td colspan="5" style="text-align:center;color:var(--jf-text-dim);padding:28px"><span class="spinner"></span> 加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<!-- Modal: Generate Keys -->
+<div class="modal-overlay" id="modalGenKey">
+  <div class="modal">
+    <h3>生成注册码</h3>
+    <div class="input-box">
+      <label>生成数量 (1-20)</label>
+      <input type="number" id="genKeyCount" value="3" min="1" max="20" class="mono">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary btn-sm" onclick="hideModal('modalGenKey')">取消</button>
+      <button class="btn btn-main btn-sm" onclick="generateKeys()">立即生成</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Confirm Delete User -->
+<div class="modal-overlay" id="modalDeleteUser">
+  <div class="modal">
+    <h3 style="color:var(--jf-error)">删除管理员账户</h3>
+    <p style="font-size:12px;color:var(--jf-text-muted);margin-bottom:14px">
+      此操作将<b>永久删除</b>该用户的所有数据（对话、文件、配置）。请输入用户名确认：
+    </p>
+    <div class="input-box">
+      <label>输入用户名确认</label>
+      <input type="text" id="deleteConfirmInput" placeholder="" class="mono">
+    </div>
+    <input type="hidden" id="deleteUserId">
+    <input type="hidden" id="deleteUsername">
+    <div class="modal-actions">
+      <button class="btn btn-secondary btn-sm" onclick="hideModal('modalDeleteUser')">取消</button>
+      <button class="btn btn-danger btn-sm" id="btnConfirmDelete" onclick="confirmDeleteUser()">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Show Temp Password -->
+<div class="modal-overlay" id="modalTempPwd">
+  <div class="modal">
+    <h3>密码已重置</h3>
+    <p style="font-size:12px;color:var(--jf-text-muted);margin-bottom:14px">请将以下临时密码发送给用户，此密码仅显示一次：</p>
+    <div style="background:var(--jf-bg-inset);padding:16px;border-radius:14px;display:flex;justify-content:space-between;align-items:center">
+      <span class="mono" style="font-size:16px;letter-spacing:1px" id="tempPwdDisplay"></span>
+      <button class="copy-btn" onclick="copyText(this, document.getElementById('tempPwdDisplay').textContent)">复制</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary btn-sm" onclick="hideModal('modalTempPwd')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script>
+const { invoke } = window.__TAURI__ ? window.__TAURI__.core : { invoke: mockInvoke };
+
+function mockInvoke(cmd, args) {
+  console.log('[mock]', cmd, args);
+  if (cmd === 'detect_environment') return Promise.resolve({
+    has_python:true, python_path:'/usr/bin/python3', python_version:'Python 3.12.7',
+    python_bundled:false, has_node:true, node_path:'/usr/bin/node', node_version:'v20.18.0',
+    node_bundled:false, has_deps:true, project_dir:'/mock/project', first_run:false
+  });
+  if (cmd === 'load_env_config') return Promise.resolve({});
+  if (cmd === 'save_env_config') return Promise.resolve();
+  if (cmd === 'test_api_key') return Promise.resolve({ok:true,message:'连接成功 ✓'});
+  if (cmd === 'start_jellyfish') return Promise.resolve({running:true,backend_port:8000,frontend_port:3000,backend_ready:false,frontend_ready:false,local_ip:'192.168.1.100'});
+  if (cmd === 'stop_jellyfish') return Promise.resolve();
+  if (cmd === 'get_status') return Promise.resolve({running:false,backend_port:8000,frontend_port:3000,backend_ready:false,frontend_ready:false,local_ip:null});
+  if (cmd === 'get_lan_ip') return Promise.resolve('192.168.1.100');
+  if (cmd === 'open_in_browser') return Promise.resolve();
+  if (cmd === 'list_registration_keys') return Promise.resolve([
+    {key:'JFBOT-AB12-CD34-EF56',used:false,created_at:'2026-04-10T12:00:00Z'},
+    {key:'TEST-E2E-KEY-001',used:true,created_at:'2026-04-09T00:00:00Z',used_by:'test_e2e_user',used_at:'2026-04-09T20:59:45Z'}
+  ]);
+  if (cmd === 'generate_registration_keys') return Promise.resolve(['JFBOT-MOCK-1234-ABCD']);
+  if (cmd === 'delete_registration_key') return Promise.resolve();
+  if (cmd === 'list_admin_users') return Promise.resolve([
+    {user_id:'9566ceae',username:'test_e2e_user',created_at:'2026-04-09T20:59:45',last_login:'2026-04-09T22:17:59',reg_key:'TEST-E2E-KEY-001',has_api_keys:true}
+  ]);
+  if (cmd === 'reset_admin_password') return Promise.resolve({user_id:'mock',temp_password:'abc123xyz789'});
+  if (cmd === 'delete_admin_user') return Promise.resolve();
+  if (cmd === 'get_admin_stats') return Promise.resolve({total_users:1,active_7d:1,keys_configured:1,total_reg_keys:3,used_reg_keys:1,available_reg_keys:2});
+  return Promise.resolve();
+}
+
+// ── Navigation ──────────────────────────────────────────────────
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => {
+    const page = item.dataset.page;
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    item.classList.add('active');
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-' + page).classList.add('active');
+    if (page === 'keys') loadRegKeys();
+    if (page === 'admin') { loadAdminUsers(); loadAdminStats(); }
+  });
+});
+
+// ── Toast ────────────────────────────────────────────────────────
+function showToast(msg, type = 'success', dur = 3000) {
+  const container = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = 'toast-item' + (type !== 'success' ? ' ' + type : '');
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.style.transform = 'translateX(120%)'; el.style.opacity = '0';
+    setTimeout(() => el.remove(), 300);
+  }, dur);
+}
+
+// ── Modal ────────────────────────────────────────────────────────
+function showModal(id) { document.getElementById(id).classList.add('show'); }
+function hideModal(id) { document.getElementById(id).classList.remove('show'); }
+
+// ── Copy ─────────────────────────────────────────────────────────
+function copyText(btn, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '✓'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '复制'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
+// ── Environment Detection ────────────────────────────────────────
+async function detectEnv() {
+  try {
+    const env = await invoke('detect_environment');
+    const pyOk = env.has_python, nodeOk = env.has_node, depsOk = env.has_deps;
+    const pyLabel = env.python_bundled ? '内置' : '系统';
+    const nodeLabel = env.node_bundled ? '内置' : '系统';
+
+    document.getElementById('pyDot').className = 'env-dot ' + (pyOk ? 'ok' : 'err');
+    document.getElementById('pyStatus').textContent = pyOk ? env.python_version + ' (' + pyLabel + ')' : '未安装';
+    document.getElementById('nodeDot').className = 'env-dot ' + (nodeOk ? 'ok' : 'err');
+    document.getElementById('nodeStatus').textContent = nodeOk ? env.node_version + ' (' + nodeLabel + ')' : '未安装';
+    document.getElementById('depsDot').className = 'env-dot ' + (depsOk ? 'ok' : 'err');
+    document.getElementById('depsStatus').textContent = depsOk ? '就绪 ✓' : '缺少';
+
+    const allOk = pyOk && nodeOk && depsOk;
+    document.getElementById('systemDot').className = 'env-dot ' + (allOk ? 'ok' : 'err');
+    document.getElementById('systemLabel').textContent = allOk ? 'SYSTEM READY' : 'CHECK FAILED';
+    document.getElementById('envSubtitle').textContent = allOk
+      ? '环境就绪 · ' + env.project_dir.split('/').pop()
+      : '环境异常 — 请检查运行时';
+
+    if (env.first_run) {
+      document.getElementById('firstRunBanner').innerHTML = '<div class="banner banner-info">首次运行 — 请先在下方配置至少一个 API Key，然后启动服务</div>';
+    }
+
+    if (!allOk) document.getElementById('powerBtn').disabled = true;
+  } catch(e) {
+    document.getElementById('envSubtitle').textContent = '环境检测失败: ' + e;
+    document.getElementById('systemDot').className = 'env-dot err';
+    document.getElementById('systemLabel').textContent = 'ERROR';
+  }
+}
+
+// ── API Key Config ───────────────────────────────────────────────
+async function loadConfig() {
+  try {
+    const cfg = await invoke('load_env_config');
+    if (cfg.anthropic_api_key) document.getElementById('anthropic_key').value = cfg.anthropic_api_key;
+    if (cfg.anthropic_base_url) document.getElementById('anthropic_url').value = cfg.anthropic_base_url;
+    if (cfg.openai_api_key) document.getElementById('openai_key').value = cfg.openai_api_key;
+    if (cfg.openai_base_url) document.getElementById('openai_url').value = cfg.openai_base_url;
+    if (cfg.tavily_api_key) document.getElementById('tavily_key').value = cfg.tavily_api_key;
+    if (cfg.cloudsway_search_key) document.getElementById('cloudsway_key').value = cfg.cloudsway_search_key;
+  } catch(e) { console.error('load config:', e); }
+}
+
+async function saveConfig() {
+  const btn = document.getElementById('btnSave');
+  btn.textContent = '保存中...'; btn.disabled = true;
+  try {
+    await invoke('save_env_config', { config: {
+      anthropic_api_key: document.getElementById('anthropic_key').value || null,
+      anthropic_base_url: document.getElementById('anthropic_url').value || null,
+      openai_api_key: document.getElementById('openai_key').value || null,
+      openai_base_url: document.getElementById('openai_url').value || null,
+      tavily_api_key: document.getElementById('tavily_key').value || null,
+      cloudsway_search_key: document.getElementById('cloudsway_key').value || null,
+    }});
+    btn.textContent = '✓ 已保存';
+    showToast('配置已保存');
+    setTimeout(() => { btn.textContent = '保存配置'; btn.disabled = false; }, 1500);
+  } catch(e) {
+    btn.textContent = '保存失败';
+    showToast('保存失败: ' + e, 'error');
+    setTimeout(() => { btn.textContent = '保存配置'; btn.disabled = false; }, 2000);
+  }
+}
+
+async function testKey(provider) {
+  const result = document.getElementById('test' + provider.charAt(0).toUpperCase() + provider.slice(1) + 'Result');
+  result.textContent = '测试中...'; result.className = 'test-result';
+
+  let key = '', url = '';
+  if (provider === 'anthropic') { key = document.getElementById('anthropic_key').value; url = document.getElementById('anthropic_url').value; }
+  else if (provider === 'openai') { key = document.getElementById('openai_key').value; url = document.getElementById('openai_url').value; }
+  else if (provider === 'tavily') { key = document.getElementById('tavily_key').value; }
+
+  if (!key) { result.textContent = '请先填写 Key'; result.className = 'test-result fail'; return; }
+
+  try {
+    const res = await invoke('test_api_key', { provider, apiKey: key, baseUrl: url || '' });
+    result.textContent = res.message;
+    result.className = 'test-result ' + (res.ok ? 'ok' : 'fail');
+  } catch(e) {
+    result.textContent = '测试失败'; result.className = 'test-result fail';
+  }
+}
+
+// ── Start / Stop ─────────────────────────────────────────────────
+let statusInterval = null;
+let isRunning = false;
+
+async function toggleApp() {
+  const btn = document.getElementById('powerBtn');
+  if (!isRunning) {
+    btn.disabled = true;
+    document.getElementById('powerLabel').textContent = '...';
+    try {
+      await saveConfig();
+      const status = await invoke('start_jellyfish');
+      isRunning = true;
+      updateRunUI(status);
+      startPolling();
+    } catch(e) {
+      showToast('启动失败: ' + e, 'error');
+      document.getElementById('powerLabel').textContent = 'START';
+      btn.disabled = false;
+    }
+  } else {
+    try { await invoke('stop_jellyfish'); } catch(e) { /* ignore */ }
+    isRunning = false;
+    stopPolling();
+    updateRunUI({ running: false, backend_port: 0, frontend_port: 0, backend_ready: false, frontend_ready: false, local_ip: null });
+  }
+}
+
+function updateRunUI(s) {
+  const btn = document.getElementById('powerBtn');
+  const label = document.getElementById('powerLabel');
+  const sub = document.getElementById('powerSub');
+  const subText = document.getElementById('powerSubText');
+  const subLink = document.getElementById('powerSubLink');
+  const lanRow = document.getElementById('lanRow');
+  const lanAddr = document.getElementById('lanAddr');
+
+  if (s.running) {
+    isRunning = true;
+    if (s.backend_ready && s.frontend_ready) {
+      btn.className = 'power-btn running'; btn.disabled = false;
+      label.textContent = 'STOP';
+      subText.textContent = 'http://localhost:' + s.frontend_port;
+      subLink.style.display = ''; sub.classList.add('visible');
+      if (s.local_ip) {
+        lanAddr.textContent = 'http://' + s.local_ip + ':' + s.frontend_port;
+        lanRow.style.display = 'flex';
+      } else {
+        lanRow.style.display = 'none';
+      }
+      showToast('JellyfishBot 服务已就绪');
+    } else {
+      btn.className = 'power-btn running'; btn.disabled = true;
+      label.textContent = '...';
+      subText.textContent = (s.backend_ready ? '后端 ✓' : '后端启动中...') + '  ' + (s.frontend_ready ? '前端 ✓' : '前端启动中...');
+      subLink.style.display = 'none'; sub.classList.add('visible');
+      lanRow.style.display = 'none';
+    }
+  } else {
+    isRunning = false;
+    btn.className = 'power-btn'; btn.disabled = false;
+    label.textContent = 'START';
+    sub.classList.remove('visible');
+    subLink.style.display = 'none';
+    lanRow.style.display = 'none';
+  }
+}
+
+function copyLanAddr() {
+  const addr = document.getElementById('lanAddr').textContent;
+  if (addr) {
+    navigator.clipboard.writeText(addr).then(() => showToast('局域网地址已复制'));
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  statusInterval = setInterval(async () => {
+    try {
+      const s = await invoke('get_status');
+      updateRunUI(s);
+      if (!s.running) { isRunning = false; stopPolling(); }
+    } catch { /* ignore */ }
+  }, 2000);
+}
+function stopPolling() { if (statusInterval) { clearInterval(statusInterval); statusInterval = null; } }
+
+async function openBrowser() {
+  try { await invoke('open_in_browser'); } catch(e) { showToast('打开失败: ' + e, 'error'); }
+}
+
+// ── Registration Keys ────────────────────────────────────────────
+async function loadRegKeys() {
+  try {
+    const keys = await invoke('list_registration_keys');
+    const tbody = document.getElementById('keysTableBody');
+    const countEl = document.getElementById('keysCount');
+    const avail = keys.filter(k => !k.used).length;
+    countEl.textContent = '共 ' + keys.length + ' 个注册码 · ' + avail + ' 个可用';
+
+    if (keys.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--jf-text-dim);padding:28px">暂无注册码，点击右上角生成</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = keys.map(k => {
+      const date = k.created_at ? k.created_at.substring(0, 10) : '-';
+      if (k.used) {
+        return '<tr class="used">' +
+          '<td class="mono">' + esc(k.key) + '</td>' +
+          '<td><span class="badge badge-used">已使用</span></td>' +
+          '<td class="mono">' + date + '</td>' +
+          '<td>' + esc(k.used_by || '-') + '</td>' +
+          '<td style="color:var(--jf-text-dim)">-</td></tr>';
+      }
+      return '<tr>' +
+        '<td class="mono" style="display:flex;align-items:center;gap:8px">' + esc(k.key) + ' <button class="copy-btn" onclick="copyText(this,\'' + esc(k.key) + '\')">复制</button></td>' +
+        '<td><span class="badge badge-ok">可用</span></td>' +
+        '<td class="mono">' + date + '</td>' +
+        '<td>-</td>' +
+        '<td><button class="btn-text danger" onclick="deleteRegKey(\'' + esc(k.key) + '\')">删除</button></td></tr>';
+    }).join('');
+  } catch(e) {
+    document.getElementById('keysTableBody').innerHTML = '<tr><td colspan="5" style="color:var(--jf-error)">加载失败: ' + esc(String(e)) + '</td></tr>';
+  }
+}
+
+function showGenKeyModal() { showModal('modalGenKey'); }
+
+async function generateKeys() {
+  const count = parseInt(document.getElementById('genKeyCount').value) || 3;
+  try {
+    const newKeys = await invoke('generate_registration_keys', { count });
+    hideModal('modalGenKey');
+    showToast('已生成 ' + newKeys.length + ' 个注册码');
+    loadRegKeys();
+  } catch(e) { showToast('生成失败: ' + e, 'error'); }
+}
+
+async function deleteRegKey(key) {
+  if (!confirm('确定删除注册码 ' + key + '？')) return;
+  try {
+    await invoke('delete_registration_key', { key });
+    showToast('已删除');
+    loadRegKeys();
+  } catch(e) { showToast('删除失败: ' + e, 'error'); }
+}
+
+// ── Admin Users ──────────────────────────────────────────────────
+async function loadAdminUsers() {
+  try {
+    const users = await invoke('list_admin_users');
+    const tbody = document.getElementById('adminTableBody');
+
+    if (users.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--jf-text-dim);padding:28px">暂无注册用户</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = users.map(u => {
+      const login = u.last_login ? u.last_login.substring(0, 16).replace('T', ' ') : '从未登录';
+      const apiStatus = u.has_api_keys
+        ? '<span style="color:var(--jf-success)">● 已配置</span>'
+        : '<span style="color:var(--jf-text-dim)">○ 未配置</span>';
+      return '<tr>' +
+        '<td style="font-weight:600">' + esc(u.username) + '</td>' +
+        '<td class="mono">' + esc(u.user_id) + '</td>' +
+        '<td class="mono">' + login + '</td>' +
+        '<td>' + apiStatus + '</td>' +
+        '<td>' +
+          '<button class="btn-text" style="margin-right:14px" onclick="resetPassword(\'' + esc(u.user_id) + '\',\'' + esc(u.username) + '\')">重置密码</button>' +
+          '<button class="btn-text danger" onclick="showDeleteUser(\'' + esc(u.user_id) + '\',\'' + esc(u.username) + '\')">删除</button>' +
+        '</td></tr>';
+    }).join('');
+  } catch(e) {
+    document.getElementById('adminTableBody').innerHTML = '<tr><td colspan="5" style="color:var(--jf-error)">加载失败: ' + esc(String(e)) + '</td></tr>';
+  }
+}
+
+async function loadAdminStats() {
+  try {
+    const s = await invoke('get_admin_stats');
+    document.getElementById('statTotal').textContent = s.total_users;
+    document.getElementById('statActive').textContent = s.active_7d;
+    document.getElementById('statKeys').textContent = s.keys_configured;
+    document.getElementById('statRegKeys').textContent = s.available_reg_keys;
+  } catch(e) { console.error('stats:', e); }
+}
+
+async function resetPassword(userId, username) {
+  if (!confirm('确定重置 ' + username + ' 的密码？')) return;
+  try {
+    const res = await invoke('reset_admin_password', { userId });
+    document.getElementById('tempPwdDisplay').textContent = res.temp_password;
+    showModal('modalTempPwd');
+  } catch(e) { showToast('重置失败: ' + e, 'error'); }
+}
+
+function showDeleteUser(userId, username) {
+  document.getElementById('deleteUserId').value = userId;
+  document.getElementById('deleteUsername').value = username;
+  document.getElementById('deleteConfirmInput').value = '';
+  document.getElementById('deleteConfirmInput').placeholder = username;
+  showModal('modalDeleteUser');
+}
+
+async function confirmDeleteUser() {
+  const input = document.getElementById('deleteConfirmInput').value;
+  const expected = document.getElementById('deleteUsername').value;
+  const userId = document.getElementById('deleteUserId').value;
+
+  if (input !== expected) { showToast('用户名不匹配', 'warning'); return; }
+
+  try {
+    await invoke('delete_admin_user', { userId });
+    hideModal('modalDeleteUser');
+    showToast('用户已删除');
+    loadAdminUsers();
+    loadAdminStats();
+  } catch(e) { showToast('删除失败: ' + e, 'error'); }
+}
+
+// ── Utils ────────────────────────────────────────────────────────
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ── Init ─────────────────────────────────────────────────────────
+detectEnv();
+loadConfig();
+</script>
+</body>
+</html>

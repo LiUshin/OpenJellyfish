@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{SERVICE_NAME}} — 微信扫码</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #141419;
+      --surface-hover: #1c1c24;
+      --border: #2a2a35;
+      --text: #e8e8ed;
+      --text-secondary: #8a8a9a;
+      --accent: #07c160;
+      --accent-soft: rgba(7, 193, 96, 0.12);
+      --danger: #ef4444;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .container {
+      max-width: 420px;
+      width: 100%;
+      padding: 24px;
+      text-align: center;
+    }
+
+    .logo {
+      width: 48px; height: 48px;
+      background: var(--accent);
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center; justify-content: center;
+      margin-bottom: 16px;
+    }
+
+    .logo svg { width: 28px; height: 28px; fill: white; }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .desc {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 28px;
+    }
+
+    .qr-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      margin-bottom: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .qr-card img {
+      width: 220px;
+      height: 220px;
+      border-radius: 8px;
+      background: white;
+      display: block;
+      margin: 0 auto;
+    }
+
+    .qr-card .placeholder {
+      width: 220px; height: 220px;
+      border-radius: 8px;
+      background: var(--surface-hover);
+      display: flex;
+      align-items: center; justify-content: center;
+      margin: 0 auto;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .qr-card .scan-hint {
+      margin-top: 16px;
+      font-size: 15px;
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .qr-card .countdown {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .qr-card .status-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 500;
+      margin-top: 12px;
+    }
+
+    .status-badge.scanning {
+      background: rgba(99, 102, 241, 0.15);
+      color: #818cf8;
+    }
+    .status-badge.success {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .status-badge.error {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--danger);
+    }
+
+    .features {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .feature {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 10px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+
+    .feature .icon {
+      font-size: 20px;
+      margin-bottom: 6px;
+      display: block;
+    }
+
+    .web-link {
+      color: var(--text-secondary);
+      font-size: 13px;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 8px 16px;
+      border-radius: 8px;
+      transition: all 0.2s;
+    }
+
+    .web-link:hover {
+      color: var(--text);
+      background: var(--surface);
+    }
+
+    .retry-btn {
+      display: none;
+      margin: 12px auto 0;
+      padding: 8px 20px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .retry-btn:hover { background: var(--surface-hover); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .loading { animation: pulse 1.5s ease-in-out infinite; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <svg viewBox="0 0 24 24"><path d="M8.691 2.188C3.891 2.188 0 5.476 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.665l-.39 1.48c-.019.07-.048.141-.048.213 0 .163.13.295.29.295a.328.328 0 0 0 .167-.054l1.903-1.114a.864.864 0 0 1 .717-.098 10.16 10.16 0 0 0 2.837.403c.276 0 .543-.027.811-.05-.857-2.578.157-4.972 1.932-6.446 1.703-1.415 3.882-1.98 5.853-1.838-.576-3.583-4.196-6.348-8.596-6.348zM5.785 5.991c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178A1.17 1.17 0 0 1 4.623 7.17c0-.651.52-1.18 1.162-1.18zm5.813 0c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178 1.17 1.17 0 0 1-1.162-1.178c0-.651.52-1.18 1.162-1.18zm5.34 2.867c-1.797-.052-3.746.512-5.28 1.786-1.72 1.428-2.687 3.72-1.78 6.22.942 2.453 3.666 4.229 6.884 4.229.826 0 1.622-.12 2.361-.336a.722.722 0 0 1 .598.082l1.584.926a.272.272 0 0 0 .14.047c.134 0 .24-.111.24-.247 0-.06-.023-.12-.038-.177l-.327-1.233a.49.49 0 0 1 .177-.554C23.02 18.456 24 16.67 24 14.714c0-3.197-3.029-5.856-7.062-5.856zm-2.666 2.867c.535 0 .969.44.969.982a.976.976 0 0 1-.969.983.976.976 0 0 1-.968-.983c0-.542.434-.982.968-.982zm4.844 0c.535 0 .969.44.969.982a.976.976 0 0 1-.969.983.976.976 0 0 1-.968-.983c0-.542.433-.982.968-.982z"/></svg>
+    </div>
+
+    <h1 id="svc-name">{{SERVICE_NAME}}</h1>
+    <p class="desc" id="svc-desc">{{SERVICE_DESC}}</p>
+
+    <div class="qr-card" id="qr-card">
+      <div class="placeholder loading" id="qr-placeholder">正在生成二维码...</div>
+      <img id="qr-img" style="display:none" alt="WeChat QR" />
+      <p class="scan-hint" id="scan-hint">请使用微信扫描上方二维码</p>
+      <p class="countdown" id="countdown"></p>
+      <div id="status-area"></div>
+      <button class="retry-btn" id="retry-btn" onclick="loadQR()">重新生成</button>
+    </div>
+
+    <div class="features">
+      <div class="feature"><span class="icon">💬</span>扫码后在<br>微信中聊天</div>
+      <div class="feature"><span class="icon">🔒</span>每人获得<br>独立对话</div>
+      <div class="feature"><span class="icon">🤖</span>AI 助手<br>即时回复</div>
+    </div>
+
+    <a class="web-link" href="/s/{{SERVICE_ID}}">或使用网页版聊天 →</a>
+  </div>
+
+<script>
+(function() {
+  const SERVICE_ID = "{{SERVICE_ID}}";
+  const API_BASE = location.origin;
+
+  let currentQrId = null;
+  let pollTimer = null;
+  let countdownTimer = null;
+  let qrExpiresAt = 0;
+
+  const qrImg = document.getElementById("qr-img");
+  const placeholder = document.getElementById("qr-placeholder");
+  const countdown = document.getElementById("countdown");
+  const statusArea = document.getElementById("status-area");
+  const retryBtn = document.getElementById("retry-btn");
+  const scanHint = document.getElementById("scan-hint");
+
+  window.loadQR = async function loadQR() {
+    placeholder.textContent = "正在生成二维码...";
+    placeholder.className = "placeholder loading";
+    placeholder.style.display = "flex";
+    qrImg.style.display = "none";
+    retryBtn.style.display = "none";
+    statusArea.innerHTML = "";
+    countdown.textContent = "";
+    scanHint.textContent = "请使用微信扫描上方二维码";
+
+    if (pollTimer) clearInterval(pollTimer);
+    if (countdownTimer) clearInterval(countdownTimer);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/wc/${SERVICE_ID}/qrcode`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || "Failed to generate QR");
+      }
+
+      const data = await res.json();
+      currentQrId = data.qr_id;
+
+      qrImg.src = "data:image/png;base64," + data.qr_image_b64;
+      qrImg.style.display = "block";
+      placeholder.style.display = "none";
+
+      qrExpiresAt = Date.now() + 5 * 60 * 1000;
+      startCountdown();
+      startPolling();
+    } catch (e) {
+      placeholder.textContent = e.message;
+      placeholder.className = "placeholder";
+      retryBtn.style.display = "block";
+    }
+  };
+
+  function startCountdown() {
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => {
+      const remaining = Math.max(0, Math.floor((qrExpiresAt - Date.now()) / 1000));
+      if (remaining <= 0) {
+        countdown.textContent = "";
+        clearInterval(countdownTimer);
+        return;
+      }
+      const m = Math.floor(remaining / 60);
+      const s = remaining % 60;
+      countdown.textContent = `二维码有效期: ${m}:${s.toString().padStart(2, "0")}`;
+    }, 1000);
+  }
+
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(pollStatus, 2000);
+  }
+
+  async function pollStatus() {
+    if (!currentQrId) return;
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/wc/${SERVICE_ID}/qrcode/status?qrcode=${currentQrId}`
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+
+      if (data.status === "confirmed") {
+        clearInterval(pollTimer);
+        clearInterval(countdownTimer);
+        countdown.textContent = "";
+        scanHint.textContent = "连接成功！";
+        statusArea.innerHTML =
+          '<span class="status-badge success">✓ 已连接，请返回微信聊天</span>';
+        retryBtn.style.display = "none";
+      } else if (data.status === "scanned") {
+        scanHint.textContent = "已扫码，等待确认...";
+        statusArea.innerHTML =
+          '<span class="status-badge scanning">正在确认...</span>';
+      } else if (data.status === "expired") {
+        clearInterval(pollTimer);
+        clearInterval(countdownTimer);
+        countdown.textContent = "";
+        scanHint.textContent = "二维码已过期";
+        statusArea.innerHTML =
+          '<span class="status-badge error">已过期</span>';
+        retryBtn.style.display = "block";
+      }
+    } catch (e) {
+      // network error — keep polling
+    }
+  }
+
+  loadQR();
+})();
+</script>
+</body>
+</html>

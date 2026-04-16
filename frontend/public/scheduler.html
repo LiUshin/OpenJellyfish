@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>定时任务 — JellyfishBot</title>
+  <style>
+    :root {
+      --bg-primary: #0f0f13;
+      --bg-secondary: #16161d;
+      --bg-tertiary: #1c1c27;
+      --bg-hover: #22222f;
+      --bg-active: #2a2a3a;
+      --bg-card: #1a1a25;
+      --border: #2a2a3a;
+      --border-light: #33334a;
+      --text-primary: #e4e4ed;
+      --text-secondary: #9494a8;
+      --text-muted: #66668a;
+      --accent: #6c5ce7;
+      --accent-hover: #7c6ef7;
+      --accent-light: rgba(108,92,231,0.15);
+      --success: #00b894;
+      --danger: #e74c3c;
+      --warning: #f39c12;
+      --info: #3498db;
+      --radius-sm: 6px;
+      --radius: 10px;
+      --radius-lg: 14px;
+      --transition: 0.2s ease;
+      --font: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: var(--font); font-size: 14px; background: var(--bg-primary); color: var(--text-primary); line-height: 1.5; }
+    * { scrollbar-width: thin; scrollbar-color: #44445a transparent; }
+    ::-webkit-scrollbar { width: 7px; height: 7px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #44445a; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #55557a; }
+    .layout { display: flex; height: 100vh; }
+
+    .sidebar { width: 300px; min-width: 260px; background: var(--bg-secondary); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+    .sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .sidebar-header h2 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .sidebar-header a { color: var(--text-secondary); text-decoration: none; font-size: 13px; }
+    .sidebar-header a:hover { color: var(--text-primary); }
+
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 16px; border: none; border-radius: var(--radius-sm); font-family: var(--font); font-size: 13px; font-weight: 500; cursor: pointer; transition: all var(--transition); color: var(--text-primary); background: var(--bg-tertiary); }
+    .btn:hover { background: var(--bg-hover); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:hover { opacity: 0.85; }
+    .btn-ghost { background: transparent; }
+    .btn-ghost:hover { background: var(--bg-hover); }
+    .btn-sm { padding: 5px 10px; font-size: 12px; }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-success:hover { opacity: 0.85; }
+    .btn-icon { padding: 6px; background: transparent; border-radius: var(--radius-sm); border: none; color: var(--text-primary); cursor: pointer; }
+    .btn-icon:hover { background: var(--bg-hover); }
+    .btn-create { margin: 12px 16px; padding: 10px; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); font-size: 13px; font-weight: 600; cursor: pointer; }
+    .btn-create:hover { background: var(--accent-hover); }
+
+    .task-list { flex: 1; overflow-y: auto; padding: 8px; }
+    .task-item { padding: 12px; border-radius: var(--radius); cursor: pointer; transition: background var(--transition); margin-bottom: 4px; }
+    .task-item:hover { background: var(--bg-hover); }
+    .task-item.active { background: var(--bg-active); }
+    .task-item-name { font-weight: 500; font-size: 14px; margin-bottom: 2px; display: flex; align-items: center; gap: 6px; }
+    .task-item-desc { font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .task-item-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; display: flex; gap: 8px; align-items: center; }
+
+    .badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+    .badge-on { background: rgba(0,184,148,0.2); color: var(--success); }
+    .badge-off { background: rgba(148,148,168,0.15); color: var(--text-muted); }
+    .badge-script { background: rgba(52,152,219,0.2); color: var(--info); }
+    .badge-agent { background: rgba(108,92,231,0.2); color: var(--accent); }
+
+    .main-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .panel-header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .panel-header h2 { font-size: 18px; font-weight: 600; }
+    .panel-header-actions { display: flex; gap: 8px; }
+    .panel-body { flex: 1; overflow-y: auto; padding: 24px; }
+    .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); }
+    .empty-state .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.4; }
+
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; font-weight: 500; }
+    .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 8px 12px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-family: var(--font); font-size: 13px; outline: none; }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--accent); }
+    .form-group textarea { resize: vertical; min-height: 60px; }
+    .form-group .hint { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+
+    .section { margin-bottom: 24px; }
+    .section-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+
+    .info-table { width: 100%; }
+    .info-table td { padding: 6px 0; vertical-align: top; }
+    .info-table td:first-child { color: var(--text-secondary); width: 120px; }
+    .info-table code { font-family: var(--font-mono); font-size: 12px; }
+
+    .run-item { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; background: var(--bg-primary); overflow: hidden; }
+    .run-header { display: flex; align-items: center; justify-content: space-between; padding: 12px; cursor: pointer; transition: background var(--transition); }
+    .run-header:hover { background: var(--bg-hover); }
+    .run-status { font-size: 12px; font-weight: 600; }
+    .run-status.success { color: var(--success); }
+    .run-status.error { color: var(--danger); }
+    .run-status.timeout { color: var(--warning); }
+    .run-time { font-size: 11px; color: var(--text-muted); }
+    .run-toggle { font-size: 11px; color: var(--text-muted); margin-left: 8px; transition: transform 0.2s; display: inline-block; }
+    .run-toggle.open { transform: rotate(90deg); }
+    .run-body { display: none; border-top: 1px solid var(--border); }
+    .run-body.open { display: block; }
+    .run-output { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); background: var(--bg-secondary); padding: 8px 12px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+
+    .run-steps { padding: 0; }
+    .step-item { display: flex; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.6; }
+    .step-item:last-child { border-bottom: none; }
+    .step-icon { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; flex-shrink: 0; margin-top: 1px; }
+    .step-icon.start { background: rgba(52,152,219,0.2); color: var(--info); }
+    .step-icon.ai_message { background: rgba(108,92,231,0.2); color: var(--accent); }
+    .step-icon.tool_call { background: rgba(243,156,18,0.2); color: var(--warning); }
+    .step-icon.tool_result { background: rgba(0,184,148,0.15); color: var(--success); }
+    .step-icon.auto_approve { background: rgba(0,184,148,0.2); color: var(--success); }
+    .step-icon.error { background: rgba(231,76,60,0.2); color: var(--danger); }
+    .step-icon.stdout { background: rgba(52,152,219,0.15); color: var(--info); }
+    .step-icon.stderr { background: rgba(243,156,18,0.15); color: var(--warning); }
+    .step-icon.exit { background: rgba(148,148,168,0.15); color: var(--text-secondary); }
+    .step-icon.finish { background: rgba(0,184,148,0.2); color: var(--success); }
+    .step-icon.loop { background: rgba(148,148,168,0.1); color: var(--text-muted); }
+    .step-icon.docs_loaded { background: rgba(52,152,219,0.15); color: var(--info); }
+    .step-icon.reply { background: rgba(108,92,231,0.15); color: var(--accent); }
+    .step-body { flex: 1; min-width: 0; }
+    .step-head { display: flex; align-items: center; gap: 8px; }
+    .step-label { font-weight: 500; color: var(--text-primary); }
+    .step-time { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+    .step-content { margin-top: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); background: var(--bg-secondary); padding: 6px 8px; border-radius: var(--radius-sm); max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+    .step-content.expandable { max-height: 80px; cursor: pointer; position: relative; }
+    .step-content.expandable::after { content: '点击展开…'; position: absolute; bottom: 0; left: 0; right: 0; padding: 4px 8px; background: linear-gradient(transparent, var(--bg-secondary) 60%); text-align: center; font-size: 10px; color: var(--text-muted); }
+    .step-content.expanded { max-height: none; cursor: default; }
+    .step-content.expanded::after { display: none; }
+    .step-meta { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+
+    /* File picker modal */
+    .fp-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 150; display: none; align-items: center; justify-content: center; }
+    .fp-modal-overlay.visible { display: flex; }
+    .fp-modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-lg); width: 640px; max-width: 94vw; height: 520px; max-height: 85vh; display: flex; flex-direction: column; }
+    .fp-modal-header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .fp-modal-header h3 { font-size: 15px; margin: 0; color: var(--text-primary); }
+    .fp-modal-header .fp-count { font-size: 12px; color: var(--text-secondary); margin-left: 12px; }
+    .fp-modal-body { flex: 1; overflow-y: auto; padding: 0; }
+    .fp-modal-selection { padding: 10px 20px; border-top: 1px solid var(--border); flex-shrink: 0; max-height: 100px; overflow-y: auto; }
+    .fp-modal-footer { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+    .fp-row { display: flex; align-items: center; gap: 8px; padding: 6px 20px; font-size: 13px; cursor: pointer; color: var(--text-primary); transition: background 0.1s; }
+    .fp-row:hover { background: var(--bg-hover); }
+    .fp-row input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; width: 15px; height: 15px; cursor: pointer; }
+    .fp-toggle { width: 18px; min-width: 18px; text-align: center; color: var(--text-muted); font-size: 12px; flex-shrink: 0; cursor: pointer; user-select: none; }
+    .fp-toggle:hover { color: var(--text-primary); }
+    .fp-icon { flex-shrink: 0; font-size: 15px; line-height: 1; }
+    .fp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-size: 13px; }
+    .fp-children { padding-left: 22px; }
+    .fp-loading { padding: 12px 20px; font-size: 13px; color: var(--text-muted); }
+    .fp-empty { padding: 40px 20px; text-align: center; color: var(--text-muted); font-size: 13px; }
+    .selected-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .selected-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: var(--accent-light); border-radius: 4px; font-size: 12px; color: var(--accent); }
+    .selected-tag .remove { cursor: pointer; font-weight: 700; }
+    .selected-tag .remove:hover { color: var(--danger); }
+
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: none; align-items: center; justify-content: center; }
+    .modal-overlay.visible { display: flex; }
+    .modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-lg); width: 560px; max-width: 92vw; max-height: 88vh; overflow-y: auto; }
+    .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .modal-header h3 { font-size: 16px; }
+    .modal-body { padding: 20px; }
+    .modal-footer { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+
+    .toast-container { position: fixed; top: 16px; right: 16px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+    .toast { padding: 10px 16px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; animation: fadeIn 0.3s; min-width: 200px; }
+    .toast.success { border-left: 3px solid var(--success); }
+    .toast.error { border-left: 3px solid var(--danger); }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+
+    .tab-bar { display: flex; border-bottom: 1px solid var(--border); }
+    .tab-btn { flex: 1; padding: 10px 8px; background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--text-secondary); font-family: var(--font); font-size: 13px; font-weight: 500; cursor: pointer; transition: all var(--transition); }
+    .tab-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .badge-service { background: rgba(243,156,18,0.2); color: var(--warning); }
+    .svc-tag { font-size: 10px; color: var(--text-muted); background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <h2>⏰ 定时任务</h2>
+        <a href="/">← 返回主页</a>
+      </div>
+      <div class="tab-bar" id="tab-bar">
+        <button class="tab-btn active" data-tab="admin">管理员任务</button>
+        <button class="tab-btn" data-tab="service">服务任务</button>
+      </div>
+      <button class="btn-create" id="btn-create-task">+ 创建任务</button>
+      <div class="task-list" id="task-list">
+        <div class="empty-state" style="height:auto;padding:40px 0"><div class="icon">⏰</div><p>暂无定时任务</p></div>
+      </div>
+    </div>
+    <div class="main-panel">
+      <div id="detail-empty" class="empty-state"><div class="icon">📋</div><p>选择或创建一个定时任务</p></div>
+      <div id="detail-view" style="display:none">
+        <div class="panel-header">
+          <h2 id="detail-title">任务</h2>
+          <div class="panel-header-actions">
+            <button class="btn btn-sm btn-success" id="btn-run-now">▶ 立即运行</button>
+            <button class="btn btn-sm" id="btn-edit-task">编辑</button>
+            <button class="btn btn-sm btn-danger" id="btn-delete-task">删除</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="section"><div class="section-title">基本信息</div><div id="detail-info"></div></div>
+          <div class="section"><div class="section-title">调度配置</div><div id="detail-schedule"></div></div>
+          <div class="section"><div class="section-title">任务配置</div><div id="detail-config"></div></div>
+          <div class="section">
+            <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+              运行记录
+              <button class="btn btn-sm btn-ghost" id="btn-refresh-runs">刷新</button>
+            </div>
+            <div id="detail-runs"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create/Edit Modal -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal">
+      <div class="modal-header"><h3 id="modal-title">创建任务</h3><button class="btn-icon" id="btn-close-modal">&times;</button></div>
+      <div class="modal-body">
+        <div class="form-group"><label>任务名称 *</label><input type="text" id="f-name" placeholder="每日新闻摘要" /></div>
+        <div class="form-group"><label>描述</label><textarea id="f-desc" placeholder="任务的简要说明"></textarea></div>
+        <div class="form-group">
+          <label>任务类型 *</label>
+          <select id="f-task-type">
+            <option value="script">🔧 脚本执行</option>
+            <option value="agent">🤖 Agent 任务</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>调度方式 *</label>
+          <select id="f-schedule-type">
+            <option value="once">⏱ 一次性（指定时间）</option>
+            <option value="cron">🔄 Cron 表达式（周期）</option>
+            <option value="interval">⏳ 固定间隔（秒）</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label id="f-schedule-label">执行时间</label>
+          <input type="text" id="f-schedule" placeholder="2026-04-01T09:00:00" />
+          <div class="hint" id="f-schedule-hint">ISO 时间格式，如 2026-04-01T09:00:00</div>
+        </div>
+
+        <!-- Script fields -->
+        <div id="fields-script">
+          <div class="form-group"><label>脚本路径 *</label><input type="text" id="f-script-path" placeholder="hello.py 或 analysis/run.py" /><div class="hint">相对 scripts/ 目录</div></div>
+          <div class="form-group"><label>脚本参数</label><input type="text" id="f-script-args" placeholder="逗号分隔，如 --output,result.json" /><div class="hint">每个参数用逗号分隔</div></div>
+        </div>
+
+        <!-- Agent fields -->
+        <div id="fields-agent" style="display:none">
+          <div class="form-group"><label>执行指令 *</label><textarea id="f-agent-prompt" placeholder="搜索最新 AI 新闻并生成语音摘要" style="min-height:80px"></textarea><div class="hint">给 Agent 的任务描述</div></div>
+          <div class="form-group"><label>参考文档（docs/ 下路径）</label><input type="text" id="f-doc-paths" placeholder="daily_report.md 或逗号分隔多个" /><div class="hint">Agent 会读取文档内容按步骤执行</div></div>
+          <div class="form-group">
+            <label>Agent 能力</label>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
+              <label style="display:flex;align-items:center;gap:4px;font-size:13px;padding:4px 8px;background:var(--bg-tertiary);border-radius:var(--radius-sm);cursor:pointer"><input type="checkbox" value="image" class="agent-cap" /> 🎨 图片</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:13px;padding:4px 8px;background:var(--bg-tertiary);border-radius:var(--radius-sm);cursor:pointer"><input type="checkbox" value="speech" class="agent-cap" /> 🔊 语音</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:13px;padding:4px 8px;background:var(--bg-tertiary);border-radius:var(--radius-sm);cursor:pointer"><input type="checkbox" value="video" class="agent-cap" /> 🎬 视频</label>
+            </div>
+            <div class="hint">Agent 默认拥有联网搜索和脚本执行能力</div>
+          </div>
+        </div>
+
+        <!-- Permissions -->
+        <div id="fields-permissions" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">📂 沙箱权限（相对用户目录）</div>
+          <div class="form-group">
+            <label>可读目录 <button class="btn btn-sm" type="button" id="btn-pick-read-dirs" style="margin-left:8px">浏览选择</button></label>
+            <input type="text" id="f-read-dirs" placeholder="docs,scripts,generated,tasks" />
+            <div class="selected-tags" id="read-dirs-tags"></div>
+            <div class="hint">逗号分隔，默认: docs, scripts, generated, tasks。填 * 表示全部</div>
+          </div>
+          <div class="form-group">
+            <label>可写目录 <button class="btn btn-sm" type="button" id="btn-pick-write-dirs" style="margin-left:8px">浏览选择</button></label>
+            <input type="text" id="f-write-dirs" placeholder="docs,scripts,generated,tasks" />
+            <div class="selected-tags" id="write-dirs-tags"></div>
+            <div class="hint">逗号分隔，默认: docs, scripts, generated, tasks。填 * 表示全部</div>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top:20px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="f-enabled" checked /> 立即启用</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="btn-modal-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-modal-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- File Picker Modal (directory browser) -->
+  <div class="fp-modal-overlay" id="fp-modal-overlay">
+    <div class="fp-modal">
+      <div class="fp-modal-header">
+        <div style="display:flex;align-items:center"><h3 id="fp-modal-title">选择目录</h3><span class="fp-count" id="fp-count"></span></div>
+        <button class="btn-icon" id="btn-close-fp">&times;</button>
+      </div>
+      <div class="fp-modal-body" id="fp-tree"></div>
+      <div class="fp-modal-selection" id="fp-selection"></div>
+      <div class="fp-modal-footer">
+        <button class="btn btn-ghost" id="btn-fp-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-fp-confirm">确认选择</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <script>
+    const BASE = '/api';
+    const token = localStorage.getItem('token') || '';
+    if (!token) window.location.href = '/';
+
+    let tasks = [], currentTask = null, editingId = null;
+    let activeTab = 'admin'; // 'admin' | 'service'
+    let serviceTasks = [];
+
+    // ── File Picker (directory browser) ──
+
+    const fpOverlay = document.getElementById('fp-modal-overlay');
+    const fpTree = document.getElementById('fp-tree');
+    const fpSelection = document.getElementById('fp-selection');
+    const fpCount = document.getElementById('fp-count');
+    let fpSelected = new Set();
+    let fpInputId = '';
+    let fpTagsId = '';
+
+    async function loadDir(basePath) {
+      try { return await api('GET', `/files?path=${encodeURIComponent(basePath)}`); }
+      catch (e) { return []; }
+    }
+
+    function fpUpdateCount() {
+      fpCount.textContent = fpSelected.size ? `已选 ${fpSelected.size} 项` : '';
+    }
+
+    function fpRenderSelection() {
+      if (!fpSelected.size) { fpSelection.innerHTML = '<span style="font-size:12px;color:var(--text-muted)">未选择任何目录</span>'; return; }
+      fpSelection.innerHTML = [...fpSelected].map(p =>
+        `<span class="selected-tag">${esc(p)} <span class="remove" data-path="${esc(p)}">&times;</span></span>`
+      ).join('');
+      fpSelection.querySelectorAll('.remove').forEach(el => {
+        el.addEventListener('click', () => {
+          fpSelected.delete(el.dataset.path);
+          fpUpdateCount(); fpRenderSelection();
+          const cb = fpTree.querySelector(`input[data-path="${CSS.escape(el.dataset.path)}"]`);
+          if (cb) cb.checked = false;
+        });
+      });
+    }
+
+    async function fpRenderTree(parentEl, dirPath) {
+      if (!parentEl) { fpTree.innerHTML = '<div class="fp-loading">加载中...</div>'; parentEl = fpTree; dirPath = '/'; }
+      const items = await loadDir(dirPath);
+      if (parentEl === fpTree) parentEl.innerHTML = '';
+      const dirs = items.filter(it => it.is_dir);
+      if (!dirs.length) { parentEl.innerHTML = '<div class="fp-empty">此目录下无子目录</div>'; return; }
+
+      for (const item of dirs) {
+        const relPath = item.name;
+        const row = document.createElement('div');
+        row.className = 'fp-row';
+
+        const toggleSpan = document.createElement('span');
+        toggleSpan.className = 'fp-toggle';
+        toggleSpan.textContent = '\u25B6';
+        row.appendChild(toggleSpan);
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = fpSelected.has(relPath);
+        cb.dataset.path = relPath;
+        row.appendChild(cb);
+
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'fp-icon';
+        iconSpan.textContent = '\uD83D\uDCC1';
+        row.appendChild(iconSpan);
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'fp-name';
+        nameSpan.textContent = item.name;
+        row.appendChild(nameSpan);
+
+        parentEl.appendChild(row);
+
+        cb.addEventListener('change', () => {
+          if (cb.checked) fpSelected.add(relPath); else fpSelected.delete(relPath);
+          fpUpdateCount(); fpRenderSelection();
+        });
+
+        const childContainer = document.createElement('div');
+        childContainer.className = 'fp-children';
+        childContainer.style.display = 'none';
+        parentEl.appendChild(childContainer);
+        let loaded = false;
+        const expand = async () => {
+          if (!loaded) { await fpRenderTree(childContainer, item.path); loaded = true; }
+          const vis = childContainer.style.display === 'none';
+          childContainer.style.display = vis ? '' : 'none';
+          toggleSpan.textContent = vis ? '\u25BC' : '\u25B6';
+        };
+        toggleSpan.addEventListener('click', (e) => { e.stopPropagation(); expand(); });
+        row.addEventListener('dblclick', expand);
+      }
+    }
+
+    function openDirPicker(title, inputId, tagsId) {
+      fpInputId = inputId; fpTagsId = tagsId;
+      document.getElementById('fp-modal-title').textContent = title;
+      fpSelected.clear();
+      const input = document.getElementById(inputId);
+      const vals = input.value.split(',').map(s => s.trim()).filter(s => s && s !== '*');
+      vals.forEach(v => fpSelected.add(v));
+      fpUpdateCount(); fpRenderSelection();
+      fpOverlay.classList.add('visible');
+      fpRenderTree();
+    }
+
+    function closeDirPicker() { fpOverlay.classList.remove('visible'); }
+
+    function confirmDirPicker() {
+      const input = document.getElementById(fpInputId);
+      const tagsEl = document.getElementById(fpTagsId);
+      const arr = [...fpSelected];
+      const manual = input.value.split(',').map(s => s.trim()).filter(s => s && s !== '*' && !fpSelected.has(s));
+      input.value = [...arr, ...manual].join(',') || '';
+      tagsEl.innerHTML = arr.map(p =>
+        `<span class="selected-tag">${esc(p)} <span class="remove" data-path="${esc(p)}">&times;</span></span>`
+      ).join('');
+      tagsEl.querySelectorAll('.remove').forEach(el => {
+        el.addEventListener('click', () => {
+          const v = el.dataset.path;
+          el.parentElement.remove();
+          const cur = input.value.split(',').map(s => s.trim()).filter(s => s !== v);
+          input.value = cur.join(',');
+        });
+      });
+      closeDirPicker();
+    }
+
+    function _renderDirTags(tagsId, inputId, dirs) {
+      const tagsEl = document.getElementById(tagsId);
+      const arr = dirs.filter(s => s && s !== '*');
+      if (!arr.length) { tagsEl.innerHTML = ''; return; }
+      tagsEl.innerHTML = arr.map(p =>
+        `<span class="selected-tag">${esc(p)} <span class="remove" data-path="${esc(p)}">&times;</span></span>`
+      ).join('');
+      tagsEl.querySelectorAll('.remove').forEach(el => {
+        el.addEventListener('click', () => {
+          const v = el.dataset.path;
+          el.parentElement.remove();
+          const input = document.getElementById(inputId);
+          const cur = input.value.split(',').map(s => s.trim()).filter(s => s !== v);
+          input.value = cur.join(',');
+        });
+      });
+    }
+
+    document.getElementById('btn-pick-read-dirs').addEventListener('click', () => openDirPicker('选择可读目录', 'f-read-dirs', 'read-dirs-tags'));
+    document.getElementById('btn-pick-write-dirs').addEventListener('click', () => openDirPicker('选择可写目录', 'f-write-dirs', 'write-dirs-tags'));
+    document.getElementById('btn-close-fp').addEventListener('click', closeDirPicker);
+    document.getElementById('btn-fp-cancel').addEventListener('click', closeDirPicker);
+    document.getElementById('btn-fp-confirm').addEventListener('click', confirmDirPicker);
+    fpOverlay.addEventListener('click', (e) => { if (e.target === fpOverlay) closeDirPicker(); });
+
+    // ── API helper ──
+
+    async function api(method, path, body) {
+      const headers = { 'Authorization': `Bearer ${token}` };
+      const opts = { method, headers };
+      if (body) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+      let res;
+      try { res = await fetch(`${BASE}${path}`, opts); }
+      catch (e) { throw new Error(`网络错误: ${e.message}`); }
+      if (res.status === 401) { localStorage.removeItem('token'); window.location.href = '/'; }
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `HTTP ${res.status}`); }
+      return res.json();
+    }
+
+    function toast(msg, type = 'success') {
+      const el = document.createElement('div'); el.className = `toast ${type}`; el.textContent = msg;
+      document.getElementById('toast-container').appendChild(el); setTimeout(() => el.remove(), 3500);
+    }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    const SCHEDULE_LABELS = { once: '⏱ 一次性', cron: '🔄 Cron', interval: '⏳ 间隔' };
+    const TYPE_LABELS = { script: '🔧 脚本', agent: '🤖 Agent' };
+
+    // ── Load data ──
+
+    async function loadTasks() {
+      try {
+        tasks = await api('GET', '/scheduler');
+        if (activeTab === 'admin') renderTaskList();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function loadServiceTasks() {
+      try {
+        serviceTasks = await api('GET', '/scheduler/services/all');
+        if (activeTab === 'service') renderTaskList();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    function switchTab(tab) {
+      activeTab = tab;
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+      });
+      currentTask = null;
+      document.getElementById('detail-view').style.display = 'none';
+      document.getElementById('detail-empty').style.display = '';
+      renderTaskList();
+      if (tab === 'service' && !serviceTasks.length) loadServiceTasks();
+    }
+
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+
+    function renderTaskList() {
+      const list = document.getElementById('task-list');
+      const items = activeTab === 'admin' ? tasks : serviceTasks;
+      if (!items.length) {
+        const label = activeTab === 'admin' ? '暂无管理员任务' : '暂无服务任务';
+        list.innerHTML = `<div class="empty-state" style="height:auto;padding:40px 0"><div class="icon">⏰</div><p>${label}</p></div>`;
+        return;
+      }
+      list.innerHTML = items.map(t => {
+        const isService = !!t.service_id;
+        return `
+        <div class="task-item ${currentTask?.id === t.id ? 'active' : ''}" data-id="${t.id}" ${isService ? `data-svc="${t.service_id}"` : ''}>
+          <div class="task-item-name">
+            <span class="badge ${t.enabled !== false ? 'badge-on' : 'badge-off'}">${t.enabled !== false ? '启用' : '停用'}</span>
+            ${esc(t.name)}
+          </div>
+          <div class="task-item-desc">${esc(t.description || SCHEDULE_LABELS[t.schedule_type] || t.schedule_type)}</div>
+          <div class="task-item-meta">
+            <span class="badge ${t.task_type === 'agent' ? 'badge-agent' : 'badge-script'}">${TYPE_LABELS[t.task_type] || t.task_type}</span>
+            <span>${t.schedule || ''}</span>
+            ${isService ? `<span class="svc-tag">${t.service_id.slice(0,12)}</span>` : ''}
+            ${t.run_count ? `<span>${t.run_count} 次运行</span>` : ''}
+            ${t.reply_to ? '<span>📬</span>' : ''}
+          </div>
+        </div>`;
+      }).join('');
+      list.querySelectorAll('.task-item').forEach(el => {
+        el.addEventListener('click', () => {
+          const svc = el.dataset.svc;
+          if (svc) selectServiceTask(svc, el.dataset.id);
+          else selectTask(el.dataset.id);
+        });
+      });
+    }
+
+    async function selectTask(id) {
+      try {
+        currentTask = await api('GET', `/scheduler/${id}`);
+        currentTask._scope = 'admin';
+        renderTaskList(); renderDetail();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function selectServiceTask(serviceId, taskId) {
+      try {
+        currentTask = await api('GET', `/scheduler/services/${serviceId}/${taskId}`);
+        currentTask._scope = 'service';
+        renderTaskList(); renderDetail();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    function renderDetail() {
+      const t = currentTask; if (!t) return;
+      document.getElementById('detail-empty').style.display = 'none';
+      document.getElementById('detail-view').style.display = '';
+      document.getElementById('detail-title').textContent = t.name;
+
+      let infoHtml = `<table class="info-table">
+        <tr><td>ID</td><td><code>${t.id}</code></td></tr>`;
+      if (t.service_id) infoHtml += `<tr><td>所属服务</td><td><code>${esc(t.service_id)}</code> <span class="badge badge-service">服务任务</span></td></tr>`;
+      infoHtml += `<tr><td>描述</td><td>${esc(t.description || '—')}</td></tr>
+        <tr><td>状态</td><td><span class="badge ${t.enabled !== false ? 'badge-on' : 'badge-off'}">${t.enabled !== false ? '启用' : '停用'}</span></td></tr>
+        <tr><td>创建时间</td><td>${fmtTime(t.created_at)}</td></tr>
+        <tr><td>上次运行</td><td>${fmtTime(t.last_run_at) || '从未'}</td></tr>`;
+      if (t.reply_to) {
+        const rt = t.reply_to;
+        infoHtml += `<tr><td>📬 结果推送</td><td>${rt.channel === 'wechat' ? '微信' : rt.channel || '—'}${rt.session_id ? ` <code>${esc(rt.session_id.slice(0,12))}</code>` : ''}</td></tr>`;
+      }
+      infoHtml += '</table>';
+      document.getElementById('detail-info').innerHTML = infoHtml;
+
+      document.getElementById('detail-schedule').innerHTML = `<table class="info-table">
+        <tr><td>调度方式</td><td>${SCHEDULE_LABELS[t.schedule_type] || t.schedule_type}</td></tr>
+        <tr><td>调度值</td><td><code>${esc(t.schedule || '')}</code></td></tr>
+        <tr><td>下次运行</td><td>${fmtTime(t.next_run_at) || '无'}</td></tr>
+        </table>`;
+
+      const cfg = t.task_config || {};
+      let cfgHtml = `<table class="info-table"><tr><td>类型</td><td><span class="badge ${t.task_type === 'agent' ? 'badge-agent' : 'badge-script'}">${TYPE_LABELS[t.task_type] || t.task_type}</span></td></tr>`;
+      if (t.task_type === 'script') {
+        cfgHtml += `<tr><td>脚本</td><td><code>${esc(cfg.script_path || '')}</code></td></tr>`;
+        if (cfg.script_args?.length) cfgHtml += `<tr><td>参数</td><td><code>${esc(cfg.script_args.join(' '))}</code></td></tr>`;
+      } else if (t.task_type === 'agent') {
+        cfgHtml += `<tr><td>指令</td><td>${esc(cfg.prompt || '—')}</td></tr>`;
+        const docPaths = cfg.doc_path;
+        if (docPaths) {
+          const paths = Array.isArray(docPaths) ? docPaths : [docPaths];
+          if (paths.length && paths[0]) cfgHtml += `<tr><td>参考文档</td><td>${paths.map(p=>'<code>'+esc(p)+'</code>').join(', ')}</td></tr>`;
+        }
+        if (cfg.capabilities?.length) cfgHtml += `<tr><td>Agent 能力</td><td>${cfg.capabilities.join(', ')}</td></tr>`;
+      }
+      const cfgPerms = cfg.permissions || {};
+      if (cfgPerms.read_dirs?.length) cfgHtml += `<tr><td>📖 可读目录</td><td><code>${esc(cfgPerms.read_dirs.join(', '))}</code></td></tr>`;
+      if (cfgPerms.write_dirs?.length) cfgHtml += `<tr><td>📝 可写目录</td><td><code>${esc(cfgPerms.write_dirs.join(', '))}</code></td></tr>`;
+      if (!cfgPerms.read_dirs?.length && !cfgPerms.write_dirs?.length) cfgHtml += `<tr><td>📂 权限</td><td style="color:var(--text-muted)">默认 (docs, scripts, generated, tasks)</td></tr>`;
+      cfgHtml += '</table>';
+      document.getElementById('detail-config').innerHTML = cfgHtml;
+
+      renderRuns(t.runs || []);
+    }
+
+    const STEP_ICONS = {
+      start: '🚀', ai_message: '🤖', tool_call: '🔧', tool_result: '📦',
+      auto_approve: '✅', error: '❌', stdout: '📄', stderr: '⚠️',
+      exit: '🏁', finish: '🎉', loop: '🔄', docs_loaded: '📚', reply: '📬',
+    };
+    const STEP_LABELS = {
+      start: '启动', ai_message: 'AI 输出', tool_call: '工具调用', tool_result: '工具返回',
+      auto_approve: '自动审批', error: '错误', stdout: '标准输出', stderr: '标准错误',
+      exit: '退出', finish: '完成', loop: '执行循环', docs_loaded: '文档加载', reply: '消息推送',
+    };
+
+    function renderSteps(steps) {
+      if (!steps || !steps.length) return '';
+      return `<div class="run-steps">${steps.map(s => {
+        const tp = s.type || 'start';
+        const icon = STEP_ICONS[tp] || '•';
+        const label = STEP_LABELS[tp] || tp;
+        const ts = s.ts ? s.ts.replace('T',' ').slice(11, 19) : '';
+
+        let detail = '';
+        if (tp === 'tool_call') {
+          detail = `<div class="step-meta">工具: <strong>${esc(s.tool || '')}</strong></div>`;
+          if (s.args_preview) detail += `<div class="step-content expandable" onclick="this.classList.toggle('expanded')">${esc(s.args_preview)}</div>`;
+        } else if (tp === 'tool_result') {
+          detail = `<div class="step-meta">工具: <strong>${esc(s.tool || '')}</strong></div>`;
+          if (s.result_preview) detail += `<div class="step-content expandable" onclick="this.classList.toggle('expanded')">${esc(s.result_preview)}</div>`;
+        } else if (tp === 'ai_message' && s.content) {
+          detail = `<div class="step-content expandable" onclick="this.classList.toggle('expanded')">${esc(s.content)}</div>`;
+        } else if ((tp === 'stdout' || tp === 'stderr') && s.content) {
+          detail = `<div class="step-content expandable" onclick="this.classList.toggle('expanded')">${esc(s.content)}</div>`;
+        } else if (tp === 'error' && s.content) {
+          detail = `<div class="step-content" style="border-left:2px solid var(--danger)">${esc(s.content)}</div>`;
+        } else if (tp === 'auto_approve' && s.actions) {
+          detail = `<div class="step-meta">${s.actions.length} 个操作已自动审批</div>`;
+        } else if (tp === 'start') {
+          let meta = '';
+          if (s.prompt) meta += `<div class="step-meta">指令: ${esc(s.prompt)}</div>`;
+          if (s.args && s.args.length) meta += `<div class="step-meta">参数: ${esc(s.args.join(' '))}</div>`;
+          if (s.doc_paths && s.doc_paths.length && s.doc_paths[0]) meta += `<div class="step-meta">文档: ${s.doc_paths.map(p=>'<code>'+esc(p)+'</code>').join(', ')}</div>`;
+          if (s.capabilities && s.capabilities.length) meta += `<div class="step-meta">能力: ${esc(s.capabilities.join(', '))}</div>`;
+          if (s.read_dirs && s.read_dirs.length) meta += `<div class="step-meta">📖 读: ${esc(s.read_dirs.join(', '))}</div>`;
+          if (s.write_dirs && s.write_dirs.length) meta += `<div class="step-meta">📝 写: ${esc(s.write_dirs.join(', '))}</div>`;
+          if (s.resolved_write_dirs) meta += `<div class="step-content expandable" onclick="this.classList.toggle('expanded')">resolved_write: ${esc(JSON.stringify(s.resolved_write_dirs))}\nscripts_dir: ${esc(s.scripts_dir||'')}\nfs_dir: ${esc(s.fs_dir||'')}</div>`;
+          detail = meta;
+        }
+
+        return `<div class="step-item">
+          <div class="step-icon ${tp}">${icon}</div>
+          <div class="step-body">
+            <div class="step-head">
+              <span class="step-label">${label}</span>
+              <span class="step-time">${ts}</span>
+            </div>
+            ${tp !== 'loop' && tp !== 'finish' && tp !== 'docs_loaded' ? (s.content && !detail.includes('step-content') && tp !== 'start' ? `<div class="step-meta">${esc(s.content)}</div>` : '') : (s.content ? `<div class="step-meta">${esc(s.content)}</div>` : '')}
+            ${detail}
+          </div>
+        </div>`;
+      }).join('')}</div>`;
+    }
+
+    function renderRuns(runs) {
+      const c = document.getElementById('detail-runs');
+      if (!runs.length) { c.innerHTML = '<p style="color:var(--text-muted);font-size:13px">暂无运行记录</p>'; return; }
+      c.innerHTML = [...runs].reverse().map((r, i) => {
+        const hasSteps = r.steps && r.steps.length > 0;
+        const statusText = r.status === 'success' ? '✅ 成功' : r.status === 'timeout' ? '⏱ 超时' : '❌ 失败';
+        const duration = r.started_at && r.finished_at ? calcDuration(r.started_at, r.finished_at) : '';
+
+        return `<div class="run-item" data-run-idx="${i}">
+          <div class="run-header" onclick="toggleRun(this)">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="run-toggle" id="run-toggle-${i}">▶</span>
+              <span class="run-status ${r.status}">${statusText}</span>
+              ${duration ? `<span style="font-size:11px;color:var(--text-muted)">(${duration})</span>` : ''}
+            </div>
+            <span class="run-time">${fmtTime(r.started_at)} → ${fmtTime(r.finished_at)}</span>
+          </div>
+          <div class="run-body" id="run-body-${i}">
+            ${hasSteps ? renderSteps(r.steps) : ''}
+            ${r.output ? `<div style="padding:0 12px 8px 12px"><div style="font-size:11px;color:var(--text-muted);margin:8px 0 4px">完整输出</div><div class="run-output">${esc(r.output)}</div></div>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function toggleRun(headerEl) {
+      const item = headerEl.closest('.run-item');
+      const idx = item.dataset.runIdx;
+      const body = document.getElementById('run-body-' + idx);
+      const toggle = document.getElementById('run-toggle-' + idx);
+      const isOpen = body.classList.contains('open');
+      body.classList.toggle('open');
+      toggle.classList.toggle('open');
+    }
+
+    function calcDuration(start, end) {
+      try {
+        const ms = new Date(end) - new Date(start);
+        if (ms < 1000) return ms + 'ms';
+        const s = Math.floor(ms / 1000);
+        if (s < 60) return s + 's';
+        const m = Math.floor(s / 60);
+        return m + 'm ' + (s % 60) + 's';
+      } catch { return ''; }
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return '';
+      try { return iso.replace('T', ' ').slice(0, 19); } catch { return iso; }
+    }
+
+    // ── Create/Edit Modal ──
+
+    const taskTypeSelect = document.getElementById('f-task-type');
+    const schedTypeSelect = document.getElementById('f-schedule-type');
+
+    function updateTaskTypeFields() {
+      const v = taskTypeSelect.value;
+      document.getElementById('fields-script').style.display = v === 'script' ? '' : 'none';
+      document.getElementById('fields-agent').style.display = v === 'agent' ? '' : 'none';
+    }
+    taskTypeSelect.addEventListener('change', updateTaskTypeFields);
+
+    function updateScheduleHint() {
+      const v = schedTypeSelect.value;
+      const label = document.getElementById('f-schedule-label');
+      const input = document.getElementById('f-schedule');
+      const hint = document.getElementById('f-schedule-hint');
+      if (v === 'once') {
+        label.textContent = '执行时间'; input.placeholder = '2026-04-01T09:00:00';
+        hint.textContent = 'ISO 时间格式，如 2026-04-01T09:00:00';
+      } else if (v === 'cron') {
+        label.textContent = 'Cron 表达式'; input.placeholder = '0 9 * * *';
+        hint.textContent = '分 时 日 月 周，如 "0 9 * * 1" = 每周一早 9 点';
+      } else {
+        label.textContent = '间隔秒数'; input.placeholder = '3600';
+        hint.textContent = '如 3600 = 每小时，86400 = 每天';
+      }
+    }
+    schedTypeSelect.addEventListener('change', updateScheduleHint);
+
+    function openCreateModal() {
+      editingId = null;
+      document.getElementById('modal-title').textContent = '创建任务';
+      document.getElementById('f-name').value = '';
+      document.getElementById('f-desc').value = '';
+      taskTypeSelect.value = 'script';
+      schedTypeSelect.value = 'once';
+      document.getElementById('f-schedule').value = '';
+      document.getElementById('f-script-path').value = '';
+      document.getElementById('f-script-args').value = '';
+      document.getElementById('f-agent-prompt').value = '';
+      document.getElementById('f-doc-paths').value = '';
+      document.querySelectorAll('.agent-cap').forEach(cb => cb.checked = false);
+      document.getElementById('f-read-dirs').value = '';
+      document.getElementById('f-write-dirs').value = '';
+      document.getElementById('read-dirs-tags').innerHTML = '';
+      document.getElementById('write-dirs-tags').innerHTML = '';
+      document.getElementById('f-enabled').checked = true;
+      updateTaskTypeFields(); updateScheduleHint();
+      document.getElementById('modal-overlay').classList.add('visible');
+    }
+
+    function openEditModal() {
+      if (!currentTask) return;
+      const t = currentTask;
+      editingId = t.id;
+      document.getElementById('modal-title').textContent = '编辑任务';
+      document.getElementById('f-name').value = t.name || '';
+      document.getElementById('f-desc').value = t.description || '';
+      taskTypeSelect.value = t.task_type || 'script';
+      schedTypeSelect.value = t.schedule_type || 'once';
+      document.getElementById('f-schedule').value = t.schedule || '';
+      const cfg = t.task_config || {};
+      document.getElementById('f-script-path').value = cfg.script_path || '';
+      document.getElementById('f-script-args').value = (cfg.script_args || []).join(',');
+      document.getElementById('f-agent-prompt').value = cfg.prompt || '';
+      const docPaths = cfg.doc_path;
+      document.getElementById('f-doc-paths').value = Array.isArray(docPaths) ? docPaths.join(',') : (docPaths || '');
+      document.querySelectorAll('.agent-cap').forEach(cb => cb.checked = (cfg.capabilities || []).includes(cb.value));
+      const cfgPerms = cfg.permissions || {};
+      document.getElementById('f-read-dirs').value = (cfgPerms.read_dirs || []).join(',');
+      document.getElementById('f-write-dirs').value = (cfgPerms.write_dirs || []).join(',');
+      _renderDirTags('read-dirs-tags', 'f-read-dirs', cfgPerms.read_dirs || []);
+      _renderDirTags('write-dirs-tags', 'f-write-dirs', cfgPerms.write_dirs || []);
+      document.getElementById('f-enabled').checked = t.enabled !== false;
+      updateTaskTypeFields(); updateScheduleHint();
+      document.getElementById('modal-overlay').classList.add('visible');
+    }
+
+    function closeModal() { document.getElementById('modal-overlay').classList.remove('visible'); }
+
+    async function saveModal() {
+      const name = document.getElementById('f-name').value.trim();
+      if (!name) { toast('请填写任务名称', 'error'); return; }
+      const taskType = taskTypeSelect.value;
+      const scheduleType = schedTypeSelect.value;
+      const schedule = document.getElementById('f-schedule').value.trim();
+      if (!schedule) { toast('请填写调度值', 'error'); return; }
+
+      let taskConfig = {};
+      if (taskType === 'script') {
+        const sp = document.getElementById('f-script-path').value.trim();
+        if (!sp) { toast('请填写脚本路径', 'error'); return; }
+        taskConfig = {
+          script_path: sp,
+          script_args: document.getElementById('f-script-args').value.split(',').map(s => s.trim()).filter(Boolean),
+        };
+      } else {
+        const prompt = document.getElementById('f-agent-prompt').value.trim();
+        const docPaths = document.getElementById('f-doc-paths').value.split(',').map(s => s.trim()).filter(Boolean);
+        const caps = [...document.querySelectorAll('.agent-cap:checked')].map(cb => cb.value);
+        taskConfig = { prompt, doc_path: docPaths, capabilities: caps };
+      }
+
+      const readDirsRaw = document.getElementById('f-read-dirs').value.trim();
+      const writeDirsRaw = document.getElementById('f-write-dirs').value.trim();
+      const perms = {};
+      if (readDirsRaw) perms.read_dirs = readDirsRaw.split(',').map(s => s.trim()).filter(Boolean);
+      if (writeDirsRaw) perms.write_dirs = writeDirsRaw.split(',').map(s => s.trim()).filter(Boolean);
+      if (Object.keys(perms).length) taskConfig.permissions = perms;
+
+      const body = {
+        name,
+        description: document.getElementById('f-desc').value.trim(),
+        task_type: taskType,
+        schedule_type: scheduleType,
+        schedule,
+        task_config: taskConfig,
+        enabled: document.getElementById('f-enabled').checked,
+      };
+
+      try {
+        if (editingId) {
+          const path = currentTask?._scope === 'service' && currentTask?.service_id
+            ? `/scheduler/services/${currentTask.service_id}/${editingId}` : `/scheduler/${editingId}`;
+          await api('PUT', path, body); toast('任务已更新');
+        } else {
+          const created = await api('POST', '/scheduler', body); toast('任务已创建'); editingId = created.id;
+        }
+        closeModal();
+        if (activeTab === 'service') await loadServiceTasks(); else await loadTasks();
+        if (editingId && activeTab === 'admin') selectTask(editingId);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    function _taskApiPath(t) {
+      if (t?._scope === 'service' && t.service_id) return `/scheduler/services/${t.service_id}/${t.id}`;
+      return `/scheduler/${t?.id}`;
+    }
+
+    async function deleteTask() {
+      if (!currentTask || !confirm(`确定删除「${currentTask.name}」？`)) return;
+      try {
+        await api('DELETE', _taskApiPath(currentTask));
+        toast('已删除'); currentTask = null;
+        document.getElementById('detail-view').style.display = 'none';
+        document.getElementById('detail-empty').style.display = '';
+        if (activeTab === 'service') await loadServiceTasks(); else await loadTasks();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function runNow() {
+      if (!currentTask) return;
+      try {
+        await api('POST', `${_taskApiPath(currentTask)}/run-now`);
+        toast('任务已触发，稍后可在运行记录中查看结果');
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function refreshRuns() {
+      if (!currentTask) return;
+      try {
+        const path = _taskApiPath(currentTask);
+        const fresh = await api('GET', path);
+        fresh._scope = currentTask._scope;
+        currentTask = fresh;
+        renderRuns(currentTask.runs || []);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ── Events ──
+
+    document.getElementById('btn-create-task').addEventListener('click', openCreateModal);
+    document.getElementById('btn-edit-task').addEventListener('click', openEditModal);
+    document.getElementById('btn-delete-task').addEventListener('click', deleteTask);
+    document.getElementById('btn-run-now').addEventListener('click', runNow);
+    document.getElementById('btn-refresh-runs').addEventListener('click', refreshRuns);
+    document.getElementById('btn-close-modal').addEventListener('click', closeModal);
+    document.getElementById('btn-modal-cancel').addEventListener('click', closeModal);
+    document.getElementById('btn-modal-save').addEventListener('click', saveModal);
+    document.getElementById('modal-overlay').addEventListener('click', (e) => { if (e.target.id === 'modal-overlay') closeModal(); });
+
+    loadTasks();
+    loadServiceTasks();
+  </script>
+</body>
+</html>

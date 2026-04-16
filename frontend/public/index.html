@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JellyfishBot</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <!-- Markdown 渲染 -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- 代码高亮 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"></script>
+</head>
+<body>
+  <!-- ========== 登录/注册页面 ========== -->
+  <div id="auth-view" class="auth-view">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <div class="logo-icon">A</div>
+        <h1>JellyfishBot</h1>
+        <p class="auth-subtitle">智能文档助手</p>
+      </div>
+
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-tab="login">登录</button>
+        <button class="auth-tab" data-tab="register">注册</button>
+      </div>
+
+      <form id="login-form" class="auth-form">
+        <div class="form-group">
+          <label>用户名</label>
+          <input type="text" id="login-username" placeholder="输入用户名" required autocomplete="username" />
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <input type="password" id="login-password" placeholder="输入密码" required autocomplete="current-password" />
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">登录</button>
+      </form>
+
+      <form id="register-form" class="auth-form" style="display: none;">
+        <div class="form-group">
+          <label>注册码</label>
+          <input type="text" id="reg-key" placeholder="输入注册码 (如 DA-XXXXXXXX-XXXXXXXX)" required autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label>用户名</label>
+          <input type="text" id="reg-username" placeholder="至少 2 个字符" required autocomplete="username" />
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <input type="password" id="reg-password" placeholder="至少 4 个字符" required autocomplete="new-password" />
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">注册</button>
+      </form>
+
+      <div id="auth-error" class="auth-error" style="display: none;"></div>
+    </div>
+  </div>
+
+  <!-- ========== 主应用界面 ========== -->
+  <div id="app-view" class="app-view" style="display: none;">
+    <!-- 左侧栏：对话列表 -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="user-info">
+          <div class="user-avatar" id="user-avatar">U</div>
+          <span id="username-display">用户</span>
+        </div>
+        <div class="sidebar-header-actions">
+          <button class="btn btn-icon" id="btn-settings" title="System Prompt 设置">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+          <button class="btn btn-icon" id="btn-logout" title="退出登录">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+              <polyline points="16 17 21 12 16 7"/>
+              <line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <button class="btn btn-new-chat" id="btn-new-chat">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        新对话
+      </button>
+
+      <button class="btn btn-voice-agent" id="btn-voice-agent">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+        Voice Agent Mode
+      </button>
+
+      <button class="btn btn-humanchat" id="btn-humanchat">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+          <line x1="12" y1="18" x2="12" y2="18"/>
+        </svg>
+        HumanChat Mode
+      </button>
+
+      <a href="/admin-services.html" class="btn btn-new-chat" style="text-decoration:none;background:var(--bg-tertiary);border:1px solid var(--border)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
+          <path d="M16 3l-4 4-4-4"/>
+        </svg>
+        Service 管理
+      </a>
+
+      <a href="/scheduler.html" class="btn btn-new-chat" style="text-decoration:none;background:var(--bg-tertiary);border:1px solid var(--border)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+        </svg>
+        定时任务
+      </a>
+
+      <button class="btn btn-new-chat" id="btn-admin-wechat" style="background:var(--bg-tertiary);border:1px solid var(--border)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+        </svg>
+        微信接入
+      </button>
+
+      <div class="conversation-list" id="conversation-list">
+        <!-- 动态填充 -->
+      </div>
+    </aside>
+
+    <!-- 中间区域：聊天 -->
+    <main class="chat-area">
+      <div class="chat-header">
+        <div class="chat-header-left">
+          <h2 id="chat-title">选择或创建一个对话</h2>
+          <div class="model-selector" id="model-selector">
+            <select id="model-select" title="选择模型">
+              <option value="">加载中...</option>
+            </select>
+          </div>
+        </div>
+        <div class="chat-header-right">
+          <div class="capability-toggles" id="capability-toggles">
+            <label class="cap-toggle" title="联网搜索 (Web Search + Fetch)">
+              <input type="checkbox" id="cap-web" value="web" checked />
+              <span class="cap-icon">🌐</span>
+            </label>
+            <label class="cap-toggle" title="AI 图片生成 (gpt-image-1)">
+              <input type="checkbox" id="cap-image" value="image" />
+              <span class="cap-icon">🎨</span>
+            </label>
+            <label class="cap-toggle" title="AI 语音生成 (TTS)">
+              <input type="checkbox" id="cap-speech" value="speech" />
+              <span class="cap-icon">🔊</span>
+            </label>
+            <label class="cap-toggle" title="AI 视频生成 (Sora 2)">
+              <input type="checkbox" id="cap-video" value="video" />
+              <span class="cap-icon">🎬</span>
+            </label>
+          </div>
+          <button class="btn btn-icon btn-plan-mode" id="btn-plan-mode" title="Plan Mode：先规划再执行">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
+              <rect x="9" y="3" width="6" height="4" rx="1"/>
+              <path d="M9 12l2 2 4-4"/>
+            </svg>
+          </button>
+          <button class="btn btn-icon" id="btn-batch-run" title="批量运行">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+              <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+            </svg>
+          </button>
+          <button class="btn btn-icon btn-user-profile" id="btn-user-profile" title="用户画像设置">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+              <circle cx="12" cy="7" r="4"/>
+            </svg>
+          </button>
+          <button class="btn btn-icon" id="btn-subagents" title="Subagent 管理">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="8" r="4"/><path d="M20 21v-2a4 4 0 0 0-3-3.87"/>
+              <circle cx="4" cy="17" r="2"/><circle cx="20" cy="17" r="2"/>
+              <path d="M4 19v2"/><path d="M20 19v2"/>
+            </svg>
+          </button>
+          <button class="btn btn-icon btn-toggle-files" id="btn-toggle-files" title="切换文件面板">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="chat-messages" id="chat-messages">
+        <div class="empty-state" id="empty-state">
+          <div class="empty-icon">💬</div>
+          <p>开始一段新对话</p>
+          <p class="voice-hint-text">按住 <kbd>Tab</kbd> 说话，松开自动发送</p>
+          <div class="suggestion-chips">
+            <button class="suggestion-chip" data-msg="你能做什么？介绍一下你的能力">💡 能力介绍</button>
+            <button class="suggestion-chip" data-msg="帮我列出当前目录下的文件">📂 查看文件</button>
+            <button class="suggestion-chip" data-msg="帮我写一个 Python 脚本并运行">🐍 运行脚本</button>
+            <button class="suggestion-chip" data-msg="帮我分析一下这份文档的内容">📄 分析文档</button>
+          </div>
+        </div>
+      </div>
+
+      <button class="scroll-to-bottom-btn" id="btn-scroll-bottom" title="回到底部">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </button>
+
+      <div class="chat-input-area" id="chat-input-area" style="display: none;">
+        <div class="chat-img-preview" id="chat-img-preview" style="display:none"></div>
+        <div class="chat-input-wrapper">
+          <textarea
+            id="chat-input"
+            placeholder="输入消息... (Enter 发送, Shift+Enter 换行, 可粘贴图片)"
+            rows="1"
+          ></textarea>
+          <input type="file" id="chat-img-input" accept="image/*" multiple style="display:none" />
+          <button class="btn btn-icon" id="btn-attach-img" title="上传图片" style="align-self:flex-end;padding:6px">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+            </svg>
+          </button>
+          <button class="btn btn-voice" id="btn-voice" title="按住说话，松开发送">
+            <svg class="voice-icon-mic" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+            <svg class="voice-icon-stop" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="display:none">
+              <rect x="6" y="6" width="12" height="12" rx="2"/>
+            </svg>
+          </button>
+          <button class="btn btn-send" id="btn-send" title="发送">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
+        <div class="voice-status" id="voice-status" style="display:none">
+          <div class="voice-pulse"></div>
+          <span class="voice-timer" id="voice-timer">0:00</span>
+          <span class="voice-hint">松开发送</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- HumanChat 手机模拟器面板 -->
+    <aside class="hc-panel" id="hc-panel" style="display:none">
+      <div class="hc-phone-frame">
+        <div class="hc-phone-notch"></div>
+        <div class="hc-phone-screen">
+          <div class="hc-phone-header">
+            <div class="hc-header-left">
+              <button class="hc-back-btn" id="hc-close">&lsaquo;</button>
+            </div>
+            <div class="hc-header-center">
+              <div class="hc-avatar">A</div>
+              <span class="hc-contact-name">AI Assistant</span>
+            </div>
+            <div class="hc-header-right"></div>
+          </div>
+          <div class="hc-messages" id="hc-messages">
+            <div class="hc-time-label">今天</div>
+          </div>
+          <div class="hc-input-area">
+            <input type="text" id="hc-input" placeholder="iMessage" />
+            <button class="hc-send-btn" id="hc-send">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 拖拽调整边界 -->
+    <div class="fp-resize-handle" id="fp-resize-handle"></div>
+    <!-- 右侧栏：文件面板 -->
+    <aside class="file-panel hidden" id="file-panel">
+      <!-- 视图 1：目录浏览 -->
+      <div class="fp-browser" id="fp-browser">
+        <div class="file-panel-header">
+          <h3>文件管理</h3>
+          <div class="file-panel-actions">
+            <button class="btn btn-icon btn-sm" id="btn-new-file" title="新建文件">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+              </svg>
+            </button>
+            <button class="btn btn-icon btn-sm" id="btn-new-folder" title="新建文件夹">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
+              </svg>
+            </button>
+            <button class="btn btn-icon btn-sm" id="btn-refresh-files" title="刷新">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="upload-dropzone" id="upload-dropzone">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span>拖拽文件到此处上传</span>
+        </div>
+        <div class="file-breadcrumb" id="file-breadcrumb">
+          <span class="breadcrumb-item" data-path="/">/</span>
+        </div>
+        <div class="file-list" id="file-list"></div>
+      </div>
+
+      <!-- 视图 2：文件查看 / 编辑 / Diff -->
+      <div class="fp-viewer" id="fp-viewer" style="display:none">
+        <div class="fp-viewer-toolbar">
+          <button class="btn btn-sm btn-ghost fp-back-btn" id="fp-back-btn" title="关闭查看器">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <span class="fp-viewer-filename" id="fp-viewer-filename">file.txt</span>
+          <div class="fp-viewer-actions" id="fp-viewer-actions">
+            <span class="editor-shortcut-hint">Ctrl+S</span>
+            <button class="btn btn-sm btn-primary" id="fp-btn-save">💾 保存</button>
+          </div>
+        </div>
+        <div class="fp-viewer-body" id="fp-viewer-body">
+          <!-- 编辑模式: textarea -->
+          <textarea class="fp-editor" id="fp-editor" spellcheck="false" style="display:none" placeholder="文件内容为空"></textarea>
+          <!-- Diff 模式: 渲染的 diff -->
+          <div class="fp-diff" id="fp-diff" style="display:none"></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 模态框 -->
+  <div class="modal-overlay" id="modal-overlay" style="display: none;">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h3 id="modal-title">提示</h3>
+        <button class="btn btn-icon btn-sm" id="btn-close-modal">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <!-- ========== Voice Agent Overlay ========== -->
+  <div id="voice-agent-overlay" class="va-overlay">
+    <!-- Top bar -->
+    <div class="va-top-bar">
+      <button class="va-close-btn" title="Exit Voice Mode">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+      <h2 class="va-title">Voice Agent</h2>
+      <span class="va-badge">Realtime</span>
+      <div class="va-voice-row">
+        <label>Voice:</label>
+        <select class="va-voice-select">
+          <option value="alloy">Alloy</option>
+          <option value="echo">Echo</option>
+          <option value="nova">Nova</option>
+          <option value="shimmer">Shimmer</option>
+          <option value="onyx">Onyx</option>
+          <option value="fable">Fable</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Main body: mic left, chat right -->
+    <div class="va-body">
+      <!-- Left: mic area -->
+      <div class="va-mic-area">
+        <div class="va-waveform">
+          <span></span><span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <button class="va-mic-btn" title="Start / Stop">
+          <svg class="va-mic-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="23"/>
+            <line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+        </button>
+        <div class="va-status-text">Tap mic or press Space to start</div>
+        <div class="va-hint">Space = toggle mic &middot; ESC = exit</div>
+      </div>
+
+      <!-- Right: chat history -->
+      <div class="va-chat">
+        <div class="va-chat-messages"></div>
+      </div>
+    </div>
+
+    <!-- Hidden elements for JS compat (transcript accessors) -->
+    <div style="display:none">
+      <div class="va-user-text"></div>
+      <div class="va-assistant-text"></div>
+    </div>
+  </div>
+
+  <!-- ========== Admin WeChat Panel ========== -->
+  <div id="admin-wechat-overlay" class="awc-overlay" style="display:none">
+    <div class="awc-panel">
+      <div class="awc-header">
+        <h3>微信接入</h3>
+        <button class="btn-icon" id="btn-close-awc">&times;</button>
+      </div>
+      <div class="awc-body" id="awc-body">
+        <div id="awc-disconnected">
+          <p style="color:var(--text-secondary);margin-bottom:16px">扫码后即可通过微信与 Agent 对话，支持文字、语音和图片。</p>
+          <button class="btn btn-primary btn-full" id="btn-awc-gen-qr">生成微信二维码</button>
+        </div>
+        <div id="awc-qr-area" style="display:none;text-align:center">
+          <p style="margin-bottom:12px;color:var(--text-secondary)">请使用微信扫描下方二维码</p>
+          <img id="awc-qr-img" style="width:220px;height:220px;border-radius:8px;border:1px solid var(--border)" />
+          <p id="awc-qr-status" style="margin-top:10px;font-size:13px;color:var(--text-muted)">等待扫码...</p>
+        </div>
+        <div id="awc-connected" style="display:none">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+            <span style="width:10px;height:10px;border-radius:50%;background:#07c160;display:inline-block"></span>
+            <span style="font-weight:500">微信已连接</span>
+            <span id="awc-connected-at" style="font-size:12px;color:var(--text-muted);margin-left:auto"></span>
+          </div>
+          <button class="btn btn-sm btn-danger" id="btn-awc-disconnect" style="margin-bottom:16px">断开连接</button>
+          <div style="border-top:1px solid var(--border);padding-top:12px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <span style="font-size:13px;font-weight:500;color:var(--text-secondary)">对话记录</span>
+              <button class="btn btn-sm" id="btn-awc-refresh-msgs">刷新</button>
+            </div>
+            <div id="awc-messages" style="max-height:400px;overflow-y:auto"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast 通知 -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- JS -->
+  <script src="/js/api.js"></script>
+  <script src="/js/auth.js"></script>
+  <script src="/js/chat.js"></script>
+  <script src="/js/files.js"></script>
+  <script src="/js/voice-agent.js?v=12"></script>
+  <script src="/js/human-chat.js"></script>
+  <script src="/js/admin-wechat.js?v=2"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

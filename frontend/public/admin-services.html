@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Service 管理 — JellyfishBot</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #0f0f13;
+      --bg-secondary: #16161d;
+      --bg-tertiary: #1c1c27;
+      --bg-hover: #22222f;
+      --bg-active: #2a2a3a;
+      --bg-card: #1a1a25;
+      --border: #2a2a3a;
+      --border-light: #33334a;
+      --text-primary: #e4e4ed;
+      --text-secondary: #9494a8;
+      --text-muted: #66668a;
+      --accent: #6c5ce7;
+      --accent-hover: #7c6ef7;
+      --accent-light: rgba(108,92,231,0.15);
+      --success: #00b894;
+      --danger: #e74c3c;
+      --warning: #f39c12;
+      --radius-sm: 6px;
+      --radius: 10px;
+      --radius-lg: 14px;
+      --transition: 0.2s ease;
+      --font: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: var(--font); font-size: 14px; background: var(--bg-primary); color: var(--text-primary); line-height: 1.5; }
+    * { scrollbar-width: thin; scrollbar-color: #44445a transparent; }
+    ::-webkit-scrollbar { width: 7px; height: 7px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #44445a; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #55557a; }
+    .layout { display: flex; height: 100vh; }
+
+    .sidebar { width: 300px; min-width: 260px; background: var(--bg-secondary); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+    .sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .sidebar-header h2 { font-size: 16px; font-weight: 600; }
+    .sidebar-header a { color: var(--text-secondary); text-decoration: none; font-size: 13px; }
+    .sidebar-header a:hover { color: var(--text-primary); }
+
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 16px; border: none; border-radius: var(--radius-sm); font-family: var(--font); font-size: 13px; font-weight: 500; cursor: pointer; transition: all var(--transition); color: var(--text-primary); background: var(--bg-tertiary); }
+    .btn:hover { background: var(--bg-hover); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:hover { opacity: 0.85; }
+    .btn-ghost { background: transparent; }
+    .btn-ghost:hover { background: var(--bg-hover); }
+    .btn-sm { padding: 5px 10px; font-size: 12px; }
+    .btn-full { width: 100%; }
+    .btn-icon { padding: 6px; background: transparent; border-radius: var(--radius-sm); border: none; color: var(--text-primary); cursor: pointer; }
+    .btn-icon:hover { background: var(--bg-hover); }
+    .btn-create { margin: 12px 16px; padding: 10px; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); font-size: 13px; font-weight: 600; cursor: pointer; }
+    .btn-create:hover { background: var(--accent-hover); }
+
+    .svc-list { flex: 1; overflow-y: auto; padding: 8px; }
+    .svc-item { padding: 12px; border-radius: var(--radius); cursor: pointer; transition: background var(--transition); margin-bottom: 4px; }
+    .svc-item:hover { background: var(--bg-hover); }
+    .svc-item.active { background: var(--bg-active); }
+    .svc-item-name { font-weight: 500; font-size: 14px; margin-bottom: 2px; }
+    .svc-item-desc { font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .svc-item-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; display: flex; gap: 8px; align-items: center; }
+    .svc-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+    .svc-badge.published { background: rgba(0,184,148,0.2); color: var(--success); }
+    .svc-badge.draft { background: rgba(243,156,18,0.2); color: var(--warning); }
+
+    .main-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .panel-header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .panel-header h2 { font-size: 18px; font-weight: 600; }
+    .panel-header-actions { display: flex; gap: 8px; }
+    .panel-body { flex: 1; overflow-y: auto; padding: 24px; }
+    .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); }
+    .empty-state .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.4; }
+
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; font-weight: 500; }
+    .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 8px 12px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-family: var(--font); font-size: 13px; outline: none; }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--accent); }
+    .form-group textarea { resize: vertical; min-height: 60px; }
+    .form-group .hint { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+    .checkbox-group { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .checkbox-group label { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--bg-tertiary); border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; }
+    .checkbox-group label:hover { background: var(--bg-hover); }
+    .checkbox-group input[type="checkbox"] { accent-color: var(--accent); }
+
+    .section { margin-bottom: 24px; }
+    .section-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    .key-table { width: 100%; border-collapse: collapse; }
+    .key-table th, .key-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+    .key-table th { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
+    .key-prefix { font-family: var(--font-mono); font-size: 12px; color: var(--accent); }
+    .copy-box { display: flex; align-items: center; gap: 8px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 10px; margin-top: 4px; }
+    .copy-box code { flex: 1; font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); word-break: break-all; }
+    .copy-box button { flex-shrink: 0; }
+
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: none; align-items: center; justify-content: center; }
+    .modal-overlay.visible { display: flex; }
+    .modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-lg); width: 560px; max-width: 92vw; max-height: 88vh; overflow-y: auto; }
+    .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .modal-header h3 { font-size: 16px; }
+    .modal-body { padding: 20px; }
+    .modal-footer { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+
+    .toast-container { position: fixed; top: 16px; right: 16px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+    .toast { padding: 10px 16px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; animation: fadeIn 0.3s; min-width: 200px; }
+    .toast.success { border-left: 3px solid var(--success); }
+    .toast.error { border-left: 3px solid var(--danger); }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+
+    /* File picker modal */
+    .fp-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 150; display: none; align-items: center; justify-content: center; }
+    .fp-modal-overlay.visible { display: flex; }
+    .fp-modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-lg); width: 640px; max-width: 94vw; height: 520px; max-height: 85vh; display: flex; flex-direction: column; }
+    .fp-modal-header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .fp-modal-header h3 { font-size: 15px; margin: 0; color: var(--text-primary); }
+    .fp-modal-header .fp-count { font-size: 12px; color: var(--text-secondary); margin-left: 12px; }
+    .fp-modal-body { flex: 1; overflow-y: auto; padding: 0; }
+    .fp-modal-selection { padding: 10px 20px; border-top: 1px solid var(--border); flex-shrink: 0; max-height: 100px; overflow-y: auto; }
+    .fp-modal-footer { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+
+    .fp-row { display: flex; align-items: center; gap: 8px; padding: 6px 20px; font-size: 13px; cursor: pointer; color: var(--text-primary); transition: background 0.1s; }
+    .fp-row:hover { background: var(--bg-hover); }
+    .fp-row input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; width: 15px; height: 15px; cursor: pointer; }
+    .fp-toggle { width: 18px; min-width: 18px; text-align: center; color: var(--text-muted); font-size: 12px; flex-shrink: 0; cursor: pointer; user-select: none; }
+    .fp-toggle:hover { color: var(--text-primary); }
+    .fp-icon { flex-shrink: 0; font-size: 15px; line-height: 1; }
+    .fp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-size: 13px; }
+    .fp-size { flex-shrink: 0; font-size: 11px; color: var(--text-muted); min-width: 60px; text-align: right; }
+    .fp-children { padding-left: 22px; }
+    .fp-loading { padding: 12px 20px; font-size: 13px; color: var(--text-muted); }
+    .fp-empty { padding: 40px 20px; text-align: center; color: var(--text-muted); font-size: 13px; }
+
+    .selected-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .selected-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: var(--accent-light); border-radius: 4px; font-size: 12px; color: var(--accent); }
+    .selected-tag .remove { cursor: pointer; font-weight: 700; }
+    .selected-tag .remove:hover { color: var(--danger); }
+
+    /* Inline test chat */
+    .test-panel { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 20px; }
+    .test-chat { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; height: 420px; background: var(--bg-primary); }
+    .test-msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .test-msg { max-width: 85%; padding: 10px 14px; border-radius: 10px; font-size: 13px; line-height: 1.6; word-wrap: break-word; }
+    .test-msg.user { align-self: flex-end; background: var(--bg-tertiary); border: 1px solid var(--border); }
+    .test-msg.bot { align-self: flex-start; }
+    .test-msg.bot pre { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 8px; overflow-x: auto; margin: 6px 0; }
+    .test-msg.bot code { font-family: var(--font-mono); font-size: 12px; }
+    .test-msg.system { align-self: center; color: var(--text-muted); font-size: 12px; }
+    .test-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--bg-secondary); }
+    .test-input input { flex: 1; padding: 8px 12px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 13px; outline: none; }
+    .test-input input:focus { border-color: var(--accent); }
+
+    /* WeChat channel styles */
+    .wc-config { margin-top: 12px; }
+    .wc-config-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 13px; }
+    .wc-config-row label { color: var(--text-secondary); min-width: 80px; flex-shrink: 0; }
+    .wc-config-row input[type="datetime-local"], .wc-config-row input[type="number"] {
+      padding: 6px 10px; background: var(--bg-primary); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--text-primary); font-size: 13px; outline: none;
+    }
+    .wc-config-row input:focus { border-color: var(--accent); }
+    .wc-qr-box { margin: 14px 0; padding: 16px; background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius); display: flex; align-items: center; gap: 16px; }
+    .wc-qr-box .qr-icon { font-size: 36px; flex-shrink: 0; }
+    .wc-qr-box .qr-info { flex: 1; }
+    .wc-qr-box .qr-info p { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+    .wc-sessions-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    .wc-sessions-table th, .wc-sessions-table td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .wc-sessions-table th { color: var(--text-secondary); font-weight: 500; }
+    .wc-sessions-empty { padding: 16px 0; text-align: center; color: var(--text-muted); font-size: 13px; }
+    .wc-badge-on { background: rgba(7,193,96,0.18); color: #07c160; }
+    .wc-badge-off { background: rgba(239,68,68,0.15); color: var(--danger); }
+    .wc-badge-expired { background: rgba(243,156,18,0.18); color: var(--warning); }
+    .wc-chat-list { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .wc-chat-bubble { max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.55; word-break: break-word; white-space: pre-wrap; }
+    .wc-chat-bubble.user { align-self: flex-end; background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
+    .wc-chat-bubble.assistant { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+    .wc-chat-bubble .chat-time { font-size: 10px; opacity: 0.6; margin-top: 4px; display: block; }
+    .wc-chat-bubble.user .chat-time { text-align: right; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <h2>Service 管理</h2>
+        <a href="/">← 返回主页</a>
+      </div>
+      <button class="btn-create" id="btn-create-svc">+ 创建 Service</button>
+      <div class="svc-list" id="svc-list">
+        <div class="empty-state" style="height:auto;padding:40px 0"><div class="icon">📦</div><p>暂无 Service</p></div>
+      </div>
+    </div>
+    <div class="main-panel">
+      <div id="detail-empty" class="empty-state"><div class="icon">⚙️</div><p>选择或创建一个 Service</p></div>
+      <div id="detail-view" style="display:none">
+        <div class="panel-header">
+          <h2 id="detail-title">Service</h2>
+          <div class="panel-header-actions">
+            <button class="btn btn-sm" id="btn-edit-svc">编辑</button>
+            <button class="btn btn-sm btn-danger" id="btn-delete-svc">删除</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="section"><div class="section-title">基本信息</div><div id="detail-info"></div></div>
+          <div class="section"><div class="section-title">API 端点</div><div id="detail-endpoints"></div></div>
+          <div class="section">
+            <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">API Keys <button class="btn btn-sm btn-primary" id="btn-create-key">+ 创建 Key</button></div>
+            <div id="detail-keys"></div>
+          </div>
+          <div class="section"><div class="section-title">独立聊天页面</div><div id="detail-chatpage"></div></div>
+
+          <!-- WeChat Channel Section -->
+          <div class="section" id="wechat-section">
+            <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+              微信渠道
+              <div style="display:flex;gap:8px;align-items:center">
+                <span id="wc-status-badge" class="svc-badge draft" style="font-size:11px">未启用</span>
+                <button class="btn btn-sm" id="btn-wc-toggle">启用</button>
+              </div>
+            </div>
+            <div id="wc-content">
+              <p style="color:var(--text-muted);font-size:13px">启用后，用户可通过微信扫码与此 Service 对话。</p>
+            </div>
+          </div>
+
+          <div class="section test-panel" id="test-section" style="display:none">
+            <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+              在线测试
+              <button class="btn btn-sm btn-primary" id="btn-new-test">新建测试对话</button>
+            </div>
+            <div class="test-chat" id="test-chat">
+              <div class="test-msgs" id="test-msgs">
+                <div class="test-msg system">点击「新建测试对话」开始</div>
+              </div>
+              <div class="test-input">
+                <input type="text" id="test-input" placeholder="输入消息..." disabled />
+                <button class="btn btn-sm btn-primary" id="test-send" disabled>发送</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create/Edit Modal -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal">
+      <div class="modal-header"><h3 id="modal-title">创建 Service</h3><button class="btn-icon" id="btn-close-modal">&times;</button></div>
+      <div class="modal-body">
+        <div class="form-group"><label>名称 *</label><input type="text" id="f-name" placeholder="我的智能客服" /></div>
+        <div class="form-group"><label>描述</label><textarea id="f-desc" placeholder="简要描述 Service 的用途"></textarea></div>
+        <div class="form-group"><label>模型 *</label><select id="f-model"><option value="">加载中...</option></select></div>
+        <div class="form-group">
+          <label>System Prompt 版本</label>
+          <select id="f-prompt-version"><option value="">使用当前 System Prompt</option></select>
+          <div class="hint">选择一个已保存的 Prompt 版本；留空则使用当前活跃版本</div>
+        </div>
+        <div class="form-group">
+          <label>允许的文档 <button class="btn btn-sm" type="button" id="btn-pick-docs" style="margin-left:8px">浏览选择</button></label>
+          <input type="text" id="f-docs" value="*" placeholder="* = 全部，或逗号分隔如 reports/,data.csv" />
+          <div class="selected-tags" id="docs-tags"></div>
+        </div>
+        <div class="form-group">
+          <label>允许的脚本 <button class="btn btn-sm" type="button" id="btn-pick-scripts" style="margin-left:8px">浏览选择</button></label>
+          <input type="text" id="f-scripts" placeholder="留空=不允许；逗号分隔如 hello.py,analysis/" />
+          <div class="selected-tags" id="scripts-tags"></div>
+        </div>
+        <div class="form-group">
+          <label>能力</label>
+          <div class="checkbox-group">
+            <label><input type="checkbox" value="web" /> 🌐 联网搜索</label>
+            <label><input type="checkbox" value="scheduler" /> ⏰ 定时任务</label>
+            <label><input type="checkbox" value="image" /> 🎨 图片生成</label>
+            <label><input type="checkbox" value="speech" /> 🔊 语音生成</label>
+            <label><input type="checkbox" value="video" /> 🎬 视频生成</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>状态</label>
+          <div class="checkbox-group"><label><input type="checkbox" id="f-published" checked /> 立即发布</label></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="btn-modal-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-modal-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Key Modal -->
+  <div class="modal-overlay" id="key-modal-overlay">
+    <div class="modal" style="width:440px">
+      <div class="modal-header"><h3>新 API Key</h3><button class="btn-icon" id="btn-close-key-modal">&times;</button></div>
+      <div class="modal-body">
+        <div id="key-create-form">
+          <div class="form-group"><label>Key 名称</label><input type="text" id="f-key-name" value="default" /></div>
+          <button class="btn btn-primary btn-full" id="btn-gen-key">生成</button>
+        </div>
+        <div id="key-result" style="display:none">
+          <p style="color:var(--warning);font-size:13px;margin-bottom:12px">请立即复制，关闭后将无法再次查看完整值。</p>
+          <div class="copy-box">
+            <code id="key-result-value"></code>
+            <button class="btn btn-sm" onclick="copyText(document.getElementById('key-result-value').textContent)">复制</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WeChat Chat History Modal -->
+  <div class="modal-overlay" id="wc-chat-modal" style="display:none">
+    <div class="modal" style="width:600px;max-height:80vh;display:flex;flex-direction:column">
+      <div class="modal-header">
+        <h3 id="wc-chat-title">微信对话记录</h3>
+        <button class="btn-icon" onclick="document.getElementById('wc-chat-modal').style.display='none'">&times;</button>
+      </div>
+      <div class="modal-body" style="flex:1;overflow-y:auto;padding:0" id="wc-chat-body">
+        <div style="padding:16px;color:var(--text-muted)">加载中...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- File Picker Modal -->
+  <div class="fp-modal-overlay" id="fp-modal-overlay">
+    <div class="fp-modal">
+      <div class="fp-modal-header">
+        <div style="display:flex;align-items:center"><h3 id="fp-modal-title">选择文件</h3><span class="fp-count" id="fp-count"></span></div>
+        <button class="btn-icon" id="btn-close-fp">&times;</button>
+      </div>
+      <div class="fp-modal-body" id="fp-tree"></div>
+      <div class="fp-modal-selection" id="fp-selection"></div>
+      <div class="fp-modal-footer">
+        <button class="btn btn-ghost" id="btn-fp-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-fp-confirm">确认选择</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <script>
+    const BASE = '/api';
+    const token = localStorage.getItem('token') || '';
+    if (!token) window.location.href = '/';
+
+    let services = [], currentSvc = null, models = [], promptVersions = [], editingId = null;
+    let testApiKey = null, testConvId = null, testStreaming = false;
+
+    async function api(method, path, body, customHeaders) {
+      const headers = { 'Authorization': `Bearer ${token}`, ...(customHeaders || {}) };
+      const opts = { method, headers };
+      if (body) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+      let res;
+      try { res = await fetch(`${BASE}${path}`, opts); }
+      catch (e) { throw new Error(`网络错误: ${e.message}`); }
+      if (res.status === 401 && !customHeaders) { localStorage.removeItem('token'); window.location.href = '/'; }
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || `HTTP ${res.status}`); }
+      return res.json();
+    }
+
+    function toast(msg, type = 'success') {
+      const el = document.createElement('div'); el.className = `toast ${type}`; el.textContent = msg;
+      document.getElementById('toast-container').appendChild(el); setTimeout(() => el.remove(), 3500);
+    }
+    function copyText(t) { navigator.clipboard.writeText(t).then(() => toast('已复制')); }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    // ── Data loading ──
+
+    async function loadModels() {
+      try { const d = await api('GET', '/models'); models = d.models || []; populateModelSelect(); } catch (e) { console.error(e); }
+    }
+    async function loadPromptVersions() {
+      try { promptVersions = await api('GET', '/system-prompt/versions'); populateVersionSelect(); } catch (e) { console.error(e); }
+    }
+    function populateModelSelect() {
+      document.getElementById('f-model').innerHTML = models.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
+    }
+    function populateVersionSelect() {
+      const sel = document.getElementById('f-prompt-version');
+      sel.innerHTML = '<option value="">使用当前 System Prompt</option>' + promptVersions.map(v => `<option value="${v.id}">${v.label} (${v.timestamp.slice(0,10)})</option>`).join('');
+    }
+    async function loadServices() {
+      try { services = await api('GET', '/services'); renderSvcList(); } catch (e) { toast(e.message, 'error'); }
+    }
+
+    function renderSvcList() {
+      const list = document.getElementById('svc-list');
+      if (!services.length) { list.innerHTML = '<div class="empty-state" style="height:auto;padding:40px 0"><div class="icon">📦</div><p>暂无 Service</p></div>'; return; }
+      list.innerHTML = services.map(s => `
+        <div class="svc-item ${currentSvc?.id === s.id ? 'active' : ''}" data-id="${s.id}">
+          <div class="svc-item-name">${esc(s.name)}</div>
+          <div class="svc-item-desc">${esc(s.description || '无描述')}</div>
+          <div class="svc-item-meta"><span class="svc-badge ${s.published ? 'published' : 'draft'}">${s.published ? '已发布' : '草稿'}</span><span>${(s.model||'').split(':').pop()}</span></div>
+        </div>`).join('');
+      list.querySelectorAll('.svc-item').forEach(el => el.addEventListener('click', () => selectService(el.dataset.id)));
+    }
+
+    function selectService(id) {
+      currentSvc = services.find(s => s.id === id);
+      if (!currentSvc) return;
+      testApiKey = null; testConvId = null;
+      renderSvcList(); renderDetail();
+    }
+
+    function renderDetail() {
+      const s = currentSvc; if (!s) return;
+      document.getElementById('detail-empty').style.display = 'none';
+      document.getElementById('detail-view').style.display = '';
+      document.getElementById('detail-title').textContent = s.name;
+      const bo = window.location.origin.replace(':3000', ':8000');
+      document.getElementById('detail-info').innerHTML = `<table style="width:100%">
+        <tr><td style="color:var(--text-secondary);width:120px">ID</td><td><code style="font-family:var(--font-mono);font-size:12px">${s.id}</code></td></tr>
+        <tr><td style="color:var(--text-secondary)">描述</td><td>${esc(s.description||'—')}</td></tr>
+        <tr><td style="color:var(--text-secondary)">模型</td><td>${esc(s.model)}</td></tr>
+        <tr><td style="color:var(--text-secondary)">能力</td><td>${(s.capabilities||[]).map(c=>({'web':'🌐 联网','scheduler':'⏰ 定时','image':'🎨 图片','speech':'🔊 语音','video':'🎬 视频'}[c]||c)).join(', ')||'无'}</td></tr>
+        <tr><td style="color:var(--text-secondary)">允许文档</td><td>${(s.allowed_docs||[]).join(', ')}</td></tr>
+        <tr><td style="color:var(--text-secondary)">允许脚本</td><td>${(s.allowed_scripts||[]).join(', ')||'无'}</td></tr>
+        <tr><td style="color:var(--text-secondary)">状态</td><td><span class="svc-badge ${s.published?'published':'draft'}">${s.published?'已发布':'草稿'}</span></td></tr>
+        <tr><td style="color:var(--text-secondary)">创建时间</td><td>${s.created_at||''}</td></tr></table>`;
+      document.getElementById('detail-endpoints').innerHTML = `
+        <div style="margin-bottom:8px;font-size:13px;color:var(--text-secondary)">OpenAI 兼容接口</div>
+        <div class="copy-box"><code>${bo}/api/v1/chat/completions</code><button class="btn btn-sm" onclick="copyText('${bo}/api/v1/chat/completions')">复制</button></div>
+        <div style="margin:12px 0 8px;font-size:13px;color:var(--text-secondary)">自定义 SSE 接口</div>
+        <div class="copy-box"><code>${bo}/api/v1/chat</code><button class="btn btn-sm" onclick="copyText('${bo}/api/v1/chat')">复制</button></div>`;
+      const cpUrl = `${bo}/s/${s.id}`;
+      document.getElementById('detail-chatpage').innerHTML = `<div class="copy-box"><code>${cpUrl}</code><button class="btn btn-sm" onclick="copyText('${cpUrl}')">复制</button><a href="${cpUrl}" target="_blank" class="btn btn-sm" style="text-decoration:none">打开</a></div>`;
+      loadKeys();
+      renderWeChatSection();
+    }
+
+    // ── Keys ──
+
+    async function loadKeys() {
+      if (!currentSvc) return;
+      try {
+        const keys = await api('GET', `/services/${currentSvc.id}/keys`);
+        const c = document.getElementById('detail-keys');
+        if (!keys.length) { c.innerHTML = '<p style="color:var(--text-muted);font-size:13px">暂无 API Key</p>'; document.getElementById('test-section').style.display = 'none'; return; }
+        c.innerHTML = `<table class="key-table"><thead><tr><th>名称</th><th>前缀</th><th>创建时间</th><th>最近使用</th><th></th></tr></thead><tbody>${keys.map(k => `<tr><td>${esc(k.name)}</td><td><span class="key-prefix">${k.prefix}...</span></td><td style="font-size:12px">${(k.created_at||'').slice(0,16)}</td><td style="font-size:12px">${k.last_used_at?k.last_used_at.slice(0,16):'从未'}</td><td><button class="btn btn-sm btn-danger" onclick="deleteKey('${k.id}')">删除</button></td></tr>`).join('')}</tbody></table>`;
+        document.getElementById('test-section').style.display = '';
+        resetTestChat();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    async function deleteKey(keyId) {
+      if (!confirm('确定删除此 Key？')) return;
+      try { await api('DELETE', `/services/${currentSvc.id}/keys/${keyId}`); toast('Key 已删除'); loadKeys(); } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ── File Picker ──
+
+    async function loadDir(basePath) {
+      try { return await api('GET', `/files?path=${encodeURIComponent(basePath)}`); }
+      catch (e) { return []; }
+    }
+
+    // ── File Picker Modal ──
+    const fpOverlay = document.getElementById('fp-modal-overlay');
+    const fpTree = document.getElementById('fp-tree');
+    const fpSelection = document.getElementById('fp-selection');
+    const fpCount = document.getElementById('fp-count');
+    let fpSelected = new Set();
+    let fpInputId = '';
+    let fpTagsId = '';
+    let fpRootPath = '';
+
+    function formatSize(bytes) {
+      if (bytes == null) return '';
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / 1048576).toFixed(1) + ' MB';
+    }
+
+    function fpUpdateCount() {
+      fpCount.textContent = fpSelected.size ? `已选 ${fpSelected.size} 项` : '';
+    }
+
+    function fpRenderSelection() {
+      if (!fpSelected.size) { fpSelection.innerHTML = '<span style="font-size:12px;color:var(--text-muted)">未选择任何项目</span>'; return; }
+      fpSelection.innerHTML = [...fpSelected].map(p =>
+        `<span class="selected-tag">${esc(p)} <span class="remove" data-path="${esc(p)}">&times;</span></span>`
+      ).join('');
+      fpSelection.querySelectorAll('.remove').forEach(el => {
+        el.addEventListener('click', () => {
+          fpSelected.delete(el.dataset.path);
+          fpUpdateCount(); fpRenderSelection();
+          const cb = fpTree.querySelector(`input[data-path="${CSS.escape(el.dataset.path)}"]`);
+          if (cb) cb.checked = false;
+        });
+      });
+    }
+
+    async function fpRenderTree(parentEl, dirPath) {
+      if (!parentEl) { fpTree.innerHTML = '<div class="fp-loading">加载中...</div>'; parentEl = fpTree; dirPath = fpRootPath; }
+      const items = await loadDir(dirPath);
+      if (parentEl === fpTree) parentEl.innerHTML = '';
+      if (!items.length) { parentEl.innerHTML = '<div class="fp-empty">此目录为空</div>'; return; }
+
+      for (const item of items) {
+        const relPath = item.path.replace(/^\//, '');
+        const row = document.createElement('div');
+        row.className = 'fp-row';
+
+        const toggleSpan = document.createElement('span');
+        toggleSpan.className = 'fp-toggle';
+        toggleSpan.textContent = item.is_dir ? '\u25B6' : '';
+        row.appendChild(toggleSpan);
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = fpSelected.has(relPath);
+        cb.dataset.path = relPath;
+        row.appendChild(cb);
+
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'fp-icon';
+        iconSpan.textContent = item.is_dir ? '\uD83D\uDCC1' : '\uD83D\uDCC4';
+        row.appendChild(iconSpan);
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'fp-name';
+        nameSpan.textContent = item.name;
+        row.appendChild(nameSpan);
+
+        if (!item.is_dir && item.size != null) {
+          const sizeSpan = document.createElement('span');
+          sizeSpan.className = 'fp-size';
+          sizeSpan.textContent = formatSize(item.size);
+          row.appendChild(sizeSpan);
+        }
+
+        parentEl.appendChild(row);
+
+        cb.addEventListener('change', () => {
+          if (cb.checked) fpSelected.add(relPath); else fpSelected.delete(relPath);
+          fpUpdateCount(); fpRenderSelection();
+        });
+
+        if (item.is_dir) {
+          const childContainer = document.createElement('div');
+          childContainer.className = 'fp-children';
+          childContainer.style.display = 'none';
+          parentEl.appendChild(childContainer);
+          let loaded = false;
+          const expand = async () => {
+            if (!loaded) { await fpRenderTree(childContainer, item.path); loaded = true; }
+            const vis = childContainer.style.display === 'none';
+            childContainer.style.display = vis ? '' : 'none';
+            toggleSpan.textContent = vis ? '\u25BC' : '\u25B6';
+          };
+          toggleSpan.addEventListener('click', (e) => { e.stopPropagation(); expand(); });
+          row.addEventListener('dblclick', expand);
+        }
+      }
+    }
+
+    function openFilePicker(title, rootPath, inputId, tagsId) {
+      fpInputId = inputId; fpTagsId = tagsId; fpRootPath = rootPath;
+      document.getElementById('fp-modal-title').textContent = title;
+      fpSelected.clear();
+      const input = document.getElementById(inputId);
+      const vals = input.value.split(',').map(s => s.trim()).filter(s => s && s !== '*');
+      vals.forEach(v => fpSelected.add(v));
+      fpUpdateCount(); fpRenderSelection();
+      fpOverlay.classList.add('visible');
+      fpRenderTree();
+    }
+
+    function closeFilePicker() { fpOverlay.classList.remove('visible'); }
+
+    function confirmFilePicker() {
+      const input = document.getElementById(fpInputId);
+      const tagsEl = document.getElementById(fpTagsId);
+      const arr = [...fpSelected];
+      if (arr.length === 0 && fpInputId === 'f-docs') { input.value = '*'; }
+      else {
+        const manual = input.value.split(',').map(s => s.trim()).filter(s => s && s !== '*' && !fpSelected.has(s));
+        input.value = [...arr, ...manual].join(',');
+      }
+      tagsEl.innerHTML = arr.map(p =>
+        `<span class="selected-tag">${esc(p)} <span class="remove" data-path="${esc(p)}">&times;</span></span>`
+      ).join('');
+      tagsEl.querySelectorAll('.remove').forEach(el => {
+        el.addEventListener('click', () => {
+          const v = el.dataset.path;
+          el.parentElement.remove();
+          const cur = input.value.split(',').map(s => s.trim()).filter(s => s !== v);
+          input.value = cur.join(',') || (fpInputId === 'f-docs' ? '*' : '');
+        });
+      });
+      closeFilePicker();
+    }
+
+    document.getElementById('btn-pick-docs').addEventListener('click', () => openFilePicker('选择允许的文档', '/docs', 'f-docs', 'docs-tags'));
+    document.getElementById('btn-pick-scripts').addEventListener('click', () => openFilePicker('选择允许的脚本', '/scripts', 'f-scripts', 'scripts-tags'));
+    document.getElementById('btn-close-fp').addEventListener('click', closeFilePicker);
+    document.getElementById('btn-fp-cancel').addEventListener('click', closeFilePicker);
+    document.getElementById('btn-fp-confirm').addEventListener('click', confirmFilePicker);
+    fpOverlay.addEventListener('click', (e) => { if (e.target === fpOverlay) closeFilePicker(); });
+
+    // ── Create/Edit Modal ──
+
+    function openCreateModal() {
+      editingId = null;
+      document.getElementById('modal-title').textContent = '创建 Service';
+      document.getElementById('f-name').value = '';
+      document.getElementById('f-desc').value = '';
+      if (models.length) document.getElementById('f-model').value = models[0].id;
+      document.getElementById('f-prompt-version').value = '';
+      document.getElementById('f-docs').value = '*';
+      document.getElementById('f-scripts').value = '';
+      document.querySelectorAll('.checkbox-group input[type=checkbox][value]').forEach(cb => cb.checked = false);
+      document.getElementById('f-published').checked = true;
+      document.getElementById('docs-tags').innerHTML = '';
+      document.getElementById('scripts-tags').innerHTML = '';
+      document.getElementById('modal-overlay').classList.add('visible');
+    }
+    function openEditModal() {
+      if (!currentSvc) return;
+      editingId = currentSvc.id;
+      document.getElementById('modal-title').textContent = '编辑 Service';
+      document.getElementById('f-name').value = currentSvc.name || '';
+      document.getElementById('f-desc').value = currentSvc.description || '';
+      document.getElementById('f-model').value = currentSvc.model || '';
+      document.getElementById('f-prompt-version').value = currentSvc.system_prompt_version_id || '';
+      document.getElementById('f-docs').value = (currentSvc.allowed_docs || []).join(',');
+      document.getElementById('f-scripts').value = (currentSvc.allowed_scripts || []).join(',');
+      (currentSvc.capabilities || []);
+      document.querySelectorAll('.checkbox-group input[type=checkbox][value]').forEach(cb => cb.checked = (currentSvc.capabilities||[]).includes(cb.value));
+      document.getElementById('f-published').checked = currentSvc.published !== false;
+      document.getElementById('docs-tags').innerHTML = '';
+      document.getElementById('scripts-tags').innerHTML = '';
+      document.getElementById('modal-overlay').classList.add('visible');
+    }
+    function closeModal() { document.getElementById('modal-overlay').classList.remove('visible'); }
+
+    const _UI_CAPABILITIES = new Set(['web', 'scheduler', 'image', 'speech', 'video']);
+    function _mergeCapabilities(svc) {
+      const checked = [...document.querySelectorAll('.checkbox-group input[type=checkbox][value]:checked')].map(cb => cb.value);
+      const hidden = (svc?.capabilities || []).filter(c => !_UI_CAPABILITIES.has(c));
+      return [...checked, ...hidden];
+    }
+
+    async function saveModal() {
+      const name = document.getElementById('f-name').value.trim();
+      const model = document.getElementById('f-model').value;
+      if (!name) { toast('请填写名称', 'error'); return; }
+      if (!model) { toast('请选择模型', 'error'); return; }
+      const body = {
+        name, description: document.getElementById('f-desc').value.trim(), model,
+        system_prompt_version_id: document.getElementById('f-prompt-version').value || null,
+        allowed_docs: document.getElementById('f-docs').value.split(',').map(s => s.trim()).filter(Boolean),
+        allowed_scripts: document.getElementById('f-scripts').value.split(',').map(s => s.trim()).filter(Boolean),
+        capabilities: _mergeCapabilities(editingId ? currentSvc : null),
+        published: document.getElementById('f-published').checked,
+      };
+      try {
+        if (editingId) { await api('PUT', `/services/${editingId}`, body); toast('Service 已更新'); }
+        else { const created = await api('POST', '/services', body); toast('Service 已创建'); editingId = created.id; }
+        closeModal(); await loadServices(); if (editingId) selectService(editingId);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function deleteSvc() {
+      if (!currentSvc || !confirm(`确定删除「${currentSvc.name}」？不可恢复。`)) return;
+      try { await api('DELETE', `/services/${currentSvc.id}`); toast('已删除'); currentSvc = null; document.getElementById('detail-view').style.display = 'none'; document.getElementById('detail-empty').style.display = ''; await loadServices(); }
+      catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ── Key Modal ──
+
+    function openKeyModal() {
+      document.getElementById('key-create-form').style.display = ''; document.getElementById('key-result').style.display = 'none';
+      document.getElementById('f-key-name').value = 'default'; document.getElementById('key-modal-overlay').classList.add('visible');
+    }
+    function closeKeyModal() { document.getElementById('key-modal-overlay').classList.remove('visible'); loadKeys(); }
+    async function generateKey() {
+      const name = document.getElementById('f-key-name').value.trim() || 'default';
+      try { const r = await api('POST', `/services/${currentSvc.id}/keys`, { name }); document.getElementById('key-create-form').style.display = 'none'; document.getElementById('key-result').style.display = ''; document.getElementById('key-result-value').textContent = r.key; }
+      catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ── Inline Test Chat ──
+
+    function resetTestChat() {
+      testApiKey = null; testConvId = null;
+      document.getElementById('test-msgs').innerHTML = '<div class="test-msg system">点击「新建测试对话」开始</div>';
+      document.getElementById('test-input').disabled = true;
+      document.getElementById('test-send').disabled = true;
+    }
+
+    async function startNewTest() {
+      if (!currentSvc) return;
+      try {
+        const keyResult = await api('POST', `/services/${currentSvc.id}/keys`, { name: '_test_' + Date.now() });
+        testApiKey = keyResult.key;
+        const bo = window.location.origin.replace(':3000', ':8000');
+        const convRes = await fetch(`${bo}/api/v1/conversations`, {
+          method: 'POST', headers: { 'Authorization': `Bearer ${testApiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'Admin Test' }),
+        });
+        if (!convRes.ok) throw new Error('创建对话失败');
+        const conv = await convRes.json();
+        testConvId = conv.id;
+        document.getElementById('test-msgs').innerHTML = '<div class="test-msg system">测试对话已创建，可以开始聊天</div>';
+        document.getElementById('test-input').disabled = false;
+        document.getElementById('test-send').disabled = false;
+        document.getElementById('test-input').focus();
+        toast('测试对话已就绪');
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function sendTestMsg() {
+      if (!testApiKey || !testConvId || testStreaming) return;
+      const input = document.getElementById('test-input');
+      const msg = input.value.trim();
+      if (!msg) return;
+      input.value = '';
+      testStreaming = true;
+      document.getElementById('test-send').disabled = true;
+
+      const msgsEl = document.getElementById('test-msgs');
+      const userEl = document.createElement('div'); userEl.className = 'test-msg user'; userEl.textContent = msg; msgsEl.appendChild(userEl);
+      const botEl = document.createElement('div'); botEl.className = 'test-msg bot'; botEl.innerHTML = '<span style="color:var(--text-muted)">思考中...</span>'; msgsEl.appendChild(botEl);
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+
+      try {
+        const bo = window.location.origin.replace(':3000', ':8000');
+        const res = await fetch(`${bo}/api/v1/chat`, {
+          method: 'POST', headers: { 'Authorization': `Bearer ${testApiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation_id: testConvId, message: msg }),
+        });
+        if (!res.ok) { botEl.innerHTML = `<span style="color:var(--danger)">Error ${res.status}</span>`; return; }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '', fullText = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n'); buffer = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const raw = line.slice(6).trim();
+            if (!raw || raw === '[DONE]') continue;
+            let evt; try { evt = JSON.parse(raw); } catch { continue; }
+            if (evt.type === 'token') { fullText += evt.content; botEl.innerHTML = DOMPurify.sanitize(marked.parse(fullText)); botEl.querySelectorAll('pre code').forEach(b => hljs.highlightElement(b)); }
+            else if (evt.type === 'error') { fullText += `\n\n**Error:** ${evt.content}`; botEl.innerHTML = DOMPurify.sanitize(marked.parse(fullText)); }
+          }
+          msgsEl.scrollTop = msgsEl.scrollHeight;
+        }
+        if (!fullText) botEl.innerHTML = '<span style="color:var(--text-muted)">（无回复）</span>';
+      } catch (e) { botEl.innerHTML = `<span style="color:var(--danger)">${e.message}</span>`; }
+      finally { testStreaming = false; document.getElementById('test-send').disabled = false; input.focus(); }
+    }
+
+    document.getElementById('btn-new-test').addEventListener('click', startNewTest);
+    document.getElementById('test-send').addEventListener('click', sendTestMsg);
+    document.getElementById('test-input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTestMsg(); } });
+
+    // ── WeChat Channel ──
+
+    let wcSessions = [];
+
+    function renderWeChatSection() {
+      if (!currentSvc) return;
+      const wc = currentSvc.wechat_channel || {};
+      const enabled = wc.enabled === true;
+      const badge = document.getElementById('wc-status-badge');
+      const toggleBtn = document.getElementById('btn-wc-toggle');
+      const content = document.getElementById('wc-content');
+
+      // check expiry
+      let expired = false;
+      if (enabled && wc.expires_at) {
+        try { expired = new Date(wc.expires_at) < new Date(); } catch {}
+      }
+
+      if (!enabled) {
+        badge.className = 'svc-badge draft'; badge.textContent = '未启用';
+        toggleBtn.textContent = '启用'; toggleBtn.className = 'btn btn-sm btn-primary';
+        content.innerHTML = '<p style="color:var(--text-muted);font-size:13px">启用后，用户可通过微信扫码与此 Service 对话。每个扫码用户将获得独立的对话。</p>';
+      } else if (expired) {
+        badge.className = 'svc-badge wc-badge-expired'; badge.textContent = '已过期';
+        toggleBtn.textContent = '禁用'; toggleBtn.className = 'btn btn-sm btn-danger';
+        renderWeChatEnabled(wc, content, true);
+      } else {
+        badge.className = 'svc-badge wc-badge-on'; badge.textContent = '已启用';
+        toggleBtn.textContent = '禁用'; toggleBtn.className = 'btn btn-sm btn-danger';
+        renderWeChatEnabled(wc, content, false);
+      }
+
+      loadWeChatSessions();
+    }
+
+    function renderWeChatEnabled(wc, container, expired) {
+      const bo = window.location.origin;
+      const scanUrl = `${bo}/wc/${currentSvc.id}`;
+      const expiresVal = wc.expires_at ? wc.expires_at.slice(0, 16) : '';
+      const maxSess = wc.max_sessions || 100;
+
+      container.innerHTML = `
+        <div class="wc-config">
+          <div class="wc-config-row">
+            <label>过期时间</label>
+            <input type="datetime-local" id="wc-expires" value="${esc(expiresVal)}" />
+            <button class="btn btn-sm" id="btn-wc-save-config">保存</button>
+            ${expiresVal ? '<button class="btn btn-sm btn-ghost" id="btn-wc-clear-expires">清除</button>' : ''}
+          </div>
+          <div class="wc-config-row">
+            <label>最大会话</label>
+            <input type="number" id="wc-max-sessions" value="${maxSess}" min="1" max="1000" style="width:80px" />
+          </div>
+        </div>
+
+        <div class="wc-qr-box">
+          <div class="qr-icon">💬</div>
+          <div class="qr-info">
+            <p>扫码入口（分享给用户）</p>
+            <div class="copy-box" style="margin:0">
+              <code>${esc(scanUrl)}</code>
+              <button class="btn btn-sm" onclick="copyText('${scanUrl}')">复制</button>
+              <a href="${scanUrl}" target="_blank" class="btn btn-sm" style="text-decoration:none">打开</a>
+            </div>
+          </div>
+        </div>
+        ${expired ? '<p style="color:var(--warning);font-size:13px;margin-top:8px">⚠ 微信渠道已过期，用户无法扫码。请更新过期时间或清除限制。</p>' : ''}
+        <div style="margin-top:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <span style="font-size:13px;font-weight:500">活跃会话</span>
+            <button class="btn btn-sm btn-ghost" id="btn-wc-refresh-sessions" style="font-size:11px">刷新</button>
+          </div>
+          <div id="wc-sessions-list"></div>
+        </div>`;
+
+      document.getElementById('btn-wc-save-config')?.addEventListener('click', saveWeChatConfig);
+      document.getElementById('btn-wc-clear-expires')?.addEventListener('click', () => {
+        document.getElementById('wc-expires').value = '';
+        saveWeChatConfig();
+      });
+      document.getElementById('btn-wc-refresh-sessions')?.addEventListener('click', loadWeChatSessions);
+    }
+
+    async function toggleWeChat() {
+      if (!currentSvc) return;
+      const wc = currentSvc.wechat_channel || {};
+      const newEnabled = !wc.enabled;
+
+      try {
+        await api('PUT', `/wc/${currentSvc.id}/config`, {
+          enabled: newEnabled,
+          expires_at: wc.expires_at || null,
+          max_sessions: wc.max_sessions || 100,
+        });
+
+        // refresh service data
+        const updated = await api('GET', `/services/${currentSvc.id}`);
+        currentSvc = updated;
+        const idx = services.findIndex(s => s.id === currentSvc.id);
+        if (idx >= 0) services[idx] = updated;
+        renderSvcList();
+        renderWeChatSection();
+        toast(newEnabled ? '微信渠道已启用' : '微信渠道已禁用');
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function saveWeChatConfig() {
+      if (!currentSvc) return;
+      const expiresInput = document.getElementById('wc-expires');
+      const maxInput = document.getElementById('wc-max-sessions');
+      const expiresVal = expiresInput?.value || '';
+      const maxVal = parseInt(maxInput?.value || '100', 10);
+
+      try {
+        await api('PUT', `/wc/${currentSvc.id}/config`, {
+          enabled: true,
+          expires_at: expiresVal ? new Date(expiresVal).toISOString() : null,
+          max_sessions: maxVal,
+        });
+
+        const updated = await api('GET', `/services/${currentSvc.id}`);
+        currentSvc = updated;
+        const idx = services.findIndex(s => s.id === currentSvc.id);
+        if (idx >= 0) services[idx] = updated;
+        renderWeChatSection();
+        toast('配置已保存');
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function loadWeChatSessions() {
+      if (!currentSvc) return;
+      const wc = currentSvc.wechat_channel || {};
+      if (!wc.enabled) return;
+
+      const container = document.getElementById('wc-sessions-list');
+      if (!container) return;
+
+      try {
+        wcSessions = await api('GET', `/wc/${currentSvc.id}/sessions`);
+        if (!wcSessions.length) {
+          container.innerHTML = '<div class="wc-sessions-empty">暂无活跃会话</div>';
+          return;
+        }
+        container.innerHTML = `
+          <table class="wc-sessions-table">
+            <thead><tr><th>会话 ID</th><th>对话 ID</th><th>创建时间</th><th>最近活跃</th><th></th></tr></thead>
+            <tbody>${wcSessions.map(s => `
+              <tr>
+                <td><code style="font-family:var(--font-mono);font-size:11px">${esc(s.session_id)}</code></td>
+                <td><code style="font-family:var(--font-mono);font-size:11px">${esc(s.conversation_id)}</code></td>
+                <td>${(s.created_at || '').slice(0, 16)}</td>
+                <td>${(s.last_active_at || '').slice(0, 16)}</td>
+                <td style="white-space:nowrap">
+                  <button class="btn btn-sm" onclick="viewWcChat('${esc(s.session_id)}')">查看</button>
+                  <button class="btn btn-sm btn-danger" onclick="disconnectWcSession('${esc(s.session_id)}')">断开</button>
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+          <p style="font-size:11px;color:var(--text-muted);margin-top:6px">${wcSessions.length} 个活跃会话</p>`;
+      } catch (e) {
+        container.innerHTML = `<p style="color:var(--danger);font-size:13px">${esc(e.message)}</p>`;
+      }
+    }
+
+    async function viewWcChat(sessionId) {
+      if (!currentSvc) return;
+      const modal = document.getElementById('wc-chat-modal');
+      const body = document.getElementById('wc-chat-body');
+      const title = document.getElementById('wc-chat-title');
+      title.textContent = `对话记录 — ${sessionId}`;
+      body.innerHTML = '<div style="padding:16px;color:var(--text-muted)">加载中...</div>';
+      modal.style.display = '';
+      try {
+        const data = await api('GET', `/wc/${currentSvc.id}/sessions/${sessionId}/messages`);
+        const msgs = data.messages || [];
+        if (!msgs.length) {
+          body.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text-muted)">暂无消息</div>';
+          return;
+        }
+        body.innerHTML = '<div class="wc-chat-list">' + msgs.map(m => {
+          const cls = m.role === 'user' ? 'user' : 'assistant';
+          const time = (m.timestamp || '').slice(11, 19);
+          return `<div class="wc-chat-bubble ${cls}">${esc(m.content || '')}<span class="chat-time">${time}</span></div>`;
+        }).join('') + '</div>';
+        body.scrollTop = body.scrollHeight;
+      } catch (e) {
+        body.innerHTML = `<div style="padding:16px;color:var(--danger)">${esc(e.message)}</div>`;
+      }
+    }
+
+    async function disconnectWcSession(sessionId) {
+      if (!currentSvc || !confirm('确定断开此微信会话？用户将无法继续对话。')) return;
+      try {
+        await api('DELETE', `/wc/${currentSvc.id}/sessions/${sessionId}`);
+        toast('会话已断开');
+        loadWeChatSessions();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ── Wire events ──
+
+    document.getElementById('btn-create-svc').addEventListener('click', openCreateModal);
+    document.getElementById('btn-edit-svc').addEventListener('click', openEditModal);
+    document.getElementById('btn-delete-svc').addEventListener('click', deleteSvc);
+    document.getElementById('btn-close-modal').addEventListener('click', closeModal);
+    document.getElementById('btn-modal-cancel').addEventListener('click', closeModal);
+    document.getElementById('btn-modal-save').addEventListener('click', saveModal);
+    document.getElementById('btn-create-key').addEventListener('click', openKeyModal);
+    document.getElementById('btn-close-key-modal').addEventListener('click', closeKeyModal);
+    document.getElementById('btn-gen-key').addEventListener('click', generateKey);
+    document.getElementById('btn-wc-toggle').addEventListener('click', toggleWeChat);
+
+    (async () => { await Promise.all([loadModels(), loadPromptVersions(), loadServices()]); })();
+  </script>
+</body>
+</html>
