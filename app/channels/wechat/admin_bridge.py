@@ -428,15 +428,25 @@ async def _run_admin_agent_and_reply(
                 if tool_name == "send_message":
                     sent_via_tool = True
                     try:
+                        from app.channels.wechat.delivery import extract_media_tags
                         payload = json.loads(content)
                         text = payload.get("text", "")
                         media = payload.get("media")
 
-                        if media:
-                            await _send_media(user_id, client, to_user, ctx_token, media)
-                        if text:
-                            await client.send_text(to_user, text, ctx_token)
-                            log.info("Admin send_message: %s", text[:50])
+                        # Agent 经常把生成的图片/音频以 <<FILE:...>> 标签嵌在 text 里
+                        # （system prompt 引导的 web 端渲染格式），投递层主动解析转为媒体消息
+                        cleaned_text, extra_media = extract_media_tags(text)
+                        media_paths = ([media] if media else []) + extra_media
+
+                        for mp in media_paths:
+                            try:
+                                await _send_media(user_id, client, to_user, ctx_token, mp)
+                            except Exception:
+                                log.exception("Failed to send admin media %s", mp)
+
+                        if cleaned_text:
+                            await client.send_text(to_user, cleaned_text, ctx_token)
+                            log.info("Admin send_message: %s", cleaned_text[:50])
                     except Exception:
                         log.exception("Failed to send via iLink")
 
@@ -459,7 +469,8 @@ async def _run_admin_agent_and_reply(
                     val = intr.value if hasattr(intr, "value") else {}
                     if isinstance(val, dict) and "action_requests" in val:
                         for ar in val["action_requests"]:
-                            decisions.append({"decision": "approve"})
+                            # langchain HITL middleware expects {"type": "approve"} after upgrade
+                            decisions.append({"type": "approve"})
 
         if not decisions:
             break

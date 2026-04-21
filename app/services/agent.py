@@ -27,6 +27,15 @@ async def init_checkpointer():
     if _checkpointer is not None:
         return
     conn = await aiosqlite.connect(CHECKPOINT_DB)
+    # WAL 模式允许并发读（多路由/多 bridge 同时流式读取 checkpoint），
+    # 并减少写入阻塞读取的概率；对单机多客户端场景尤其有益。
+    try:
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA synchronous=NORMAL")
+        await conn.commit()
+    except Exception:
+        # PRAGMA 失败不应阻塞启动（极少数文件系统不支持 WAL，如部分网络盘）
+        pass
     _checkpointer = AsyncSqliteSaver(conn)
     await _checkpointer.setup()
 

@@ -3,8 +3,7 @@
   "productName": "JellyfishBot",
   "identifier": "com.jellyfishbot.launcher",
   "build": {
-    "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420"
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,

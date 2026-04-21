@@ -31,6 +31,7 @@ import zipfile
 from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -325,15 +326,21 @@ def stage_python(target: str, skip_pip: bool):
         req = STAGE_DIR / "requirements.txt"
         if not req.exists():
             req = PROJECT_ROOT / "requirements.txt"
+        # Drop -q so the user sees which package failed; abort on non-zero.
+        # A silent partial install ships incomplete site-packages (see the
+        # pycryptodome \\?\ incident — we wasted hours chasing a missing
+        # .pyd that turned out to be a path-prefix bug, but a real pip
+        # failure here would be even harder to diagnose post-install).
         result = subprocess.run(
             [str(python_exe), "-m", "pip", "install", "-r", str(req),
-             "--no-warn-script-location", "-q"],
+             "--no-warn-script-location"],
             cwd=str(STAGE_DIR),
         )
-        if result.returncode == 0:
-            print("   [ok] Python dependencies installed")
-        else:
-            print("   [warn] pip install had errors (non-fatal)")
+        if result.returncode != 0:
+            print(f"\n   [error] pip install failed (exit {result.returncode}) — aborting build")
+            print("   Check the output above for the failing package, then re-run build.py.")
+            sys.exit(result.returncode)
+        print("   [ok] Python dependencies installed")
 
 
 def _find_python_exe(python_dir: Path, target: str) -> Path | None:
@@ -384,23 +391,115 @@ def stage_node(target: str):
 
 # ── Tauri Build ───────────────────────────────────────────────────
 
+def _cleanup_stuck_dmg_mounts():
+    """macOS: detach any stuck dmg.* volumes from a previous failed build."""
+    if not IS_MACOS:
+        return
+    try:
+        out = subprocess.check_output(["mount"], text=True)
+    except Exception:
+        return
+    for line in out.splitlines():
+        if "/Volumes/dmg." in line or "/Volumes/JellyfishBot" in line:
+            dev = line.split()[0]
+            print(f"   [cleanup] force-detaching {dev}")
+            subprocess.run(["hdiutil", "detach", dev, "-force"],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+
+def _patch_bundle_dmg_script(target: str, native: str):
+    """Patch tauri-bundler's bundle_dmg.sh hdiutil_detach_retry to be more robust.
+
+    Modern macOS Sequoia returns exit 1 (not 16) for EBUSY, breaking the original
+    retry loop which only retries on exit 16. We rewrite it to retry on any non-zero
+    exit code with longer back-off and a final force-detach.
+    """
+    if not IS_MACOS:
+        return
+    bundle_root = TAURI_DIR / "src-tauri" / "target"
+    if target != native:
+        bundle_root = bundle_root / target
+    script = bundle_root / "release" / "bundle" / "dmg" / "bundle_dmg.sh"
+    if not script.exists():
+        return
+    text = script.read_text(encoding="utf-8")
+    marker = "# Patched by build.py: robust hdiutil_detach_retry"
+    if marker in text:
+        return
+    old = (
+        "function hdiutil_detach_retry() {\n"
+        "\t# Unmount\n"
+        "\tunmounting_attempts=0\n"
+        "\tuntil\n"
+        "\t\techo \"Unmounting disk image...\"\n"
+        "\t\t(( unmounting_attempts++ ))\n"
+        "\t\thdiutil detach \"$1\"\n"
+        "\t\texit_code=$?\n"
+        "\t\t(( exit_code ==  0 )) && break            # nothing goes wrong\n"
+        "\t\t(( exit_code != 16 )) && exit $exit_code  # exit with the original exit code\n"
+        "\t\t# The above statement returns 1 if test failed (exit_code == 16).\n"
+        "\t\t#   It can make the code in the {do... done} block to be executed\n"
+        "\tdo\n"
+        "\t\t(( unmounting_attempts == MAXIMUM_UNMOUNTING_ATTEMPTS )) && exit 16  # patience exhausted, exit with code EBUSY\n"
+        "\t\techo \"Wait a moment...\"\n"
+        "\t\tsleep $(( 1 * (2 ** unmounting_attempts) ))\n"
+        "\tdone\n"
+        "\tunset unmounting_attempts\n"
+        "}"
+    )
+    new = (
+        f"# {marker}\n"
+        "function hdiutil_detach_retry() {\n"
+        "\tunmounting_attempts=0\n"
+        "\tmax_attempts=8\n"
+        "\tuntil\n"
+        "\t\techo \"Unmounting disk image...\"\n"
+        "\t\t(( unmounting_attempts++ ))\n"
+        "\t\tsync\n"
+        "\t\thdiutil detach \"$1\"\n"
+        "\t\texit_code=$?\n"
+        "\t\t(( exit_code ==  0 )) && break\n"
+        "\tdo\n"
+        "\t\tif (( unmounting_attempts >= max_attempts )); then\n"
+        "\t\t\techo \"Force-detaching after ${unmounting_attempts} attempts...\"\n"
+        "\t\t\thdiutil detach \"$1\" -force\n"
+        "\t\t\tbreak\n"
+        "\t\tfi\n"
+        "\t\techo \"Wait a moment (attempt ${unmounting_attempts})...\"\n"
+        "\t\tsleep $(( 2 * unmounting_attempts ))\n"
+        "\tdone\n"
+        "\tunset unmounting_attempts\n"
+        "}"
+    )
+    if old in text:
+        script.write_text(text.replace(old, new), encoding="utf-8")
+        print(f"   [patch] hdiutil_detach_retry hardened in bundle_dmg.sh")
+
+
 def tauri_build(target: str):
-    """Run Tauri build."""
+    """Run Tauri build with one retry on macOS dmg failures."""
     print("\n[5/5] Tauri build...")
 
-    # Install Tauri CLI if not present
     subprocess.run(
         ["npm", "install"], cwd=TAURI_DIR, check=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=IS_WINDOWS,
     )
 
     cmd = ["npx", "tauri", "build"]
-    # Only add --target for cross-compilation; skip for native builds
     native = detect_target()
     if target != native:
         cmd += ["--target", target]
 
+    _cleanup_stuck_dmg_mounts()
     result = subprocess.run(cmd, cwd=TAURI_DIR, shell=IS_WINDOWS)
+
+    # On macOS, retry once with a hardened bundle_dmg.sh if the dmg step failed
+    if result.returncode != 0 and IS_MACOS:
+        print("\n[warn] Tauri build failed — patching bundle_dmg.sh and retrying...")
+        _cleanup_stuck_dmg_mounts()
+        _patch_bundle_dmg_script(target, native)
+        result = subprocess.run(cmd, cwd=TAURI_DIR, shell=IS_WINDOWS)
+
     if result.returncode != 0:
         print(f"\n[error] Tauri build failed (exit code {result.returncode})")
         print("   Staged resources:")

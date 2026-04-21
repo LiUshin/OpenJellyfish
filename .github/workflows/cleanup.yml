@@ -1,0 +1,83 @@
+name: Cleanup Storage
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'What to clean'
+        required: true
+        default: 'artifacts'
+        type: choice
+        options:
+          - artifacts
+          - caches
+          - both
+  schedule:
+    # 每周日 UTC 03:00 自动清一次旧的（保留最近 6 个 cache）
+    - cron: '0 3 * * 0'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    name: Cleanup artifacts and caches
+    steps:
+      - name: Delete all workflow artifacts
+        if: ${{ github.event_name == 'schedule' || inputs.target == 'artifacts' || inputs.target == 'both' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set +e
+          echo "=== Listing artifacts ==="
+          gh api "repos/$REPO/actions/artifacts?per_page=100" --paginate \
+            --jq '.artifacts[] | "\(.id) \(.name) \(.size_in_bytes)"' \
+            | tee /tmp/artifacts.txt
+          echo ""
+          echo "=== Deleting all ==="
+          while read -r id name size; do
+            [ -z "$id" ] && continue
+            echo "  deleting artifact id=$id name=$name size=${size}B"
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+          done < /tmp/artifacts.txt
+          echo "=== Done ==="
+
+      - name: Prune old caches (keep 6 most recent per key prefix)
+        if: ${{ github.event_name == 'schedule' || inputs.target == 'caches' || inputs.target == 'both' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set +e
+          for prefix in cargo-x86_64-pc-windows-msvc cargo-aarch64-apple-darwin cargo-x86_64-apple-darwin; do
+            echo "=== Pruning caches with key prefix: $prefix ==="
+            gh cache list --repo "$REPO" --key "$prefix" --limit 100 \
+              --json id,key,createdAt --sort created_at --order desc \
+              | jq -r '.[6:] | .[].id' \
+              | while read -r cid; do
+                  echo "  deleting cache id=$cid"
+                  gh cache delete "$cid" --repo "$REPO" || true
+                done
+          done
+          echo "=== Current usage ==="
+          gh cache list --repo "$REPO" --limit 50 || true
+
+      - name: Summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set +e
+          echo "## Cleanup summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Remaining artifacts" >> $GITHUB_STEP_SUMMARY
+          gh api "repos/$REPO/actions/artifacts" --jq '.total_count' >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "n/a" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Remaining caches" >> $GITHUB_STEP_SUMMARY
+          gh cache list --repo "$REPO" --limit 100 >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "n/a" >> $GITHUB_STEP_SUMMARY

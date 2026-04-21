@@ -695,7 +695,7 @@ export default function ChatPage() {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入消息... (Enter 发送, Shift+Enter 换行, Tab 语音)"
+              placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
               autoSize={{ minRows: 1, maxRows: 6 }}
               variant="borderless"
               disabled={isStreaming}

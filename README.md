@@ -342,8 +342,9 @@ jellyfishbot/
 │   │       └── modals/                  # 各类模态框
 │   ├── public/                    # 静态资源
 │   │   ├── media_resources/       # 品牌素材 (logo 等)
-│   │   ├── service-chat.html      # Consumer 独立聊天页
 │   │   └── wechat-scan.html       # 微信扫码中间页
+│   ├── service-chat.html          # Consumer 独立聊天页 (vite multi-entry)
+│   ├── src/service-chat/          # Consumer 聊天页 React 入口 (复用 admin 组件)
 │   └── dist/                      # Vite 构建产物 (gitignore)
 │
 ├── config/                        # 应用配置

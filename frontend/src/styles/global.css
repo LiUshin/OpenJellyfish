@@ -292,3 +292,75 @@ kbd {
 .ant-modal-header {
   background: var(--jf-bg-raised) !important;
 }
+
+/* ============================================================ */
+/* File preview – Markdown viewer styling                        */
+/* ============================================================ */
+
+.jf-file-md-preview h1,
+.jf-file-md-preview h2,
+.jf-file-md-preview h3,
+.jf-file-md-preview h4 {
+  color: var(--jf-text);
+  margin: 1em 0 0.5em;
+  font-weight: 600;
+}
+.jf-file-md-preview h1 { font-size: 1.6em; border-bottom: 1px solid var(--jf-border); padding-bottom: 0.3em; }
+.jf-file-md-preview h2 { font-size: 1.35em; border-bottom: 1px solid var(--jf-border); padding-bottom: 0.25em; }
+.jf-file-md-preview h3 { font-size: 1.15em; }
+.jf-file-md-preview h4 { font-size: 1.0em; color: var(--jf-text-muted); }
+
+.jf-file-md-preview p { margin: 0.6em 0; }
+.jf-file-md-preview a { color: var(--jf-primary); text-decoration: none; }
+.jf-file-md-preview a:hover { text-decoration: underline; }
+
+.jf-file-md-preview ul,
+.jf-file-md-preview ol { margin: 0.5em 0; padding-left: 1.6em; }
+
+.jf-file-md-preview pre {
+  background: var(--jf-bg-code);
+  border-radius: var(--jf-radius-md);
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 12px 0;
+  border: 1px solid var(--jf-border);
+}
+.jf-file-md-preview code {
+  font-family: var(--jf-font-code);
+  font-size: 13px;
+}
+.jf-file-md-preview :not(pre) > code {
+  background: rgba(var(--jf-border-rgb), 0.9);
+  padding: 2px 7px;
+  border-radius: var(--jf-radius-sm);
+  font-size: 0.9em;
+  border: 1px solid var(--jf-border);
+}
+
+.jf-file-md-preview blockquote {
+  border-left: 3px solid var(--jf-secondary);
+  margin: 0.6em 0;
+  padding: 6px 14px;
+  color: var(--jf-text-muted);
+  background: rgba(var(--jf-secondary-rgb), 0.06);
+  border-radius: 0 var(--jf-radius-sm) var(--jf-radius-sm) 0;
+}
+
+.jf-file-md-preview table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  width: 100%;
+}
+.jf-file-md-preview th,
+.jf-file-md-preview td {
+  border: 1px solid var(--jf-border);
+  padding: 8px 12px;
+  text-align: left;
+}
+.jf-file-md-preview th {
+  background: var(--jf-bg-raised);
+  color: var(--jf-text);
+}
+
+.jf-file-md-preview img { max-width: 100%; border-radius: 6px; }
+.jf-file-md-preview hr { border: none; border-top: 1px solid var(--jf-border); margin: 1.2em 0; }

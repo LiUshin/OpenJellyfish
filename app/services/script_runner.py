@@ -12,15 +12,19 @@ Python 脚本执行器（安全加固版）
 - 显式拒绝符号链接文件
 - AST 静态分析，阻止危险调用（os.system, subprocess, exec 等）
 - 环境变量白名单，不泄露 API 密钥等敏感信息
-- 进程资源限制（内存、子进程数）
+- 进程资源限制（内存 1GB、子进程/线程 256 个）
+- BLAS / OpenMP 线程数限制（OPENBLAS_NUM_THREADS 等环境变量强制注入）
+- 全局执行排队（BoundedSemaphore，默认并发 4，超时 180s 返回繁忙）
 """
 
 import os
 import sys
 import ast
+import time
 import logging
 import subprocess
 import platform
+import threading
 from typing import Dict, Any, Optional, List, Set
 
 _log = logging.getLogger("script_runner")
@@ -61,6 +65,16 @@ _ENV_WHITELIST = {
     "COMSPEC",
 }
 
+# BLAS / OpenMP 线程数限制：避免单脚本启动数十个工作线程占满 CPU 与 NPROC 配额
+# numpy/pandas/sklearn 默认按 CPU 核数创建工作线程，在共享服务器上需要主动收敛
+_BLAS_THREAD_ENV = {
+    "OPENBLAS_NUM_THREADS": "2",
+    "OMP_NUM_THREADS": "2",
+    "MKL_NUM_THREADS": "2",
+    "NUMEXPR_NUM_THREADS": "2",
+    "VECLIB_MAXIMUM_THREADS": "2",  # macOS Accelerate framework
+}
+
 # 危险模块黑名单：脚本中不允许 import 这些
 _DANGEROUS_MODULES: Set[str] = {
     "subprocess",
@@ -96,11 +110,20 @@ _DANGEROUS_MODULES: Set[str] = {
     "threading",
     "concurrent",
     "asyncio",
+    # os / subprocess 的底层 C 模块：合法库基本不直接 import（都走 os/subprocess），
+    # 但它们是 os.* 运行时补丁的绕过入口——import posix; posix.system(...) 就跳过了沙箱
+    "posix",
+    "nt",
+    "_posixsubprocess",
 }
 
-# 危险函数调用黑名单：attribute 调用形式 (module.func)
+# 危险函数调用黑名单（AST 层硬拦）：attribute 调用形式 (module.func)
+#
+# 设计原则：这里只拦"绝对危险、无合法用例"的函数，给用户手写/AI 生成时立即
+# 反馈错误信息。文件读写类（remove/rename/mkdir/listdir 等）交给运行时层的
+# 路径白名单检查（_sandbox_wrapper.py），允许合法场景使用。
 _DANGEROUS_CALLS: Set[str] = {
-    # os 模块危险函数
+    # 进程执行 / fork / 发信号——没有合法用例
     "os.system",
     "os.popen",
     "os.exec",
@@ -121,28 +144,26 @@ _DANGEROUS_CALLS: Set[str] = {
     "os.spawnve",
     "os.spawnvp",
     "os.spawnvpe",
+    "os.posix_spawn",
+    "os.posix_spawnp",
     "os.fork",
     "os.forkpty",
     "os.kill",
     "os.killpg",
-    "os.symlink",
-    "os.link",
-    "os.remove",
-    "os.unlink",
-    "os.rmdir",
-    "os.removedirs",
-    "os.rename",
-    "os.renames",
-    "os.replace",
-    # os 目录遍历/路径操纵
+    # 目录切换——沙箱路径白名单以调用时的 cwd 为基准，禁止
     "os.chdir",
     "os.fchdir",
-    "os.listdir",
-    "os.scandir",
-    "os.walk",
-    "os.fwalk",
-    "os.getcwd",
-    "os.path.expanduser",
+    # 身份 / 权限变更
+    "os.chown",
+    "os.fchown",
+    "os.lchown",
+    "os.setuid",
+    "os.setgid",
+    "os.seteuid",
+    "os.setegid",
+    "os.setreuid",
+    "os.setregid",
+    "os.chroot",
     # 内置危险函数
     "builtins.exec",
     "builtins.eval",
@@ -165,11 +186,38 @@ _DANGEROUS_BUILTINS: Set[str] = {
     "getattr",
 }
 
-# 内存限制 (512 MB)
-_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024
+# 内存限制 (1024 MB) — 给 pandas / matplotlib 留余量，仍能防 OOM
+_MEMORY_LIMIT_BYTES = 1024 * 1024 * 1024
 
-# 最大子进程数
-_MAX_NPROC = 16
+# 最大子进程/线程数 (256) — RLIMIT_NPROC 对 Linux 也包含 pthread (LWP)，
+# numpy/pandas/sklearn 等科学计算库需要数十至上百线程才能正常初始化 OpenBLAS
+_MAX_NPROC = 256
+
+# ==================== 全局执行排队 ====================
+#
+# 用 BoundedSemaphore 控制同时运行的脚本子进程数量，避免多个 admin / 定时任务
+# 并发时把服务器资源打爆。排队中的脚本只占一个 Python 线程（极轻量），不消耗
+# CPU/内存/NPROC 配额。
+#
+# 当前规模 (admin ≤ 20, uvicorn workers=1) 进程内 semaphore 足够；如未来扩容到
+# 多 worker，需要替换为 cross-process 队列 (Redis / file lock)。
+SCRIPT_CONCURRENCY = max(1, int(os.environ.get("SCRIPT_CONCURRENCY", "4")))
+SCRIPT_QUEUE_TIMEOUT = max(1, int(os.environ.get("SCRIPT_QUEUE_TIMEOUT", "180")))
+
+_SCRIPT_SEMAPHORE = threading.BoundedSemaphore(SCRIPT_CONCURRENCY)
+_SCRIPT_STATS_LOCK = threading.Lock()
+_active_count = 0
+_pending_count = 0
+
+
+def get_script_runtime_stats() -> Dict[str, int]:
+    """Return current script execution stats (for debug/metrics)."""
+    with _SCRIPT_STATS_LOCK:
+        return {
+            "active": _active_count,
+            "pending": _pending_count,
+            "concurrency": SCRIPT_CONCURRENCY,
+        }
 
 
 # ==================== AST 静态分析 ====================
@@ -220,13 +268,22 @@ def _check_script_safety(file_path: str) -> Optional[str]:
                 if call_chain and call_chain in _DANGEROUS_CALLS:
                     return f"禁止调用: {call_chain}()"
 
+            # 动态构造的调用：obj[key](...), f()() 等
+            # 拦截如 os.__dict__["system"](...) / getattr_like(...)()
+            # 这类绕过 Name / Attribute 静态黑名单的调用方式
+            if isinstance(func, (ast.Subscript, ast.Call)):
+                return "禁止通过下标或嵌套调用动态构造函数调用"
+
         # 检查危险属性访问
         elif isinstance(node, ast.Attribute):
             if isinstance(node.value, ast.Name) and node.value.id == "os" and node.attr == "environ":
                 return "禁止访问 os.environ（环境变量已受限）"
             if node.attr in ("__builtins__", "__loader__", "__spec__",
                              "__import__", "__subclasses__", "__globals__",
-                             "__code__", "__func__"):
+                             "__code__", "__func__",
+                             # 补充：__dict__ 可直接通过 os.__dict__['system'] 绕过黑名单；
+                             # __mro__/__bases__ 是类层次追溯的入口，用于追到 subprocess 等
+                             "__dict__", "__mro__", "__bases__"):
                 return f"禁止访问 {node.attr}"
 
         # 检查通过下标访问 __builtins__
@@ -272,6 +329,8 @@ def _build_safe_env() -> Dict[str, str]:
             safe_env[key] = val
     # 强制设置编码
     safe_env["PYTHONIOENCODING"] = "utf-8"
+    # 注入 BLAS / OpenMP 线程数限制（用户脚本环境无法覆盖）
+    safe_env.update(_BLAS_THREAD_ENV)
     return safe_env
 
 
@@ -406,7 +465,48 @@ def run_script(
         cmd.append("--")
         cmd.extend([str(a) for a in args])
 
-    # 10. 执行
+    # 10. 排队执行（受全局 BoundedSemaphore 保护）
+    global _active_count, _pending_count
+    with _SCRIPT_STATS_LOCK:
+        _pending_count += 1
+        snapshot_active = _active_count
+        snapshot_pending = _pending_count
+
+    _log.info(
+        "[script_runner] acquire start  active=%d pending=%d cap=%d  script=%s",
+        snapshot_active, snapshot_pending, SCRIPT_CONCURRENCY, clean_path,
+    )
+
+    wait_started = time.monotonic()
+    acquired = _SCRIPT_SEMAPHORE.acquire(timeout=SCRIPT_QUEUE_TIMEOUT)
+    wait_elapsed = time.monotonic() - wait_started
+
+    if not acquired:
+        with _SCRIPT_STATS_LOCK:
+            _pending_count -= 1
+            ahead = max(0, _pending_count)  # 超时后剩下的等待者
+            running = _active_count
+        _log.warning(
+            "[script_runner] queue timeout after %ds  active=%d pending=%d  script=%s",
+            SCRIPT_QUEUE_TIMEOUT, running, ahead, clean_path,
+        )
+        return _error_result(
+            f"脚本执行队列繁忙，已等待 {SCRIPT_QUEUE_TIMEOUT} 秒。"
+            f"当前 {running} 个脚本运行中，前面还有 {ahead} 个等待。请稍后重试。"
+        )
+
+    with _SCRIPT_STATS_LOCK:
+        _pending_count -= 1
+        _active_count += 1
+        snapshot_active = _active_count
+        snapshot_pending = _pending_count
+
+    _log.info(
+        "[script_runner] acquire ok     active=%d pending=%d  wait=%.2fs  script=%s",
+        snapshot_active, snapshot_pending, wait_elapsed, clean_path,
+    )
+
+    exec_started = time.monotonic()
     try:
         result = subprocess.run(
             cmd,
@@ -439,3 +539,14 @@ def run_script(
         return _error_result(f"脚本执行超时（{timeout}秒）")
     except Exception as e:
         return _error_result(f"执行错误: {str(e)}")
+    finally:
+        exec_elapsed = time.monotonic() - exec_started
+        _SCRIPT_SEMAPHORE.release()
+        with _SCRIPT_STATS_LOCK:
+            _active_count -= 1
+            snapshot_active = _active_count
+            snapshot_pending = _pending_count
+        _log.info(
+            "[script_runner] release        active=%d pending=%d  exec=%.2fs  script=%s",
+            snapshot_active, snapshot_pending, exec_elapsed, clean_path,
+        )

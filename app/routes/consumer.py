@@ -311,7 +311,7 @@ async def api_consumer_chat(req: ConsumerChatRequest, ctx=Depends(get_service_co
 
     save_text = _extract_text(req.message)
     save_consumer_message(admin_id, service_id, conv_id, "user", save_text)
-    agent = create_consumer_agent(admin_id, service_id, conv_id)
+    agent = create_consumer_agent(admin_id, service_id, conv_id, channel="web")
     thread_id = f"svc-{service_id}-{conv_id}"
     config = {"configurable": {"thread_id": thread_id}}
 
@@ -351,7 +351,7 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
         raise HTTPException(status_code=400, detail="No user message found")
 
     save_consumer_message(admin_id, service_id, conv_id, "user", last_user_msg)
-    agent = create_consumer_agent(admin_id, service_id, conv_id)
+    agent = create_consumer_agent(admin_id, service_id, conv_id, channel="web")
     thread_id = f"svc-{service_id}-{conv_id}"
     config = {"configurable": {"thread_id": thread_id}}
 

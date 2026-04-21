@@ -710,7 +710,8 @@ async def _run_agent_loop(agent, input_payload, agent_config, steps: List[dict],
                     val = intr.value if hasattr(intr, "value") else {}
                     if isinstance(val, dict) and "action_requests" in val:
                         for ar in val["action_requests"]:
-                            decisions.append({"decision": "approve"})
+                            # langchain HITL middleware expects {"type": "approve"} after upgrade
+                            decisions.append({"type": "approve"})
                             action_desc = str(ar)[:200] if not isinstance(ar, dict) else json.dumps(ar, ensure_ascii=False, default=str)[:200]
                             action_names.append(action_desc)
         if not decisions:
@@ -883,7 +884,8 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
 
     extra_caps = ["humanchat"] if reply_to and reply_to.get("channel") == "wechat" else None
     agent = create_consumer_agent(admin_id, service_id, conversation_id,
-                                  extra_capabilities=extra_caps)
+                                  extra_capabilities=extra_caps,
+                                  channel="scheduler")
     thread_id = f"svc-scheduled-{uuid.uuid4().hex[:8]}"
     agent_config = {"configurable": {"thread_id": thread_id}}
     output_parts = []

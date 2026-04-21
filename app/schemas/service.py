@@ -14,6 +14,9 @@ class CreateServiceRequest(BaseModel):
     research_tools: bool = False
     published: bool = True
     max_conversations: int = 1000
+    # Standalone chat page customization (rendered by /s/{id})
+    welcome_message: str = ""
+    quick_questions: List[str] = []
 
 
 class UpdateServiceRequest(BaseModel):
@@ -28,6 +31,8 @@ class UpdateServiceRequest(BaseModel):
     research_tools: Optional[bool] = None
     published: Optional[bool] = None
     max_conversations: Optional[int] = None
+    welcome_message: Optional[str] = None
+    quick_questions: Optional[List[str]] = None
 
 
 class CreateKeyRequest(BaseModel):
