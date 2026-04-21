@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loading…</title>
+    <!--
+      window.__SVC__ 由后端 consumer_ui.py 在返回前替换 SVC_INJECT 占位注入。
+      这一行注释 + script 占位由 Python `_SVC_INJECT_PLACEHOLDER` 寻找并替换。
+      切勿改动占位行的格式（包括前后空格），否则注入会失败。
+    -->
+    <!-- SVC_INJECT -->
+  </head>
+  <body>
+    <div id="service-root"></div>
+    <script type="module" src="/src/service-chat/main.tsx"></script>
+  </body>
+</html>

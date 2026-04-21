@@ -12,6 +12,7 @@ import SchedulerPage from '../pages/Scheduler';
 import WeChatPage from '../pages/WeChat';
 import InboxPage from '../pages/Settings/InboxPage';
 import GeneralPage from '../pages/Settings/GeneralPage';
+import ErrorBoundary from '../components/ErrorBoundary';
 import { Spin } from 'antd';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -75,12 +76,28 @@ export default function AppRouter() {
         <Route
           element={
             <ProtectedRoute>
-              <AppLayout />
+              <ErrorBoundary scope="app-layout">
+                <AppLayout />
+              </ErrorBoundary>
             </ProtectedRoute>
           }
         >
-          <Route path="/" element={<ChatPage />} />
-          <Route path="/settings" element={<SettingsLayout />}>
+          <Route
+            path="/"
+            element={
+              <ErrorBoundary scope="chat">
+                <ChatPage />
+              </ErrorBoundary>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ErrorBoundary scope="settings">
+                <SettingsLayout />
+              </ErrorBoundary>
+            }
+          >
             <Route index element={<Navigate to="/settings/prompt" replace />} />
             <Route path="prompt" element={<PromptPage />} />
             <Route path="subagents" element={<SubagentPage />} />

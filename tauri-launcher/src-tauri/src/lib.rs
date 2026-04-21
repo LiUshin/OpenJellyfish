@@ -109,12 +109,38 @@ struct ResetPasswordResult {
 
 // ── Path Resolution ──────────────────────────────────────────────
 
+/// Strip Windows `\\?\` extended-length path prefix.
+///
+/// Tauri's `resource_dir()` on Windows returns paths in the
+/// `\\?\C:\Program Files\App` form. When this prefix reaches a Python
+/// subprocess (via `Command::new(python_exe)` or `JELLYFISH_PYTHON` env),
+/// `sys.executable` and every `__file__` in `site-packages` inherit it —
+/// which then breaks `pycryptodome`'s `os.path.isfile()` check for native
+/// `.pyd` modules (it cannot find `_cpuid_c.cp37-win_amd64.pyd` etc.,
+/// even though the file is on disk).
+///
+/// This helper normalizes paths so all subprocesses see plain `D:\…` form.
+fn strip_win_extended_prefix(path: &std::path::Path) -> PathBuf {
+    if !cfg!(windows) {
+        return path.to_path_buf();
+    }
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        // UNC variant: \\?\UNC\server\share -> \\server\share
+        if let Some(unc) = rest.strip_prefix("UNC\\") {
+            return PathBuf::from(format!(r"\\{}", unc));
+        }
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
+}
+
 fn find_project_dir_dev() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
     let mut dir = exe.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
     for _ in 0..5 {
         if dir.join("app").join("main.py").exists() {
-            return dir;
+            return strip_win_extended_prefix(&dir);
         }
         if let Some(parent) = dir.parent() {
             dir = parent.to_path_buf();
@@ -122,13 +148,14 @@ fn find_project_dir_dev() -> PathBuf {
             break;
         }
     }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    strip_win_extended_prefix(&cwd)
 }
 
 fn resolve_project_dir(app: &tauri::AppHandle) -> PathBuf {
     if let Ok(res_dir) = app.path().resource_dir() {
         if res_dir.join("app").join("main.py").exists() {
-            return res_dir;
+            return strip_win_extended_prefix(&res_dir);
         }
     }
     find_project_dir_dev()
@@ -139,7 +166,7 @@ fn find_bundled_python(project_dir: &std::path::Path) -> Option<(PathBuf, bool)>
     if cfg!(windows) {
         let p = python_dir.join("python.exe");
         if p.exists() {
-            return Some((p, true));
+            return Some((strip_win_extended_prefix(&p), true));
         }
     } else {
         let p = python_dir.join("bin").join("python3");
@@ -155,7 +182,7 @@ fn find_bundled_node(project_dir: &std::path::Path) -> Option<(PathBuf, bool)> {
     if cfg!(windows) {
         let p = node_dir.join("node.exe");
         if p.exists() {
-            return Some((p, true));
+            return Some((strip_win_extended_prefix(&p), true));
         }
     } else {
         let p = node_dir.join("bin").join("node");
@@ -580,6 +607,54 @@ fn open_in_browser(state: State<'_, AppState>) -> Result<(), String> {
     open::that(&url).map_err(|e| e.to_string())
 }
 
+// ── About / Tools Commands ───────────────────────────────────────
+
+/// Open the project root directory (where `launcher.py`, `.env`, `users/` live).
+#[tauri::command]
+fn open_project_dir(state: State<'_, AppState>) -> Result<(), String> {
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    open::that(&project_dir).map_err(|e| e.to_string())
+}
+
+/// Open the `users/` directory; auto-creates it if missing so the OS file
+/// explorer always opens cleanly even on a fresh install.
+#[tauri::command]
+fn open_users_dir(state: State<'_, AppState>) -> Result<(), String> {
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    let users_dir = project_dir.join("users");
+    if !users_dir.exists() {
+        fs::create_dir_all(&users_dir).map_err(|e| e.to_string())?;
+    }
+    open::that(&users_dir).map_err(|e| e.to_string())
+}
+
+/// Open the `logs/` directory; created lazily on first call so users
+/// who haven't started JellyfishBot yet still get a usable folder.
+#[tauri::command]
+fn open_logs_dir(state: State<'_, AppState>) -> Result<(), String> {
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    let logs_dir = project_dir.join("logs");
+    if !logs_dir.exists() {
+        fs::create_dir_all(&logs_dir).map_err(|e| e.to_string())?;
+    }
+    open::that(&logs_dir).map_err(|e| e.to_string())
+}
+
+/// Open the GitHub releases page in the user's default browser.
+///
+/// TODO: replace the placeholder URL with the real repo once published.
+#[tauri::command]
+fn open_release_page() -> Result<(), String> {
+    const RELEASE_URL: &str = "https://github.com/jellyfishbot/jellyfishbot/releases/latest";
+    open::that(RELEASE_URL).map_err(|e| e.to_string())
+}
+
+/// Return the current launcher version (read from Cargo.toml at compile time).
+#[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 #[tauri::command]
 fn install_pip_deps(state: State<'_, AppState>) -> Result<String, String> {
     let project_dir = state.project_dir.lock().unwrap().clone();
@@ -910,6 +985,11 @@ pub fn run() {
             get_lan_ip,
             open_in_browser,
             install_pip_deps,
+            open_project_dir,
+            open_users_dir,
+            open_logs_dir,
+            open_release_page,
+            get_app_version,
             list_registration_keys,
             generate_registration_keys,
             delete_registration_key,

@@ -49,6 +49,20 @@ COPY --from=frontend-builder /build/dist /app/frontend/dist
 RUN mkdir -p /app/data /app/users \
     && chmod +x /app/start.sh
 
+# ---- 降权到非特权用户 ----
+# 安全：若脚本沙箱被绕过，进程仅以 jellyfish (uid=1000) 身份运行，
+# 影响范围限定在 /app 内，无法修改系统文件 / apt 安装 / 读取宿主机 /root 等。
+#
+# 注意：宿主机 volume 挂载（如 -v ./users:/app/users）需要挂载点
+# 对 uid=1000 可写。建议在宿主机执行：
+#   sudo chown -R 1000:1000 ./users ./data
+# 或使用命名 volume 避免此问题。
+RUN groupadd -r --gid 1000 jellyfish \
+    && useradd -r --uid 1000 --gid 1000 --home-dir /app --shell /sbin/nologin jellyfish \
+    && chown -R jellyfish:jellyfish /app
+
+USER jellyfish
+
 EXPOSE 3000 8000
 
 CMD ["/app/start.sh"]

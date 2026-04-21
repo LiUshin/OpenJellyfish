@@ -315,11 +315,18 @@ def create_consumer_agent(
     conv_id: str,
     wechat_session_id: Optional[str] = None,
     extra_capabilities: Optional[List[str]] = None,
+    channel: str = "web",
 ) -> Any:
     """Create (or return cached) agent for a consumer conversation.
 
     extra_capabilities: additional capabilities to inject (e.g. ["humanchat"]
     for scheduled tasks that need send_message).
+    channel: invocation context. One of:
+        - "web"       — consumer 直连 SSE（/api/v1/chat），agent 输出直接流给浏览器，
+                        send_message 工具在该上下文下**不**注入（即便 humanchat capability
+                        启用），避免 ghost 调用与无意义的工具事件泄露给消费者。
+        - "wechat"    — 通过 iLink 反向投递到微信用户，需要 send_message。
+        - "scheduler" — 定时任务推送，也需要 send_message。
     """
     from langchain.chat_models import init_chat_model
     from deepagents import create_deep_agent
@@ -332,7 +339,8 @@ def create_consumer_agent(
 
     extra_suffix = f"::+{','.join(sorted(extra_capabilities))}" if extra_capabilities else ""
     ws_suffix = f"::{wechat_session_id}" if wechat_session_id else ""
-    cache_key = f"consumer::{admin_id}::{service_id}::{conv_id}{ws_suffix}{extra_suffix}"
+    ch_suffix = f"::ch={channel}" if channel and channel != "web" else ""
+    cache_key = f"consumer::{admin_id}::{service_id}::{conv_id}{ws_suffix}{extra_suffix}{ch_suffix}"
     if cache_key in _consumer_agent_cache:
         return _consumer_agent_cache[cache_key]
 
@@ -376,7 +384,10 @@ def create_consumer_agent(
         ))
         system_prompt += "\n" + _CP2["service_scheduler"]
 
-    if "humanchat" in capabilities:
+    # send_message 仅对反向投递渠道（wechat / scheduler）有意义；
+    # web 直连 SSE 时 agent 的 token 已经流给浏览器，再调 send_message 既无投递目标
+    # 也会产生让消费者困惑的工具事件。
+    if "humanchat" in capabilities and channel != "web":
         from app.services.tools import create_send_message_tool, CAPABILITY_PROMPTS as _CP3
         system_prompt += "\n" + _CP3["humanchat"]
         tools.append(create_send_message_tool())

@@ -12,6 +12,11 @@
 # 数据持久化:
 #   - ./data/       → checkpoints.db 等应用数据
 #   - ./data/users/ → 用户数据、对话、文件系统
+#
+# 权限注意（应用容器以 jellyfish uid=1000 运行，非 root）:
+#   首次部署前执行:
+#     mkdir -p ./data/users && sudo chown -R 1000:1000 ./data
+#   否则容器内无法写入挂载的 volume，后端会启动失败。
 # ============================================================
 
 services:

@@ -4,6 +4,7 @@ import {
   Popconfirm, Space, Typography, Checkbox,
   Spin, Empty, InputNumber, Tooltip,
 } from 'antd';
+import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons';
 import {
   Plus,
   PencilSimple,
@@ -25,6 +26,7 @@ import {
   MagicWand,
   ArrowSquareOut,
 } from '@phosphor-icons/react';
+import FileTreePicker, { PickerTrigger } from '../../components/FileTreePicker';
 import {
   listServices, getService, createService, updateService, deleteService,
   getModels, listPromptVersions, listProfileVersions, listServiceKeys,
@@ -277,6 +279,22 @@ function WeChatConfigPanel({ wc, onSave }: {
   );
 }
 
+/**
+ * Form.Item 包装版 PickerTrigger：从 Form 接收 value，点击触发外部 onClick 弹出 picker。
+ * 外部通过 form.setFieldValue 写回。
+ */
+function PickerField({
+  value,
+  onClick,
+  placeholder,
+}: {
+  value?: string[];
+  onClick: () => void;
+  placeholder?: string;
+}) {
+  return <PickerTrigger value={value || []} onClick={onClick} placeholder={placeholder} />;
+}
+
 /* ───────── Main Page ───────── */
 
 export default function AdminServicesPage() {
@@ -290,6 +308,8 @@ export default function AdminServicesPage() {
   // service modal
   const [svcModalOpen, setSvcModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [docPickerOpen, setDocPickerOpen] = useState(false);
+  const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
 
@@ -502,8 +522,10 @@ export default function AdminServicesPage() {
       model: models[0]?.id || '',
       system_prompt_version_id: undefined,
       user_profile_version_id: undefined,
-      allowed_docs: '*', allowed_scripts: '',
+      allowed_docs: ['*'], allowed_scripts: [],
       capabilities: [], published: true,
+      welcome_message: '',
+      quick_questions: [],
     });
     setSvcModalOpen(true);
   };
@@ -517,10 +539,13 @@ export default function AdminServicesPage() {
       model: currentSvc.model || '',
       system_prompt_version_id: currentSvc.system_prompt_version_id || undefined,
       user_profile_version_id: currentSvc.user_profile_version_id || undefined,
-      allowed_docs: (currentSvc.allowed_docs || []).join(','),
-      allowed_scripts: (currentSvc.allowed_scripts || []).join(','),
+      allowed_docs: currentSvc.allowed_docs && currentSvc.allowed_docs.length > 0
+        ? currentSvc.allowed_docs : ['*'],
+      allowed_scripts: currentSvc.allowed_scripts || [],
       capabilities: (currentSvc.capabilities || []).filter(c => UI_CAPABILITIES.has(c)),
       published: currentSvc.published !== false,
+      welcome_message: currentSvc.welcome_message || '',
+      quick_questions: currentSvc.quick_questions || [],
     });
     setSvcModalOpen(true);
   };
@@ -534,20 +559,23 @@ export default function AdminServicesPage() {
         ? (currentSvc?.capabilities || []).filter(c => !UI_CAPABILITIES.has(c))
         : [];
 
+      const cleanQuestions = (values.quick_questions || [])
+        .map((q: string) => (q || '').trim())
+        .filter((q: string) => q.length > 0);
+
       const body = {
         name: values.name,
         description: values.description || '',
         model: values.model,
         system_prompt_version_id: values.system_prompt_version_id || null,
         user_profile_version_id: values.user_profile_version_id || null,
-        allowed_docs: values.allowed_docs
-          ? values.allowed_docs.split(',').map((s: string) => s.trim()).filter(Boolean)
-          : ['*'],
-        allowed_scripts: values.allowed_scripts
-          ? values.allowed_scripts.split(',').map((s: string) => s.trim()).filter(Boolean)
-          : [],
+        allowed_docs: Array.isArray(values.allowed_docs) && values.allowed_docs.length > 0
+          ? values.allowed_docs : ['*'],
+        allowed_scripts: Array.isArray(values.allowed_scripts) ? values.allowed_scripts : [],
         capabilities: [...(values.capabilities || []), ...hiddenCaps],
         published: values.published,
+        welcome_message: values.welcome_message || '',
+        quick_questions: cleanQuestions,
       };
 
       let savedId: string;
@@ -1167,24 +1195,119 @@ export default function AdminServicesPage() {
           <Form.Item
             name="allowed_docs"
             label="允许的文档"
-            tooltip="* = 全部，或逗号分隔路径如 reports/,data.csv"
+            tooltip="点击打开文件树勾选；'全部 (*)' 表示不限制"
           >
-            <Input placeholder="* = 全部，或逗号分隔如 reports/,data.csv" />
+            <PickerField onClick={() => setDocPickerOpen(true)} placeholder="点击选择允许的文档…" />
           </Form.Item>
           <Form.Item
             name="allowed_scripts"
             label="允许的脚本"
-            tooltip="留空 = 不允许，逗号分隔如 hello.py,analysis/"
+            tooltip="点击打开文件树勾选；未选则 service 不可执行任何脚本"
           >
-            <Input placeholder="留空=不允许；逗号分隔如 hello.py,analysis/" />
+            <PickerField onClick={() => setScriptPickerOpen(true)} placeholder="点击选择允许的脚本（默认未选 = 禁止脚本）" />
           </Form.Item>
           <Form.Item name="capabilities" label="能力">
             <Checkbox.Group options={CAPABILITY_OPTIONS} />
           </Form.Item>
+
+          <div style={{
+            margin: '4px 0 16px',
+            padding: '12px 14px',
+            background: 'var(--jf-bg-deep)',
+            borderRadius: 8,
+            border: `1px solid ${C.border}`,
+          }}>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, fontWeight: 600, letterSpacing: 0.4 }}>
+              聊天页定制（独立链接 /s/&lt;id&gt;）
+            </div>
+            <Form.Item
+              name="welcome_message"
+              label="欢迎语"
+              tooltip="在 chat 页首屏大字下方展示，发送第一条消息后自动隐藏。留空则不显示。"
+              style={{ marginBottom: 12 }}
+            >
+              <TextArea placeholder="例如：你好！我是 XX 助手，可以帮你查阅产品资料、分析销售数据、生成报告。" rows={3} maxLength={300} showCount />
+            </Form.Item>
+            <Form.Item
+              label="快速问题"
+              tooltip="首屏展示的问题气泡；点击后立即作为用户消息发送。建议短而具体。"
+              style={{ marginBottom: 0 }}
+            >
+              <Form.List name="quick_questions">
+                {(fields, { add, remove }) => (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {fields.map((field) => (
+                      <div key={field.key} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <Form.Item
+                          name={field.name}
+                          rules={[{ max: 80, message: '问题不超过 80 字' }]}
+                          noStyle
+                        >
+                          <Input placeholder="例如：分析最近 7 天的销售趋势" maxLength={80} />
+                        </Form.Item>
+                        <Button
+                          type="text"
+                          danger
+                          icon={<MinusCircleOutlined />}
+                          onClick={() => remove(field.name)}
+                        />
+                      </div>
+                    ))}
+                    <Button
+                      type="dashed"
+                      block
+                      icon={<PlusOutlined />}
+                      onClick={() => add('')}
+                      style={{ marginTop: 4 }}
+                    >
+                      添加快速问题
+                    </Button>
+                  </div>
+                )}
+              </Form.List>
+            </Form.Item>
+          </div>
+
           <Form.Item name="published" valuePropName="checked">
             <Checkbox>立即发布</Checkbox>
           </Form.Item>
         </Form>
+
+        {/* 文件树选择器 */}
+        <Form.Item noStyle shouldUpdate={(p, c) => p.allowed_docs !== c.allowed_docs}>
+          {() => (
+            <FileTreePicker
+              open={docPickerOpen}
+              title="选择允许的文档"
+              rootPath="/docs"
+              value={form.getFieldValue('allowed_docs') || []}
+              enableAllShortcut
+              emptyHint="未选 = service 无法访问任何文档"
+              onCancel={() => setDocPickerOpen(false)}
+              onOk={(next) => {
+                form.setFieldValue('allowed_docs', next);
+                setDocPickerOpen(false);
+              }}
+            />
+          )}
+        </Form.Item>
+        <Form.Item noStyle shouldUpdate={(p, c) => p.allowed_scripts !== c.allowed_scripts}>
+          {() => (
+            <FileTreePicker
+              open={scriptPickerOpen}
+              title="选择允许的脚本"
+              rootPath="/scripts"
+              value={form.getFieldValue('allowed_scripts') || []}
+              enableAllShortcut
+              emptyHint="未选 = service 不可执行任何脚本（默认即如此）"
+              onCancel={() => setScriptPickerOpen(false)}
+              onOk={(next) => {
+                form.setFieldValue('allowed_scripts', next);
+                setScriptPickerOpen(false);
+              }}
+            />
+          )}
+        </Form.Item>
       </Modal>
 
       {/* ── Key Modal ── */}
@@ -1220,11 +1343,36 @@ export default function AdminServicesPage() {
             </Button>
           </div>
         ) : (
-          <div style={{ marginTop: 16 }}>
-            <Text style={{ display: 'block', marginBottom: 12, fontSize: 13, color: C.warning }}>
+          <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <Text style={{ fontSize: 13, color: C.warning }}>
               请立即复制，关闭后将无法再次查看完整值。
             </Text>
-            <CopyBox value={generatedKey} />
+            <div>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>API Key</div>
+              <CopyBox value={generatedKey} />
+            </div>
+            {currentSvc && (
+              <div>
+                <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>
+                  专属聊天链接（已附带 Key，分享即用）
+                </div>
+                <CopyBox
+                  value={`${apiOrigin}/s/${currentSvc.id}?key=${encodeURIComponent(generatedKey)}`}
+                  extra={
+                    <Button
+                      size="small"
+                      icon={<LinkSimple size={16} />}
+                      onClick={() => window.open(`${apiOrigin}/s/${currentSvc.id}?key=${encodeURIComponent(generatedKey)}`, '_blank')}
+                    >
+                      打开
+                    </Button>
+                  }
+                />
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                  ⚠ 任何拿到此链接的人都能直接以该 Key 身份对话；URL 包含密钥，请勿放入公共渠道。打开后浏览器会自动从 URL 抹除 Key 并存入本地。
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Modal>

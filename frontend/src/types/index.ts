@@ -209,6 +209,8 @@ export interface ServiceConfig {
   published?: boolean;
   created_at?: string;
   research_tools?: boolean;
+  welcome_message?: string;
+  quick_questions?: string[];
   wechat_channel?: {
     enabled: boolean;
     expires_at?: string;
