@@ -418,6 +418,7 @@ async def _run_agent_and_reply(
     agent = create_consumer_agent(
         session.admin_id, session.service_id, session.conversation_id,
         wechat_session_id=session.session_id,
+        channel="wechat",
     )
     thread_id = f"svc-{session.service_id}-{session.conversation_id}"
     config = {"configurable": {"thread_id": thread_id}}
@@ -504,7 +505,8 @@ async def _run_agent_and_reply(
                     val = intr.value if hasattr(intr, "value") else {}
                     if isinstance(val, dict) and "action_requests" in val:
                         for ar in val["action_requests"]:
-                            decisions.append({"decision": "approve"})
+                            # langchain HITL middleware expects {"type": "approve"} after upgrade
+                            decisions.append({"type": "approve"})
 
         if not decisions:
             break

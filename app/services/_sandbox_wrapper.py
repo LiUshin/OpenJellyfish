@@ -186,6 +186,120 @@ os.chdir = _blocked_chdir
 if hasattr(os, "fchdir"):
     os.fchdir = _blocked_chdir
 
+
+# ── 绝对危险函数：无合法用例，一律阻断 ──────────────────────────────
+# 覆盖 os.* 上的引用；由于 os.__dict__[name] 和 os.name 指向同一对象，
+# 下标访问 os.__dict__["system"] 也会拿到阻断版本（AST 已禁用 __dict__，
+# 此处为运行时纵深防御：即使静态检查因新绕过失效，调用仍然抛错）。
+
+def _make_blocked(func_name: str):
+    def _blocked(*a, **kw):
+        raise PermissionError(
+            f"Sandbox: os.{func_name} is not allowed (dangerous: may spawn process / modify ownership / bypass isolation)"
+        )
+    _blocked.__name__ = f"_blocked_{func_name}"
+    return _blocked
+
+
+_ABSOLUTELY_DANGEROUS = [
+    "system", "popen",
+    "execl", "execle", "execlp", "execlpe",
+    "execv", "execve", "execvp", "execvpe",
+    "execveat", "fexecve",
+    "spawnl", "spawnle", "spawnlp", "spawnlpe",
+    "spawnv", "spawnve", "spawnvp", "spawnvpe",
+    "posix_spawn", "posix_spawnp",
+    "fork", "forkpty",
+    "kill", "killpg",
+    "chown", "fchown", "lchown",
+    "setuid", "setgid", "seteuid", "setegid",
+    "setreuid", "setregid", "setresuid", "setresgid",
+    "chroot",
+    "pipe", "pipe2",
+    "dup", "dup2",
+]
+for _name in _ABSOLUTELY_DANGEROUS:
+    if hasattr(os, _name):
+        setattr(os, _name, _make_blocked(_name))
+
+
+# ── 条件危险函数：走写入白名单 ────────────────────────────────────
+# remove / rename / mkdir 等写文件操作，合法脚本（图表输出、整理文件）
+# 会用到。走 _check_write 即可，路径必须在 allowed_write 内。
+
+def _wrap_write1(name: str):
+    """包装单路径写操作：os.remove(path) / os.mkdir(path) 等"""
+    orig = getattr(os, name, None)
+    if orig is None:
+        return
+
+    def _wrapped(path, *a, **kw):
+        _check_write(str(path))
+        return orig(path, *a, **kw)
+
+    _wrapped.__name__ = f"_restricted_{name}"
+    setattr(os, name, _wrapped)
+
+
+def _wrap_write2(name: str):
+    """包装双路径写操作：os.rename(src, dst) / os.link(src, dst) 等"""
+    orig = getattr(os, name, None)
+    if orig is None:
+        return
+
+    def _wrapped(src, dst, *a, **kw):
+        _check_write(str(src))
+        _check_write(str(dst))
+        return orig(src, dst, *a, **kw)
+
+    _wrapped.__name__ = f"_restricted_{name}"
+    setattr(os, name, _wrapped)
+
+
+for _n in ("remove", "unlink", "rmdir", "removedirs",
+           "mkdir", "makedirs",
+           "chmod", "fchmod", "lchmod",
+           "truncate",
+           "mkfifo", "mknod",
+           "utime"):
+    _wrap_write1(_n)
+
+for _n in ("rename", "renames", "replace",
+           "link", "symlink"):
+    _wrap_write2(_n)
+
+
+# ── 低层 FD / 链接读取：也走白名单 ─────────────────────────────────
+
+_original_os_open = os.open
+
+
+def _restricted_os_open(path, flags, *a, **kw):
+    # 粗粒度：任何带写标志位的 os.open 都走写检查
+    _WRITE_FLAGS = (
+        getattr(os, "O_WRONLY", 0) | getattr(os, "O_RDWR", 0)
+        | getattr(os, "O_CREAT", 0) | getattr(os, "O_APPEND", 0)
+        | getattr(os, "O_TRUNC", 0) | getattr(os, "O_EXCL", 0)
+    )
+    if flags & _WRITE_FLAGS:
+        _check_write(str(path))
+    else:
+        _check_read(str(path))
+    return _original_os_open(path, flags, *a, **kw)
+
+
+os.open = _restricted_os_open
+
+if hasattr(os, "readlink"):
+    _original_readlink = os.readlink
+
+    def _restricted_readlink(path, *a, **kw):
+        _check_read(str(path))
+        return _original_readlink(path, *a, **kw)
+
+    os.readlink = _restricted_readlink
+
+
 # Block os.environ access
 os.environ = os.environ.copy()  # detach from real env (already filtered by script_runner)
 

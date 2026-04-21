@@ -7,7 +7,9 @@ send_message tool results (text + media) to WeChat via iLink.
 
 import json
 import os
+import re
 import logging
+from typing import List, Tuple
 
 from app.channels.wechat.client import ILinkClient
 from app.channels.wechat.session_manager import WeChatSession
@@ -17,6 +19,33 @@ log = logging.getLogger("wechat.delivery")
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 _TTS_CONVERTIBLE = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
+
+# 匹配 <<FILE:path>> 媒体标签 — 与 system prompt / generate_* 工具返回值约定一致。
+# Agent 在微信对话里常把生成的媒体路径以 <<FILE:...>> 形式塞进 send_message 的 text，
+# 投递层主动解析后转为媒体消息发送，避免用户看到字面字符串。
+_MEDIA_TAG_RE = re.compile(r"<<FILE:([^>]+?)>>")
+
+
+def extract_media_tags(text: str) -> Tuple[str, List[str]]:
+    """Extract <<FILE:path>> tags from text.
+
+    Returns (cleaned_text, [media_paths]).
+    - cleaned_text 移除所有 <<FILE:...>> 标签，并折叠多余空行
+    - media_paths 按出现顺序去重 + 去空白
+    """
+    if not text:
+        return text or "", []
+    paths_raw = _MEDIA_TAG_RE.findall(text)
+    cleaned = _MEDIA_TAG_RE.sub("", text)
+    cleaned = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", cleaned).strip()
+    seen: set = set()
+    paths: List[str] = []
+    for p in paths_raw:
+        p = p.strip()
+        if p and p not in seen:
+            seen.add(p)
+            paths.append(p)
+    return cleaned, paths
 
 
 async def deliver_tool_message(
@@ -44,18 +73,24 @@ async def deliver_tool_message(
         log.warning("Cannot deliver: session %s has no from_user_id", session.session_id)
         return False
 
+    cleaned_text, extra_media = extract_media_tags(text)
+    media_paths: List[str] = []
     if media:
+        media_paths.append(media)
+    media_paths.extend(extra_media)
+
+    for media_path in media_paths:
         try:
-            await send_media_to_wechat(session, client, media)
+            await send_media_to_wechat(session, client, media_path)
             sent = True
         except Exception:
-            log.exception("Failed to deliver media %s", media)
+            log.exception("Failed to deliver media %s", media_path)
 
-    if text:
+    if cleaned_text:
         try:
-            await client.send_text(to_user, text, ctx_token)
+            await client.send_text(to_user, cleaned_text, ctx_token)
             sent = True
-            log.info("Delivered text via send_message: %s", text[:50])
+            log.info("Delivered text via send_message: %s", cleaned_text[:50])
         except Exception:
             log.exception("Failed to deliver text via iLink")
 

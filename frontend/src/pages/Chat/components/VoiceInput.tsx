@@ -1,9 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Button, message } from 'antd';
+import { Button, Tooltip, message } from 'antd';
 import { AudioOutlined, LoadingOutlined } from '@ant-design/icons';
 import * as api from '../../../services/api';
 import styles from '../chat.module.css';
 
+// 录音过短的下限（toggle 模式下也保留，防止误点立刻松开）
 const MIN_DURATION_MS = 500;
 
 interface VoiceInputProps {
@@ -21,6 +22,7 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
   const startTimeRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval>>(0 as unknown as ReturnType<typeof setInterval>);
   const streamRef = useRef<MediaStream | null>(null);
+  const cancelledRef = useRef(false);
 
   const cleanup = useCallback(() => {
     clearInterval(timerRef.current);
@@ -46,6 +48,7 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
       const recorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = recorder;
       chunksRef.current = [];
+      cancelledRef.current = false;
 
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
@@ -68,12 +71,13 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
     if (!recording || !mediaRecorderRef.current) return;
 
     const elapsed = Date.now() - startTimeRef.current;
+    const cancelled = cancelledRef.current;
     clearInterval(timerRef.current);
     setRecording(false);
 
     if (elapsed < MIN_DURATION_MS) {
       cleanup();
-      message.info('录音太短，请按住按钮说话');
+      if (!cancelled) message.info('录音太短，再说一次吧');
       return;
     }
 
@@ -88,6 +92,12 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
 
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+
+    if (cancelled) {
+      cleanup();
+      message.info('已取消录音');
+      return;
+    }
 
     setTranscribing(true);
     try {
@@ -105,27 +115,34 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
     }
   }, [recording, cleanup, onTranscript]);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Tab' && !e.repeat) {
-        e.preventDefault();
-        startRecording();
-      }
-    };
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        stopRecording();
-      }
-    };
+  const cancelRecording = useCallback(() => {
+    if (!recording) return;
+    cancelledRef.current = true;
+    stopRecording();
+  }, [recording, stopRecording]);
 
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+  const toggleRecording = useCallback(() => {
+    if (transcribing || disabled) return;
+    if (recording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  }, [recording, transcribing, disabled, startRecording, stopRecording]);
+
+  // 仅录音中绑 Esc 取消（避免与 chat 输入框 Enter 发送等其他键冲突）。
+  // 开始/停止录音统一通过点按钮，不绑全局开始快捷键，保持 UX 干净。
+  useEffect(() => {
+    if (!recording) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancelRecording();
+      }
     };
-  }, [startRecording, stopRecording]);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [recording, cancelRecording]);
 
   const formatDuration = (s: number) => {
     const m = Math.floor(s / 60);
@@ -145,35 +162,31 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
     );
   }
 
+  const tooltipText = recording
+    ? '点击结束并发送，按 Esc 取消'
+    : '点击开始录音';
+
   return (
-    <Button
-      type="text"
-      size="small"
-      className={`${styles.voiceBtn} ${recording ? styles.voiceBtnActive : ''}`}
-      onMouseDown={(e) => {
-        e.preventDefault();
-        startRecording();
-      }}
-      onMouseUp={stopRecording}
-      onMouseLeave={() => {
-        if (recording) stopRecording();
-      }}
-      onTouchStart={(e) => {
-        e.preventDefault();
-        startRecording();
-      }}
-      onTouchEnd={stopRecording}
-      disabled={disabled}
-      icon={
-        recording ? (
-          <span className={styles.voiceRecording}>
-            <span className={styles.voicePulse} />
-            <span className={styles.voiceDuration}>{formatDuration(duration)}</span>
-          </span>
-        ) : (
-          <AudioOutlined />
-        )
-      }
-    />
+    <Tooltip title={tooltipText} mouseEnterDelay={0.4}>
+      <Button
+        type="text"
+        size="small"
+        className={`${styles.voiceBtn} ${recording ? styles.voiceBtnActive : ''}`}
+        onClick={toggleRecording}
+        disabled={disabled}
+        aria-label={recording ? '停止录音' : '开始录音'}
+        aria-pressed={recording}
+        icon={
+          recording ? (
+            <span className={styles.voiceRecording}>
+              <span className={styles.voicePulse} />
+              <span className={styles.voiceDuration}>{formatDuration(duration)}</span>
+            </span>
+          ) : (
+            <AudioOutlined />
+          )
+        }
+      />
+    </Tooltip>
   );
 }

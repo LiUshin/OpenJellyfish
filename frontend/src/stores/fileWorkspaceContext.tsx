@@ -9,6 +9,7 @@ import {
 import { App } from 'antd';
 import * as api from '../services/api';
 import type { SplitMode } from '../components/SplitToggle';
+import { getFileKind, shouldLoadText } from '../utils/fileKind';
 
 interface FileWorkspaceState {
   fileBrowserOpen: boolean;
@@ -79,11 +80,9 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const openFile = useCallback(async (path: string) => {
-    try {
-      const data = await api.readFile(path);
-      setEditingFile(path);
-      setEditContentRaw(data.content);
-      setEditDirty(false);
+    const fileName = path.split('/').pop() || path;
+    const kind = getFileKind(fileName);
+    const enterSplit = () => {
       setSplitModeRaw(prev => {
         if (prev === 'chat') {
           localStorage.setItem(LS_SPLIT_MODE, 'split');
@@ -91,6 +90,23 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
         }
         return prev;
       });
+    };
+
+    // 媒体 / binary：不调 readFile，避免大文件直接拉文本
+    if (!shouldLoadText(kind)) {
+      setEditingFile(path);
+      setEditContentRaw('');
+      setEditDirty(false);
+      enterSplit();
+      return;
+    }
+
+    try {
+      const data = await api.readFile(path);
+      setEditingFile(path);
+      setEditContentRaw(data.content);
+      setEditDirty(false);
+      enterSplit();
     } catch {
       message.error('打开文件失败');
     }

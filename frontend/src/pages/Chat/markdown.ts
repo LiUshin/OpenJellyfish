@@ -1,7 +1,21 @@
 import { marked } from 'marked';
 import hljs from 'highlight.js/lib/core';
 import DOMPurify from 'dompurify';
-import { mediaUrl } from '../../services/api';
+import { mediaUrl as adminMediaUrl } from '../../services/api';
+
+// ── Media URL builder (可注入) ────────────────────────────────────────
+// admin /chat 默认走 adminMediaUrl（带 admin Bearer token）；
+// service-chat 入口在启动时调用 setMediaUrlBuilder() 注入 consumer 端的 builder
+// （带 service API key + conversation 范围），实现一份 markdown 渲染逻辑两边复用。
+type MediaUrlBuilder = (path: string) => string;
+let _mediaUrlBuilder: MediaUrlBuilder = adminMediaUrl;
+
+export function setMediaUrlBuilder(fn: MediaUrlBuilder): void {
+  _mediaUrlBuilder = fn;
+}
+function mediaUrl(path: string): string {
+  return _mediaUrlBuilder(path);
+}
 
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';

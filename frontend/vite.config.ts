@@ -38,6 +38,13 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: true,
     rollupOptions: {
+      input: {
+        // Admin SPA — 主聊天 / 设置 / 服务管理 etc.
+        main: 'index.html',
+        // Service-chat — 消费者打开的独立聊天页（被 FastAPI /s/{id} 引用）
+        // 复用 admin 的 markdown.ts / StreamingMessage 组件，避免双份维护。
+        'service-chat': 'service-chat.html',
+      },
       output: {
         manualChunks: {
           'antd-vendor': ['antd', '@ant-design/icons'],

@@ -19,16 +19,42 @@ Usage:
 
 import argparse
 import atexit
+import datetime as _dt
 import os
 import platform
 import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 IS_WIN = platform.system() == "Windows"
+
+
+def _strip_extended_prefix(p: str) -> str:
+    r"""Strip Windows ``\\?\`` extended-length path prefix.
+
+    Defense-in-depth against the Tauri launcher passing a ``\\?\C:\...``
+    path via ``JELLYFISH_PYTHON`` / ``JELLYFISH_NODE``. If the prefix
+    reaches a Python subprocess it propagates into ``sys.executable`` and
+    every ``__file__`` in ``site-packages``, which then breaks
+    ``pycryptodome``'s ``os.path.isfile()`` lookup for native ``.pyd``
+    modules (see Test 4 vs Test 5 in
+    ``tauri-launcher/scripts/verify_extended_path_bug.ps1``).
+    """
+    if not p or not IS_WIN:
+        return p
+    if p.startswith("\\\\?\\"):
+        rest = p[4:]
+        # \\?\UNC\server\share -> \\server\share
+        if rest.startswith("UNC\\"):
+            return "\\\\" + rest[4:]
+        return rest
+    return p
+
+
+SCRIPT_DIR = _strip_extended_prefix(os.path.dirname(os.path.abspath(__file__)))
 
 BACKEND_DEFAULT_PORT = 8000
 FRONTEND_DEFAULT_PORT = 3000
@@ -37,7 +63,69 @@ PROCESS_MARKERS = ["uvicorn", "jellyfishbot", "app.main:app"]
 FRONTEND_MARKERS = ["server.js", "vite"]
 
 _children = []  # list of subprocess.Popen
+_log_files = []  # list of open log file handles, closed on cleanup
+_log_threads = []  # list of tee threads
 _shutting_down = False
+
+
+# ── Logging ───────────────────────────────────────────────────────
+
+def _ensure_logs_dir() -> str:
+    """Create and return the project logs directory.
+
+    Logs are written next to launcher.py (i.e. inside ``project_dir``)
+    so the Tauri front-end can open ``project_dir/logs/`` directly via
+    ``open_logs_dir`` without needing a separate path lookup.
+    """
+    logs_dir = os.path.join(SCRIPT_DIR, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    return logs_dir
+
+
+def _open_log_file(name: str):
+    """Open ``logs/{name}-YYYYMMDD.log`` in append mode (UTF-8, line-buffered)."""
+    logs_dir = _ensure_logs_dir()
+    today = _dt.datetime.now().strftime("%Y%m%d")
+    path = os.path.join(logs_dir, f"{name}-{today}.log")
+    fh = open(path, "a", encoding="utf-8", buffering=1, errors="replace")
+    fh.write(
+        f"\n{'=' * 60}\n"
+        f"--- session start at {_dt.datetime.now().isoformat(timespec='seconds')} ---\n"
+        f"{'=' * 60}\n"
+    )
+    fh.flush()
+    return path, fh
+
+
+def _tee_pipe_to(fh, src):
+    """Background thread: read lines from ``src`` (subprocess pipe) and
+    mirror them into both the log file ``fh`` and our own stdout.
+
+    When launched by Tauri there is no real console attached, so the
+    stdout write is a no-op; when launched manually the user still sees
+    everything in their terminal as before.
+    """
+    try:
+        for raw in iter(src.readline, b""):
+            try:
+                line = raw.decode("utf-8", errors="replace")
+            except Exception:
+                line = repr(raw)
+            try:
+                fh.write(line)
+                fh.flush()
+            except Exception:
+                pass
+            try:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            except Exception:
+                pass
+    finally:
+        try:
+            src.close()
+        except Exception:
+            pass
 
 
 # ── Port utilities ────────────────────────────────────────────────
@@ -186,15 +274,15 @@ def _resolve_python() -> str:
     """Resolve Python executable: JELLYFISH_PYTHON env > sys.executable."""
     custom = os.environ.get("JELLYFISH_PYTHON")
     if custom and os.path.isfile(custom):
-        return os.path.abspath(custom)
-    return sys.executable
+        return _strip_extended_prefix(os.path.abspath(custom))
+    return _strip_extended_prefix(sys.executable)
 
 
 def _resolve_node() -> str:
     """Resolve Node executable: JELLYFISH_NODE env > system node."""
     custom = os.environ.get("JELLYFISH_NODE")
     if custom and os.path.isfile(custom):
-        return os.path.abspath(custom)
+        return _strip_extended_prefix(os.path.abspath(custom))
     return "node"
 
 
@@ -210,6 +298,32 @@ def _get_local_ip() -> str | None:
         return None
 
 
+def _spawn_with_log(cmd: list[str], cwd: str, env: dict, log_name: str) -> subprocess.Popen:
+    """Spawn a subprocess whose stdout+stderr are tee'd into both the
+    daily log file and our own stdout via a background thread."""
+    log_path, fh = _open_log_file(log_name)
+    fh.write(f"--- exec: {' '.join(cmd)}\n--- cwd:  {cwd}\n")
+    fh.flush()
+    print(f"   日志 → {log_path}")
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
+    )
+
+    t = threading.Thread(target=_tee_pipe_to, args=(fh, proc.stdout), daemon=True)
+    t.start()
+
+    _children.append(proc)
+    _log_files.append(fh)
+    _log_threads.append(t)
+    return proc
+
+
 def start_backend(port: int, dev: bool = False) -> subprocess.Popen:
     python = _resolve_python()
     cmd = [
@@ -221,9 +335,7 @@ def start_backend(port: int, dev: bool = False) -> subprocess.Popen:
         cmd.append("--reload")
 
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    proc = subprocess.Popen(cmd, cwd=SCRIPT_DIR, env=env)
-    _children.append(proc)
-    return proc
+    return _spawn_with_log(cmd, SCRIPT_DIR, env, "backend")
 
 
 def start_frontend(frontend_port: int, backend_port: int, dev: bool = False) -> subprocess.Popen:
@@ -243,9 +355,7 @@ def start_frontend(frontend_port: int, backend_port: int, dev: bool = False) -> 
         node_cmd = _resolve_node()
         cmd = [node_cmd, "server.js"]
 
-    proc = subprocess.Popen(cmd, cwd=frontend_dir, env=env)
-    _children.append(proc)
-    return proc
+    return _spawn_with_log(cmd, frontend_dir, env, "frontend")
 
 
 # ── Shutdown ──────────────────────────────────────────────────────
@@ -276,6 +386,16 @@ def cleanup():
                 proc.kill()
             except Exception:
                 pass
+
+    for fh in _log_files:
+        try:
+            fh.write(
+                f"--- session end at {_dt.datetime.now().isoformat(timespec='seconds')} ---\n"
+            )
+            fh.close()
+        except Exception:
+            pass
+    _log_files.clear()
     print("   已关闭所有进程。")
 
 
