@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { CheckCircle } from '@phosphor-icons/react';
 import type { ToolCallInfo, ThinkingBlock as ThinkingBlockType, ToolBlock, SubagentBlock } from '../types';
 import type { MessageAttachment, MessageBlock } from '../../../types';
@@ -6,8 +6,12 @@ import { renderMarkdown, escapeHtml } from '../markdown';
 import { attachmentUrl } from '../../../services/api';
 import ThinkingBlockCmp from './ThinkingBlock';
 import ToolIndicator from './ToolIndicator';
+import StreamingFilePreview from './StreamingFilePreview';
 import SubagentCard from './SubagentCard';
 import PlanTracker from './PlanTracker';
+import ScheduledTaskCard from './ScheduledTaskCard';
+/** 与 StreamingMessage 保持一致的「文件写入」工具白名单。 */
+const FILE_WRITE_TOOLS = new Set(['write_file', 'edit_file']);
 import type { PlanStep } from '../../../stores/streamContext';
 import styles from '../chat.module.css';
 
@@ -149,6 +153,10 @@ function BlocksRenderer({ blocks }: { blocks: MessageBlock[] }) {
               />
             );
           case 'tool':
+            // 定时任务结果走专用卡片（蓝色 info 样式），与 agent 同步回复区分。
+            if (block.name === 'scheduled_task') {
+              return <ScheduledTaskCard key={`sched-${i}`} block={toToolBlock(block)} />;
+            }
             if (PLAN_TOOL_NAMES.has(block.name) && planSteps) {
               if (!planRendered) {
                 planRendered = true;
@@ -156,9 +164,21 @@ function BlocksRenderer({ blocks }: { blocks: MessageBlock[] }) {
               }
               return null;
             }
+            if (FILE_WRITE_TOOLS.has(block.name)) {
+              return (
+                <StreamingFilePreview
+                  key={`tool-${i}`}
+                  block={toToolBlock(block)}
+                  isStreaming={false}
+                />
+              );
+            }
             return <ToolIndicator key={`tool-${i}`} block={toToolBlock(block)} />;
           case 'subagent':
             return <SubagentCard key={`subagent-${i}`} block={toSubagentBlock(block)} />;
+          case 'auto_approve':
+            // YOLO 自动批准已改为输入区底部小 tag 提示，历史消息中亦不再渲染显眼徽章。
+            return null;
           default:
             return null;
         }
@@ -176,7 +196,7 @@ interface Props {
   blocks?: MessageBlock[];
 }
 
-export default function MessageBubble({ role, content, toolCalls, attachments, conversationId, blocks }: Props) {
+function MessageBubbleImpl({ role, content, toolCalls, attachments, conversationId, blocks }: Props) {
   const isUser = role === 'user';
 
   if (isUser) {
@@ -232,3 +252,8 @@ export default function MessageBubble({ role, content, toolCalls, attachments, c
     </div>
   );
 }
+
+// React.memo 默认浅比较 props。messages 数组里每条都是稳定引用，
+// 输入框打字 / 顶层任意 state 更新都不会再触发已渲染消息的 re-render。
+const MessageBubble = memo(MessageBubbleImpl);
+export default MessageBubble;

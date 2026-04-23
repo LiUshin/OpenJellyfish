@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react';
-import { Button, Input, Tooltip, Spin, App } from 'antd';
+import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { Button, Input, Tooltip, Spin, App, Dropdown } from 'antd';
 import {
   FolderOutlined,
   FolderOpenOutlined,
@@ -14,6 +14,7 @@ import {
   FolderAddOutlined,
   HomeOutlined,
   LoadingOutlined,
+  SortAscendingOutlined,
 } from '@ant-design/icons';
 import * as api from '../services/api';
 import type { FileItem } from '../types';
@@ -41,6 +42,41 @@ function formatSize(bytes?: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatMtimeShort(iso?: string): string {
+  if (!iso) return '';
+  // ISO 形如 "2026-04-21T20:30:15.123" → 取 "MM-DD HH:mm"
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return iso.slice(0, 16);
+  return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
+}
+
+type SortKey = 'name-asc' | 'name-desc' | 'mtime-desc' | 'mtime-asc' | 'size-desc' | 'size-asc';
+
+const SORT_STORAGE_KEY = 'jf-filepanel-sort';
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: 'name-asc', label: '名称 A→Z' },
+  { key: 'name-desc', label: '名称 Z→A' },
+  { key: 'mtime-desc', label: '修改时间 新→旧' },
+  { key: 'mtime-asc', label: '修改时间 旧→新' },
+  { key: 'size-desc', label: '大小 大→小' },
+  { key: 'size-asc', label: '大小 小→大' },
+];
+
+function sortFiles(items: FileItem[], sortKey: SortKey): FileItem[] {
+  // 始终目录在前；同类型内按 sortKey 排序
+  const cmpName = (a: FileItem, b: FileItem) => a.name.localeCompare(b.name);
+  const cmpMtime = (a: FileItem, b: FileItem) => (a.modified_at || '').localeCompare(b.modified_at || '');
+  const cmpSize = (a: FileItem, b: FileItem) => (a.size ?? 0) - (b.size ?? 0);
+  const [field, dir] = sortKey.split('-') as ['name' | 'mtime' | 'size', 'asc' | 'desc'];
+  const base = field === 'name' ? cmpName : field === 'mtime' ? cmpMtime : cmpSize;
+  const sign = dir === 'desc' ? -1 : 1;
+  return [...items].sort((a, b) => {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    return sign * base(a, b);
+  });
 }
 
 function joinPath(...parts: string[]): string {
@@ -94,11 +130,22 @@ const DEFAULT_W = 280;
 
 export default function FilePanel() {
   const { message, modal } = App.useApp();
-  const { fileBrowserOpen, setFileBrowserOpen, editingFile, openFile } = useFileWorkspace();
+  const {
+    fileBrowserOpen, setFileBrowserOpen, editingFile, openFile,
+    browserPath: currentPath, setBrowserPath: setCurrentPath,
+  } = useFileWorkspace();
 
-  const [currentPath, setCurrentPath] = useState('/');
   const [files, setFiles] = useState<FileItem[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
+  const [sortKey, setSortKey] = useState<SortKey>(() => {
+    if (typeof window === 'undefined') return 'name-asc';
+    const saved = window.localStorage.getItem(SORT_STORAGE_KEY) as SortKey | null;
+    return saved && SORT_OPTIONS.some(o => o.key === saved) ? saved : 'name-asc';
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem(SORT_STORAGE_KEY, sortKey); } catch { /* ignore quota */ }
+  }, [sortKey]);
+  const displayedFiles = useMemo(() => sortFiles(files, sortKey), [files, sortKey]);
   const [dragActive, setDragActive] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -134,11 +181,7 @@ export default function FilePanel() {
     setLoadingFiles(true);
     try {
       const items = await api.listFiles(path);
-      const sorted = [...items].sort((a, b) => {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-      setFiles(sorted);
+      setFiles(items);
     } catch {
       message.error('加载文件列表失败');
       setFiles([]);
@@ -163,10 +206,7 @@ export default function FilePanel() {
     const trimmed = name.trim();
     const filePath = joinPath(currentPath, trimmed);
     const optimistic: FileItem = { name: trimmed, path: filePath, is_dir: false };
-    setFiles(prev => [...prev, optimistic].sort((a, b) => {
-      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    }));
+    setFiles(prev => [...prev, optimistic]);
     try {
       await api.writeFile(filePath, '');
       message.success('文件已创建');
@@ -187,10 +227,7 @@ export default function FilePanel() {
         if (!acc.some(x => x.path === f.path)) acc.push(f);
         return acc;
       }, []);
-      return merged.sort((a, b) => {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
+      return merged;
     });
     try {
       await api.writeFile(keepPath, '');
@@ -234,10 +271,7 @@ export default function FilePanel() {
     const snapshot = files;
     setFiles(prev => prev.map(f =>
       f.name === item.name ? { ...f, name: newName, path: dest } : f
-    ).sort((a, b) => {
-      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    }));
+    ));
     setRenaming(null);
     try {
       await api.moveFile(src, dest);
@@ -368,6 +402,18 @@ export default function FilePanel() {
           ))}
         </div>
         <Tooltip title="刷新"><Button type="text" size="small" icon={<ReloadOutlined />} style={{ color: C.textSec }} onClick={() => loadFiles(currentPath)} /></Tooltip>
+        <Dropdown
+          trigger={['click']}
+          menu={{
+            selectedKeys: [sortKey],
+            items: SORT_OPTIONS.map(o => ({ key: o.key, label: o.label })),
+            onClick: ({ key }) => setSortKey(key as SortKey),
+          }}
+        >
+          <Tooltip title={`排序：${SORT_OPTIONS.find(o => o.key === sortKey)?.label ?? ''}`}>
+            <Button type="text" size="small" icon={<SortAscendingOutlined />} style={{ color: C.textSec }} />
+          </Tooltip>
+        </Dropdown>
         <Tooltip title="新建文件"><Button type="text" size="small" icon={<PlusOutlined />} style={{ color: C.textSec }} onClick={handleCreateFile} /></Tooltip>
         <Tooltip title="新建文件夹"><Button type="text" size="small" icon={<FolderAddOutlined />} style={{ color: C.textSec }} onClick={handleCreateFolder} /></Tooltip>
         <Tooltip title="上传文件"><Button type="text" size="small" icon={<UploadOutlined />} style={{ color: C.textSec }} onClick={() => fileInputRef.current?.click()} /></Tooltip>
@@ -393,13 +439,13 @@ export default function FilePanel() {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, color: C.textDim, gap: 8, fontSize: 13, padding: '40px 0' }}>
             <Spin indicator={<LoadingOutlined />} />
           </div>
-        ) : files.length === 0 ? (
+        ) : displayedFiles.length === 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: C.textDim, gap: 8, fontSize: 13, padding: '40px 0' }}>
             <FolderOutlined style={{ fontSize: 28 }} />
             <span>空文件夹</span>
           </div>
         ) : (
-          files.map((item) => {
+          displayedFiles.map((item) => {
             const isDir = item.is_dir;
             const isRenaming = renaming === item.name;
             const isHovered = hoveredItem === item.name;
@@ -435,6 +481,9 @@ export default function FilePanel() {
                   <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {item.name}
                   </span>
+                )}
+                {!isDir && sortKey.startsWith('mtime') && item.modified_at && (
+                  <span style={{ color: C.textDim, fontSize: 10, flexShrink: 0 }}>{formatMtimeShort(item.modified_at)}</span>
                 )}
                 {!isDir && <span style={{ color: C.textDim, fontSize: 10, flexShrink: 0 }}>{formatSize(item.size)}</span>}
                 {isHovered && !isRenaming && (

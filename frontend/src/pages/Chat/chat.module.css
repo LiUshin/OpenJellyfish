@@ -1994,3 +1994,599 @@
 :global(.jf-media-expanded iframe) {
   min-height: 80vh;
 }
+
+/* ── 非媒体 <<FILE:>> 内联可点击 pill（jf-file-link）─────────────────
+   渲染于 markdown.ts::nonMediaFileToHtml；点击由
+   fileWorkspaceContext 的全局 [data-jf-file] 委托捕获并触发 revealInBrowser。 */
+:global(.jf-file-link) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px 1px 6px;
+  margin: 0 2px;
+  vertical-align: baseline;
+  font-family: var(--jf-font-code);
+  font-size: 0.92em;
+  line-height: 1.45;
+  color: var(--jf-primary);
+  background: rgba(108, 92, 231, 0.08);
+  border: 1px solid rgba(108, 92, 231, 0.25);
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background var(--jf-duration) var(--jf-ease),
+              border-color var(--jf-duration) var(--jf-ease),
+              color var(--jf-duration) var(--jf-ease);
+}
+
+:global(.jf-file-link:hover) {
+  background: rgba(108, 92, 231, 0.16);
+  border-color: rgba(108, 92, 231, 0.55);
+  color: var(--jf-primary);
+}
+
+:global(.jf-file-link:focus-visible) {
+  outline: 2px solid var(--jf-primary);
+  outline-offset: 1px;
+}
+
+:global(.jf-file-link-icon) {
+  font-size: 0.95em;
+  line-height: 1;
+}
+
+:global(.jf-file-link-name) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+/* ── 媒体 caption 里的「📁 在文件浏览器打开」小按钮（jf-file-reveal）─ */
+:global(.jf-file-reveal) {
+  margin-left: 6px;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  color: var(--jf-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  line-height: 1;
+  transition: background var(--jf-duration) var(--jf-ease),
+              color var(--jf-duration) var(--jf-ease);
+}
+
+:global(.jf-file-reveal:hover) {
+  background: rgba(108, 92, 231, 0.12);
+  color: var(--jf-primary);
+}
+
+/* ==================== StreamingFilePreview (write_file / edit_file 实时打字机) ==================== */
+
+.streamFileCard {
+  margin: 8px 0;
+  border: 1px solid var(--jf-border);
+  border-radius: var(--jf-radius-md);
+  background: var(--jf-bg-inset);
+  overflow: hidden;
+  font-family: var(--jf-font-code);
+}
+
+.streamFileHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: rgba(108, 92, 231, 0.06);
+  border-bottom: 1px solid var(--jf-border);
+  font-size: 12px;
+  color: var(--jf-text);
+}
+
+.streamFileHeaderLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.streamFilePath {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.streamFileLang {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 10px;
+  border-radius: var(--jf-radius-sm);
+  background: rgba(108, 92, 231, 0.15);
+  color: var(--jf-primary);
+  text-transform: lowercase;
+  letter-spacing: 0.5px;
+}
+
+.streamFileStatus {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.streamFileStatusMeta {
+  margin-left: 4px;
+  color: var(--jf-text-muted);
+  font-weight: 400;
+}
+
+.streamFileStatusStreaming {
+  color: var(--jf-primary);
+}
+
+.streamFileStatusDone {
+  color: var(--jf-success);
+}
+
+.streamFileStatusError {
+  color: var(--jf-error);
+}
+
+.streamFileStatusPending {
+  color: var(--jf-warning);
+}
+
+/* ApprovalCard: write_file 用 FilePreviewBody + 浮动审批按钮条 */
+.approvalFileBlock {
+  display: flex;
+  flex-direction: column;
+}
+
+.approvalActionBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  background: rgba(108, 92, 231, 0.04);
+  border-top: 1px solid var(--jf-border);
+}
+
+.approvalActionBarMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--jf-text-muted);
+}
+
+/* ==================== EditDiffViewer (git-style 带上下文 diff) ==================== */
+
+.streamFileHeaderRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.diffExpandBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--jf-border);
+  border-radius: var(--jf-radius-sm);
+  color: var(--jf-text-muted);
+  cursor: pointer;
+  font-family: var(--jf-font-sans);
+  transition: background 0.15s, color 0.15s;
+}
+.diffExpandBtn:hover {
+  background: rgba(108, 92, 231, 0.12);
+  color: var(--jf-primary);
+}
+
+.diffStatAdd {
+  margin-left: 6px;
+  color: var(--jf-success);
+  font-weight: 600;
+}
+
+.diffStatDel {
+  margin-left: 4px;
+  color: var(--jf-error);
+  font-weight: 600;
+}
+
+.diffLoading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  font-size: 12px;
+  color: var(--jf-text-muted);
+  background: rgba(15, 15, 19, 0.35);
+}
+
+.diffWarn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--jf-warning);
+  background: rgba(241, 196, 15, 0.08);
+  border-bottom: 1px solid rgba(241, 196, 15, 0.2);
+}
+
+.diffEmpty {
+  padding: 14px;
+  font-size: 12px;
+  color: var(--jf-text-dim);
+  text-align: center;
+  font-style: italic;
+}
+
+.diffBody {
+  background: rgba(15, 15, 19, 0.55);
+  font-family: var(--jf-font-code);
+  font-size: 12.5px;
+  line-height: 1.55;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.diffHunk {
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+}
+.diffHunk:last-child { border-bottom: none; }
+
+.diffHunkHeader {
+  padding: 4px 14px;
+  font-family: var(--jf-font-code);
+  font-size: 11px;
+  color: var(--jf-text-dim);
+  background: rgba(108, 92, 231, 0.08);
+  border-bottom: 1px solid var(--jf-border);
+}
+
+.diffHunkRange {
+  font-weight: 500;
+}
+
+.diffRow {
+  display: flex;
+  align-items: flex-start;
+  padding: 0 0 0 0;
+  white-space: pre;
+}
+
+.diffRowOldNum,
+.diffRowNewNum {
+  flex-shrink: 0;
+  width: 42px;
+  padding: 1px 6px 1px 0;
+  text-align: right;
+  font-size: 11px;
+  color: var(--jf-text-dim);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.diffRowSign {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--jf-text-dim);
+  user-select: none;
+}
+
+.diffRowText {
+  flex: 1;
+  padding: 1px 12px 1px 4px;
+  background: transparent !important;
+  color: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.diffRowAdd {
+  background: rgba(46, 204, 113, 0.08);
+  color: var(--jf-text);
+}
+.diffRowAdd .diffRowSign { color: var(--jf-success); }
+.diffRowAdd .diffRowText { background: rgba(46, 204, 113, 0.04) !important; }
+
+.diffRowDel {
+  background: rgba(231, 76, 60, 0.08);
+  color: var(--jf-text);
+}
+.diffRowDel .diffRowSign { color: var(--jf-error); }
+.diffRowDel .diffRowText { background: rgba(231, 76, 60, 0.04) !important; }
+
+.diffRowContext {
+  color: var(--jf-text-muted);
+}
+
+.streamFileSpin {
+  display: inline-flex;
+  animation: streamFileSpin 1s linear infinite;
+}
+
+@keyframes streamFileSpin {
+  to { transform: rotate(360deg); }
+}
+
+.streamFileBody {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--jf-text);
+  background: rgba(15, 15, 19, 0.55);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.streamFileBody code {
+  background: transparent !important;
+  padding: 0 !important;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+.streamFileBodyEmpty {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 11px;
+  color: var(--jf-text-dim);
+  background: rgba(15, 15, 19, 0.55);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.streamFileBodyPlaceholder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  font-size: 12px;
+  color: var(--jf-text-muted);
+  background: rgba(15, 15, 19, 0.35);
+}
+
+.streamFileError {
+  padding: 8px 14px;
+  font-size: 11px;
+  color: var(--jf-error);
+  background: rgba(231, 76, 60, 0.08);
+  border-top: 1px solid rgba(231, 76, 60, 0.25);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.streamCursor {
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--jf-primary);
+  animation: streamCursorBlink 1s steps(2, start) infinite;
+  font-weight: 700;
+}
+
+@keyframes streamCursorBlink {
+  to { visibility: hidden; }
+}
+
+/* ────────────────────────────────────────────────────────────
+   YOLO 输入区底部小 tag（不显眼）
+   仅在 YOLO 开关 ON 且当前会话已发生过自动批准时显示。
+   ──────────────────────────────────────────────────────────── */
+.yoloFooterTag {
+  align-self: flex-end;
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-family: var(--jf-font-code);
+  letter-spacing: 0.5px;
+  color: var(--jf-text-muted);
+  background: transparent;
+  border: 1px solid var(--jf-border);
+  border-radius: 999px;
+  opacity: 0.7;
+  user-select: none;
+  transition: opacity var(--jf-duration) var(--jf-ease);
+}
+
+.yoloFooterTag:hover {
+  opacity: 1;
+}
+
+.yoloFooterDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 4px rgba(245, 158, 11, 0.6);
+}
+
+/* ========== Scheduled Task Card ========== */
+/* Renders `scheduled_task` tool blocks (from app/services/scheduler.py).
+ * Uses --jf-info (purple in light theme, blue in dark) to clearly distinguish
+ * task-driven output from spontaneous agent replies. */
+
+.scheduledTaskCard {
+  margin: 10px 0;
+  border-radius: var(--jf-radius-md);
+  background: var(--jf-bg-panel);
+  border: 1px solid var(--jf-info);
+  overflow: hidden;
+  box-shadow: 0 0 0 0 transparent, 0 4px 16px rgba(77, 141, 232, 0.08);
+  transition:
+    border-color var(--jf-duration) var(--jf-ease),
+    box-shadow var(--jf-duration) var(--jf-ease);
+}
+
+.scheduledTaskCardError {
+  border-color: var(--jf-danger, #ef4444);
+  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.12);
+}
+
+.scheduledTaskHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--jf-duration) var(--jf-ease);
+}
+
+.scheduledTaskHeader:hover {
+  background: rgba(77, 141, 232, 0.06);
+}
+
+.scheduledTaskCardError .scheduledTaskHeader:hover {
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.scheduledTaskIconBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(77, 141, 232, 0.12);
+  color: var(--jf-info);
+  flex-shrink: 0;
+}
+
+.scheduledTaskCardError .scheduledTaskIconBadge {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--jf-danger, #ef4444);
+}
+
+.scheduledTaskHeaderText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.scheduledTaskTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scheduledTaskTitleText {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--jf-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+.scheduledTaskScheduleBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  background: rgba(77, 141, 232, 0.12);
+  color: var(--jf-info);
+  border: 1px solid rgba(77, 141, 232, 0.25);
+  letter-spacing: 0.02em;
+}
+
+.scheduledTaskStatus {
+  display: inline-flex;
+  align-items: center;
+  color: var(--jf-success, #10b981);
+}
+
+.scheduledTaskStatusError {
+  color: var(--jf-danger, #ef4444);
+}
+
+.scheduledTaskMeta {
+  font-size: 11px;
+  color: var(--jf-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.scheduledTaskChevron {
+  display: inline-flex;
+  align-items: center;
+  color: var(--jf-text-dim);
+  transition: transform var(--jf-duration) var(--jf-ease);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.scheduledTaskChevronOpen {
+  transform: rotate(180deg);
+}
+
+.scheduledTaskBody {
+  border-top: 1px solid rgba(var(--jf-border-rgb), 0.6);
+  padding: 10px 14px 12px;
+  background: var(--jf-bg-inset);
+}
+
+.scheduledTaskError {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: var(--jf-radius-sm);
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--jf-danger, #ef4444);
+  font-size: 12px;
+  font-family: var(--jf-font-code);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.scheduledTaskContent {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--jf-text);
+  word-wrap: break-word;
+}
+
+.scheduledTaskContent p {
+  margin: 0 0 8px;
+}
+
+.scheduledTaskContent p:last-child {
+  margin-bottom: 0;
+}
+
+.scheduledTaskContent pre {
+  margin: 8px 0;
+  font-size: 12px;
+}

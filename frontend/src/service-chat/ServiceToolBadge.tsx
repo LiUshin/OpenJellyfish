@@ -26,6 +26,7 @@ const TOOL_LABELS: Record<string, string> = {
   read_file: '正在阅读文档…',
   write_file: '正在保存文件…',
   edit_file: '正在编辑文件…',
+  list_files_sorted: '正在整理文件…',
 
   // ── 计划/子任务（deepagents 内置） ────────────────────────────────
   write_todos: '正在制定计划…',

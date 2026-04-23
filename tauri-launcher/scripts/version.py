@@ -77,8 +77,6 @@ def _bump(part: str) -> str:
         sys.exit(1)
 
     return ".".join(map(str, parts))
-
-
 def main():
     if len(sys.argv) < 2:
         print(f"Current version: {_read_version()}")

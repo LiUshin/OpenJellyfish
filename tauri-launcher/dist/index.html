@@ -312,6 +312,76 @@ tr.used td { opacity: 0.4; }
 .tool-btn .tool-title { font-weight: 600; margin-bottom: 2px; }
 .tool-btn .tool-desc { font-size: 11px; color: var(--jf-text-muted); }
 .tool-btn .tool-arrow { color: var(--jf-text-dim); flex-shrink: 0; }
+
+/* Backup card */
+.backup-row {
+  display: flex; align-items: center; gap: 12px; margin-top: 18px;
+}
+.backup-btn {
+  flex: 1;
+  display: flex; align-items: center; gap: 10px; justify-content: center;
+  padding: 12px 18px; border-radius: 12px;
+  background: var(--jf-bg-raised); border: 1px solid var(--jf-border);
+  color: var(--jf-text); cursor: pointer;
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  transition: var(--transition);
+}
+.backup-btn:hover {
+  border-color: var(--jf-primary);
+  background: rgba(232, 159, 217, 0.06);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+}
+.backup-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
+.backup-btn svg { width: 16px; height: 16px; }
+
+/* Help icon with hover tooltip */
+.help-icon {
+  position: relative;
+  width: 26px; height: 26px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: var(--jf-bg-raised);
+  color: var(--jf-text-muted); cursor: help; font-size: 13px; font-weight: 700;
+  border: 1px solid var(--jf-border);
+  transition: all 0.18s;
+}
+.help-icon:hover {
+  color: var(--jf-accent); border-color: var(--jf-accent);
+  background: rgba(95, 201, 230, 0.08);
+}
+.help-icon::after {
+  content: attr(data-tip);
+  position: absolute;
+  right: calc(100% + 12px);
+  top: 50%; transform: translateY(-50%);
+  background: var(--jf-bg-deep);
+  color: var(--jf-text);
+  padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--jf-border);
+  width: 280px; font-size: 11px; line-height: 1.55;
+  font-weight: 400; text-align: left;
+  white-space: pre-line;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.45);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.2s;
+  z-index: 50;
+}
+.help-icon:hover::after { opacity: 1; }
+.help-icon::before {
+  content: ''; position: absolute; right: calc(100% + 6px); top: 50%;
+  transform: translateY(-50%);
+  border: 6px solid transparent; border-left-color: var(--jf-border);
+  opacity: 0; transition: opacity 0.2s;
+  pointer-events: none;
+}
+.help-icon:hover::before { opacity: 1; }
+
+.backup-meta {
+  margin-top: 8px; font-size: 11px; color: var(--jf-text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+.backup-meta.ok { color: var(--jf-success); }
+.backup-meta.warn { color: var(--jf-warning); }
 </style>
 </head>
 <body>
@@ -321,7 +391,7 @@ tr.used td { opacity: 0.4; }
 <!-- Sidebar -->
 <nav>
   <div class="logo-wrap">
-    <img class="logo-img" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA5VJREFUWEftl01oE1EQx/+z2aSJTVqr1oPioYggKOhBFEFRPAjiRQQP4kEED6IX8eBZxJuIF8GDeBBBBBEUUfBDEPyoNqm2NbVN06Sfm83u+mY3m2za7LZbwYsDs8PM/N/M+5j3CL98xH/dv7wALy/A6wswcpTw2RRJV1aJ2CtN0xSWVf7SqyjA6EvwZnIPO7wAf7gAIxcIh+cJl78llD+T0Bi8Blm+BgAcJVT+gWC6Ael3ydYUfD6g0Hnr4nNF9Sdd7Ah4Pc2RRNK2GJtBSCaJk1IOQF+FIB40fJ7z+TvM+I8Uu4P+H7FnVIcXkwfGxMbzUAAAAAElFTkSuQmCC" alt="JellyfishBot" />
+    <img class="logo-img" src="./jellyfishlogo.png" alt="JellyfishBot" />
   </div>
 
   <div class="nav-item active" data-page="launcher" title="控制台">
@@ -507,6 +577,15 @@ tr.used td { opacity: 0.4; }
         本地化 AI Agent 控制台
       </div>
       <button class="btn btn-main btn-sm" onclick="openReleasePage()">查看最新 release ↗</button>
+
+      <div class="backup-row">
+        <button class="backup-btn" id="backupBtn" onclick="runBackup()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span id="backupBtnLabel">打包备份 (config / data / logs / users)</span>
+        </button>
+        <span class="help-icon" data-tip="一键把项目根目录下的 config/、data/、logs/、users/ 四个目录压缩成 ZIP，用于备份或迁移到新机器。&#10;&#10;• 弹窗让你选保存位置（默认文件名带时间戳）&#10;• 自动跳过 __pycache__ / node_modules / venv / target 等无用大目录&#10;• 不包含 .env（API Key 出于安全考虑不打包，新机器请重新配置）&#10;• 锁定中的日志文件会被跳过，不影响其他文件备份">?</span>
+      </div>
+      <div id="backupStatus" class="backup-meta"></div>
     </div>
 
     <h3 style="font-size:14px;font-weight:700;color:var(--jf-text-muted);margin:24px 0 12px;letter-spacing:0.3px;text-transform:uppercase">快捷工具</h3>
@@ -648,6 +727,12 @@ function mockInvoke(cmd, args) {
   if (cmd === 'open_users_dir') return Promise.resolve();
   if (cmd === 'open_logs_dir') return Promise.resolve();
   if (cmd === 'open_release_page') return Promise.resolve();
+  if (cmd === 'pack_backup') return Promise.resolve({
+    ok: true, cancelled: false,
+    path: '/mock/Desktop/jellyfishbot-backup-20260421-143000.zip',
+    file_count: 142, size_bytes: 23456789,
+    skipped_dirs: [], message: 'mock backup'
+  });
   return Promise.resolve();
 }
 
@@ -782,6 +867,8 @@ async function testKey(provider) {
 // ── Start / Stop ─────────────────────────────────────────────────
 let statusInterval = null;
 let isRunning = false;
+// 用于去重 toast：仅当 ready 状态从 false → true 切换时弹一次
+let lastReadyState = false;
 
 async function toggleApp() {
   const btn = document.getElementById('powerBtn');
@@ -818,7 +905,8 @@ function updateRunUI(s) {
 
   if (s.running) {
     isRunning = true;
-    if (s.backend_ready && s.frontend_ready) {
+    const ready = s.backend_ready && s.frontend_ready;
+    if (ready) {
       btn.className = 'power-btn running'; btn.disabled = false;
       label.textContent = 'STOP';
       subText.textContent = 'http://localhost:' + s.frontend_port;
@@ -829,7 +917,10 @@ function updateRunUI(s) {
       } else {
         lanRow.style.display = 'none';
       }
-      showToast('JellyfishBot 服务已就绪');
+      // 仅在「之前未就绪 → 现在就绪」切换瞬间弹一次，避免每次 polling 都 toast
+      if (!lastReadyState) {
+        showToast('JellyfishBot 服务已就绪');
+      }
     } else {
       btn.className = 'power-btn running'; btn.disabled = true;
       label.textContent = '...';
@@ -837,8 +928,10 @@ function updateRunUI(s) {
       subLink.style.display = 'none'; sub.classList.add('visible');
       lanRow.style.display = 'none';
     }
+    lastReadyState = ready;
   } else {
     isRunning = false;
+    lastReadyState = false;
     btn.className = 'power-btn'; btn.disabled = false;
     label.textContent = 'START';
     sub.classList.remove('visible');
@@ -1032,6 +1125,48 @@ async function openReleasePage() {
     await invoke('open_release_page');
   } catch(e) {
     showToast('跳转失败: ' + e, 'error');
+  }
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+async function runBackup() {
+  const btn = document.getElementById('backupBtn');
+  const label = document.getElementById('backupBtnLabel');
+  const status = document.getElementById('backupStatus');
+  const origLabel = label.textContent;
+
+  btn.disabled = true;
+  label.innerHTML = '<span class="spinner"></span> 打包中...';
+  status.className = 'backup-meta';
+  status.textContent = '正在压缩 config/data/logs/users，文件较多时可能需要 30~120 秒...';
+
+  try {
+    const res = await invoke('pack_backup');
+    if (res.cancelled) {
+      status.className = 'backup-meta';
+      status.textContent = '已取消';
+    } else if (res.ok) {
+      status.className = 'backup-meta ok';
+      const skippedNote = res.skipped_dirs && res.skipped_dirs.length
+        ? '   (跳过 ' + res.skipped_dirs.length + ' 项)'
+        : '';
+      status.textContent = '✓ 已生成 ' + fmtBytes(res.size_bytes) +
+        '   ' + res.file_count + ' 个文件' + skippedNote;
+      showToast('备份成功：' + res.path);
+    }
+  } catch(e) {
+    status.className = 'backup-meta warn';
+    status.textContent = '备份失败: ' + e;
+    showToast('备份失败: ' + e, 'error');
+  } finally {
+    btn.disabled = false;
+    label.textContent = origLabel;
   }
 }
 

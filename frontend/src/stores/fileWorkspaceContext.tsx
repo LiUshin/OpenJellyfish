@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useState,
+  useEffect,
   useCallback,
   useRef,
   type ReactNode,
@@ -15,6 +16,11 @@ interface FileWorkspaceState {
   fileBrowserOpen: boolean;
   setFileBrowserOpen: (v: boolean | ((prev: boolean) => boolean)) => void;
 
+  /** 文件浏览器（FilePanel）当前展示的目录路径。原本是 FilePanel 的 local state，
+   *  现在提升到 context 以便从外部（比如点击聊天里的 <<FILE:>> tag）跳转到指定目录。 */
+  browserPath: string;
+  setBrowserPath: (p: string) => void;
+
   editingFile: string | null;
   editContent: string;
   editDirty: boolean;
@@ -23,6 +29,11 @@ interface FileWorkspaceState {
   saveFile: () => Promise<void>;
   closeFile: (force?: boolean) => void;
   setEditContent: (s: string) => void;
+
+  /** 在 UI 内同时「打开文件 + 跳转浏览器到所在目录 + 打开文件浏览器面板」。
+   *  用于聊天里 <<FILE:/abs/path>> tag 的点击响应：一次点击让用户既能编辑/预览文件，
+   *  也能在右侧文件浏览器看到它在文件系统里的位置（高亮所选文件）。 */
+  revealInBrowser: (path: string) => Promise<void>;
 
   splitMode: SplitMode;
   setSplitMode: (m: SplitMode) => void;
@@ -51,6 +62,7 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
   const { message, modal } = App.useApp();
 
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+  const [browserPath, setBrowserPath] = useState<string>('/');
 
   const [editingFile, setEditingFile] = useState<string | null>(null);
   const [editContent, setEditContentRaw] = useState('');
@@ -126,6 +138,45 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [editingFile, editContent, message]);
 
+  /** 计算 path 的父目录（始终以 '/' 开头）。 */
+  function parentDir(path: string): string {
+    if (!path || path === '/') return '/';
+    const trimmed = path.replace(/\/+$/, '');
+    const idx = trimmed.lastIndexOf('/');
+    if (idx <= 0) return '/';
+    return trimmed.slice(0, idx);
+  }
+
+  const revealInBrowser = useCallback(async (path: string) => {
+    if (!path) return;
+    const normalized = path.startsWith('/') ? path : '/' + path;
+    setBrowserPath(parentDir(normalized));
+    setFileBrowserOpen(true);
+    try {
+      await openFile(normalized);
+    } catch {
+      // openFile 已经处理了 toast；这里继续保留浏览器跳转效果。
+    }
+  }, [openFile]);
+
+  // 全局点击委托：聊天/文档里渲染的 [data-jf-file] 元素点击后，
+  // 让 markdown 渲染层（无 React 上下文）也能触发 revealInBrowser。
+  useEffect(() => {
+    const handler = (e: globalThis.MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const el = target.closest?.('[data-jf-file]') as HTMLElement | null;
+      if (!el) return;
+      const path = el.getAttribute('data-jf-file');
+      if (!path) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void revealInBrowser(path);
+    };
+    document.addEventListener('click', handler);
+    return () => document.removeEventListener('click', handler);
+  }, [revealInBrowser]);
+
   const closeFile = useCallback((force = false) => {
     if (!force && dirtyRef.current) {
       modal.confirm({
@@ -147,6 +198,8 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
   const value: FileWorkspaceState = {
     fileBrowserOpen,
     setFileBrowserOpen,
+    browserPath,
+    setBrowserPath,
     editingFile,
     editContent,
     editDirty,
@@ -155,6 +208,7 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     saveFile,
     closeFile,
     setEditContent,
+    revealInBrowser,
     splitMode,
     setSplitMode,
     splitRatio,

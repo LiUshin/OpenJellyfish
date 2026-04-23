@@ -1,20 +1,18 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Button, Tag, Input, Checkbox, Space, Popconfirm } from 'antd';
 import {
   Check,
   X,
   PencilSimple,
-  FileCode,
-  FileArrowUp,
   ListChecks,
   Plus,
   Trash,
   ShieldCheck,
-  CaretDown,
-  CaretRight,
   ChatCircleDots,
 } from '@phosphor-icons/react';
 import styles from '../chat.module.css';
+import { FilePreviewBody } from './StreamingFilePreview';
+import EditDiffViewer from './EditDiffViewer';
 
 const { TextArea } = Input;
 
@@ -50,52 +48,6 @@ interface ApprovalCardProps {
   onResume: (decisions: Decision[]) => void;
 }
 
-function computeLineDiff(
-  oldLines: string[],
-  newLines: string[],
-): { left: Array<{ type: 'eq' | 'del'; text: string }>; right: Array<{ type: 'eq' | 'add'; text: string }> } {
-  const left: Array<{ type: 'eq' | 'del'; text: string }> = [];
-  const right: Array<{ type: 'eq' | 'add'; text: string }> = [];
-  let oi = 0;
-  let ni = 0;
-  const maxLen = Math.max(oldLines.length, newLines.length);
-
-  while (oi < oldLines.length || ni < newLines.length) {
-    if (oi < oldLines.length && ni < newLines.length) {
-      if (oldLines[oi] === newLines[ni]) {
-        left.push({ type: 'eq', text: oldLines[oi] });
-        right.push({ type: 'eq', text: newLines[ni] });
-        oi++; ni++;
-      } else {
-        let found = false;
-        const lookAhead = Math.min(5, maxLen);
-        for (let d = 1; d <= lookAhead; d++) {
-          if (ni + d < newLines.length && oldLines[oi] === newLines[ni + d]) {
-            for (let j = 0; j < d; j++) { left.push({ type: 'eq', text: '' }); right.push({ type: 'add', text: newLines[ni + j] }); }
-            left.push({ type: 'eq', text: oldLines[oi] }); right.push({ type: 'eq', text: newLines[ni + d] });
-            ni += d + 1; oi++; found = true; break;
-          }
-          if (oi + d < oldLines.length && oldLines[oi + d] === newLines[ni]) {
-            for (let j = 0; j < d; j++) { left.push({ type: 'del', text: oldLines[oi + j] }); right.push({ type: 'eq', text: '' }); }
-            left.push({ type: 'eq', text: oldLines[oi + d] }); right.push({ type: 'eq', text: newLines[ni] });
-            oi += d + 1; ni++; found = true; break;
-          }
-        }
-        if (!found) {
-          left.push({ type: 'del', text: oldLines[oi] });
-          right.push({ type: 'add', text: newLines[ni] });
-          oi++; ni++;
-        }
-      }
-    } else if (oi < oldLines.length) {
-      left.push({ type: 'del', text: oldLines[oi] }); right.push({ type: 'eq', text: '' }); oi++;
-    } else {
-      left.push({ type: 'eq', text: '' }); right.push({ type: 'add', text: newLines[ni] }); ni++;
-    }
-  }
-  return { left, right };
-}
-
 function FileActionCard({
   action, config, decision, onDecide,
 }: {
@@ -104,7 +56,6 @@ function FileActionCard({
   decision: Decision | undefined;
   onDecide: (d: Decision) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editedContent, setEditedContent] = useState(
     action.name === 'write_file' ? action.args.content ?? '' : action.args.new_string ?? '',
@@ -113,18 +64,7 @@ function FileActionCard({
   const isWrite = action.name === 'write_file';
   const allowed = config?.allowed_decisions ?? ['approve', 'reject', 'edit'];
 
-  const diff = useMemo(() => {
-    if (isWrite) return null;
-    return computeLineDiff(
-      (action.args.old_string ?? '').split('\n'),
-      (action.args.new_string ?? '').split('\n'),
-    );
-  }, [action, isWrite]);
-
-  const addCount = isWrite
-    ? (action.args.content ?? '').split('\n').length
-    : diff?.right.filter(l => l.type === 'add').length ?? 0;
-  const delCount = isWrite ? 0 : diff?.left.filter(l => l.type === 'del').length ?? 0;
+  const addCount = isWrite ? (action.args.content ?? '').split('\n').length : 0;
 
   const handleApprove = (e: React.MouseEvent) => { e.stopPropagation(); onDecide({ type: 'approve' }); };
   const handleReject = () => onDecide({ type: 'reject' });
@@ -147,102 +87,127 @@ function FileActionCard({
     </Tag>
   );
 
-  if (!expanded) {
+  // write_file 使用 FilePreviewBody（语法高亮 + 完整内容）；
+  // edit_file 使用 EditDiffViewer（git 风格带上下文 hunk + 展开全文）。
+  const filePath = action.args.path ?? action.args.file_path ?? null;
+
+  if (isWrite) {
     return (
-      <div className={styles.fileBar} onClick={() => !decision && setExpanded(true)}>
-        <div className={styles.fileBarIcon}>
-          {isWrite ? <FileArrowUp size={18} weight="duotone" /> : <FileCode size={18} weight="duotone" />}
-        </div>
-        <div className={styles.fileBarInfo}>
-          <div className={styles.fileBarPath}>{action.args.path ?? action.args.file_path ?? '未知路径'}</div>
-          <div className={styles.fileBarMeta}>
-            {isWrite ? '新建文件' : '修改文件'}
-            {addCount > 0 && <span style={{ color: 'var(--jf-success)', marginLeft: 8 }}>+{addCount}</span>}
-            {delCount > 0 && <span style={{ color: 'var(--jf-error)', marginLeft: 6 }}>-{delCount}</span>}
+      <div className={styles.approvalFileBlock}>
+        {!editing ? (
+          <FilePreviewBody
+            filePath={filePath}
+            text={action.args.content ?? ''}
+            kind="write"
+            status={decision ? 'done' : 'pending'}
+          />
+        ) : (
+          <div className={styles.diffPanel}>
+            <div className={styles.diffPanelHeader}>
+              <div className={styles.diffPanelTitle}>
+                <ShieldCheck size={16} weight="duotone" color="var(--jf-warning)" />
+                <span style={{ fontFamily: 'var(--jf-font-code)', fontSize: 12 }}>{filePath ?? '未知路径'}</span>
+                <Tag color="blue" style={{ fontSize: 10 }}>编辑中</Tag>
+              </div>
+            </div>
+            <TextArea
+              value={editedContent}
+              onChange={(e) => setEditedContent(e.target.value)}
+              autoSize={{ minRows: 6, maxRows: 24 }}
+              className={styles.approvalEditor}
+              style={{ margin: '12px 16px' }}
+            />
           </div>
-        </div>
-        {badge}
-        <div className={styles.fileBarBtns}>
-          {!decision && (
-            <>
-              <Button size="small" type="primary" icon={<Check size={14} weight="bold" />} onClick={handleApprove}>批准</Button>
-              <Button size="small" type="text" icon={<CaretDown size={14} />} onClick={(e) => { e.stopPropagation(); setExpanded(true); }} style={{ color: 'var(--jf-text-muted)' }} />
-            </>
-          )}
-        </div>
+        )}
+
+        {!decision && (
+          <div className={styles.approvalActionBar}>
+            <div className={styles.approvalActionBarMeta}>
+              {!editing && addCount > 0 && (
+                <span style={{ color: 'var(--jf-success)' }}>+{addCount} 行</span>
+              )}
+              {badge}
+            </div>
+            <Space size={6}>
+              {allowed.includes('edit') && !editing && (
+                <Button size="small" icon={<PencilSimple size={14} />} onClick={() => setEditing(true)}>编辑</Button>
+              )}
+              {editing && (
+                <Button size="small" type="primary" onClick={handleSaveEdit}>保存编辑</Button>
+              )}
+              {allowed.includes('reject') && (
+                <Popconfirm title="确认拒绝此操作？" onConfirm={handleReject} okText="确认" cancelText="取消">
+                  <Button size="small" danger icon={<X size={14} weight="bold" />}>拒绝</Button>
+                </Popconfirm>
+              )}
+              {allowed.includes('approve') && (
+                <Button size="small" type="primary" icon={<Check size={14} weight="bold" />} onClick={handleApprove}>批准</Button>
+              )}
+            </Space>
+          </div>
+        )}
+        {decision && (
+          <div className={styles.approvalActionBar}>
+            <div className={styles.approvalActionBarMeta}>{badge}</div>
+          </div>
+        )}
       </div>
     );
   }
 
+  // ── edit_file 分支：EditDiffViewer + 统一 actionBar ─────────────
   return (
-    <div className={styles.diffPanel}>
-      <div className={styles.diffPanelHeader}>
-        <div className={styles.diffPanelTitle}>
-          <ShieldCheck size={16} weight="duotone" color="var(--jf-warning)" />
-          <span style={{ fontFamily: 'var(--jf-font-code)', fontSize: 12 }}>{action.args.path ?? action.args.file_path ?? '未知路径'}</span>
-          <Tag color={isWrite ? 'blue' : 'orange'} style={{ fontSize: 10 }}>{isWrite ? '新建' : '修改'}</Tag>
-          {badge}
-        </div>
-        <Button size="small" type="text" icon={<CaretRight size={14} />} onClick={() => setExpanded(false)} style={{ color: 'var(--jf-text-muted)' }}>
-          收起
-        </Button>
-      </div>
-
-      {!editing && (
-        isWrite ? (
-          <div className={styles.diffInline}>
-            {(action.args.content ?? '').split('\n').map((line, i) => (
-              <div key={i} className={`${styles.diffSbsLine} ${styles.diffAdd}`}>
-                <span className={styles.diffLineNum}>{i + 1}</span>{line}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className={styles.diffSbs}>
-            <div className={`${styles.diffSbsPane} ${styles.diffSbsPaneLeft}`}>
-              {diff?.left.map((l, i) => (
-                <div key={i} className={`${styles.diffSbsLine} ${l.type === 'del' ? styles.diffDel : styles.diffEq}`}>
-                  <span className={styles.diffLineNum}>{l.text !== '' ? i + 1 : ''}</span>{l.text}
-                </div>
-              ))}
-            </div>
-            <div className={styles.diffSbsPane}>
-              {diff?.right.map((l, i) => (
-                <div key={i} className={`${styles.diffSbsLine} ${l.type === 'add' ? styles.diffAdd : styles.diffEq}`}>
-                  <span className={styles.diffLineNum}>{l.text !== '' ? i + 1 : ''}</span>{l.text}
-                </div>
-              ))}
-            </div>
-          </div>
-        )
-      )}
-
-      {editing && (
-        <TextArea
-          value={editedContent}
-          onChange={(e) => setEditedContent(e.target.value)}
-          autoSize={{ minRows: 3, maxRows: 20 }}
-          className={styles.approvalEditor}
-          style={{ margin: '12px 16px' }}
+    <div className={styles.approvalFileBlock}>
+      {!editing ? (
+        <EditDiffViewer
+          filePath={filePath ?? '未知路径'}
+          oldString={action.args.old_string ?? ''}
+          newString={action.args.new_string ?? ''}
+          status={decision ? 'done' : 'pending'}
         />
+      ) : (
+        <div className={styles.diffPanel}>
+          <div className={styles.diffPanelHeader}>
+            <div className={styles.diffPanelTitle}>
+              <ShieldCheck size={16} weight="duotone" color="var(--jf-warning)" />
+              <span style={{ fontFamily: 'var(--jf-font-code)', fontSize: 12 }}>{filePath ?? '未知路径'}</span>
+              <Tag color="blue" style={{ fontSize: 10 }}>编辑 new_string</Tag>
+            </div>
+          </div>
+          <TextArea
+            value={editedContent}
+            onChange={(e) => setEditedContent(e.target.value)}
+            autoSize={{ minRows: 6, maxRows: 24 }}
+            className={styles.approvalEditor}
+            style={{ margin: '12px 16px' }}
+          />
+        </div>
       )}
 
       {!decision && (
-        <div className={styles.diffPanelActions}>
-          {allowed.includes('edit') && !editing && (
-            <Button size="small" icon={<PencilSimple size={14} />} onClick={() => setEditing(true)}>编辑</Button>
-          )}
-          {editing && (
-            <Button size="small" type="primary" onClick={handleSaveEdit}>保存编辑</Button>
-          )}
-          {allowed.includes('reject') && (
-            <Popconfirm title="确认拒绝此操作？" onConfirm={handleReject} okText="确认" cancelText="取消">
-              <Button size="small" danger icon={<X size={14} weight="bold" />}>拒绝</Button>
-            </Popconfirm>
-          )}
-          {allowed.includes('approve') && (
-            <Button size="small" type="primary" icon={<Check size={14} weight="bold" />} onClick={handleApprove}>批准</Button>
-          )}
+        <div className={styles.approvalActionBar}>
+          <div className={styles.approvalActionBarMeta}>{badge}</div>
+          <Space size={6}>
+            {allowed.includes('edit') && !editing && (
+              <Button size="small" icon={<PencilSimple size={14} />} onClick={() => setEditing(true)}>编辑</Button>
+            )}
+            {editing && (
+              <Button size="small" type="primary" onClick={handleSaveEdit}>保存编辑</Button>
+            )}
+            {allowed.includes('reject') && (
+              <Popconfirm title="确认拒绝此操作？" onConfirm={handleReject} okText="确认" cancelText="取消">
+                <Button size="small" danger icon={<X size={14} weight="bold" />}>拒绝</Button>
+              </Popconfirm>
+            )}
+            {allowed.includes('approve') && (
+              <Button size="small" type="primary" icon={<Check size={14} weight="bold" />} onClick={handleApprove}>批准</Button>
+            )}
+          </Space>
+        </div>
+      )}
+      {decision && (
+        <div className={styles.approvalActionBar}>
+          <div className={styles.approvalActionBarMeta}>{badge}</div>
         </div>
       )}
     </div>

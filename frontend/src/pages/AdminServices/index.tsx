@@ -3,6 +3,7 @@ import {
   Table, Modal, Form, Input, Select, Button, Tag, message,
   Popconfirm, Space, Typography, Checkbox,
   Spin, Empty, InputNumber, Tooltip,
+  Drawer, Segmented,
 } from 'antd';
 import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons';
 import {
@@ -25,17 +26,23 @@ import {
   Info,
   MagicWand,
   ArrowSquareOut,
+  ChartBar,
 } from '@phosphor-icons/react';
 import FileTreePicker, { PickerTrigger } from '../../components/FileTreePicker';
 import {
   listServices, getService, createService, updateService, deleteService,
   getModels, listPromptVersions, listProfileVersions, listServiceKeys,
   createServiceKey, deleteServiceKey, request,
+  listServiceConversations, getServiceConversation, deleteServiceConversation,
+  listServiceUsage,
 } from '../../services/api';
 import type {
   ServiceConfig, ModelInfo, PromptVersion,
   ServiceKey, WeChatSession, WeChatMessage,
 } from '../../types';
+import type {
+  ServiceConvSummary, ServiceConvDetail, ServiceUsageRecord,
+} from '../../services/api';
 import { fmtUserTime } from '../../utils/timezone';
 import LogoLoading from '../../components/LogoLoading';
 
@@ -333,6 +340,19 @@ export default function AdminServicesPage() {
   const [chatTitle, setChatTitle] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
 
+  // 使用情况：consumer 会话历史 + API 调用记录
+  const [svcConvs, setSvcConvs] = useState<ServiceConvSummary[]>([]);
+  const [svcConvsLoading, setSvcConvsLoading] = useState(false);
+  const [svcUsage, setSvcUsage] = useState<ServiceUsageRecord[]>([]);
+  const [svcUsageLoading, setSvcUsageLoading] = useState(false);
+  const [usageView, setUsageView] = useState<'convs' | 'records'>('convs');
+  const [usageChannelFilter, setUsageChannelFilter] = useState<'' | 'web' | 'api' | 'wechat'>('');
+
+  // service consumer 会话查看 Drawer
+  const [convDrawerOpen, setConvDrawerOpen] = useState(false);
+  const [convDrawerData, setConvDrawerData] = useState<ServiceConvDetail | null>(null);
+  const [convDrawerLoading, setConvDrawerLoading] = useState(false);
+
   const [svcSearch, setSvcSearch] = useState('');
 
   const filteredServices = useMemo(() => {
@@ -502,6 +522,59 @@ export default function AdminServicesPage() {
     }
   };
 
+  /* ─── 使用情况：会话历史 + 调用记录 ─── */
+
+  const loadSvcConvs = useCallback(async (sid: string) => {
+    setSvcConvsLoading(true);
+    try {
+      setSvcConvs(await listServiceConversations(sid));
+    } catch {
+      setSvcConvs([]);
+    } finally {
+      setSvcConvsLoading(false);
+    }
+  }, []);
+
+  const loadSvcUsage = useCallback(async (sid: string,
+                                          channel?: '' | 'web' | 'api' | 'wechat') => {
+    setSvcUsageLoading(true);
+    try {
+      const r = await listServiceUsage(sid, {
+        limit: 200,
+        channel: channel || undefined,
+      });
+      setSvcUsage(r.records);
+    } catch {
+      setSvcUsage([]);
+    } finally {
+      setSvcUsageLoading(false);
+    }
+  }, []);
+
+  const openSvcConvDrawer = useCallback(async (sid: string, cid: string) => {
+    setConvDrawerOpen(true);
+    setConvDrawerLoading(true);
+    setConvDrawerData(null);
+    try {
+      const data = await getServiceConversation(sid, cid);
+      setConvDrawerData(data);
+    } catch (e: unknown) {
+      message.error((e as Error).message);
+    } finally {
+      setConvDrawerLoading(false);
+    }
+  }, []);
+
+  const handleDeleteSvcConv = async (sid: string, cid: string) => {
+    try {
+      await deleteServiceConversation(sid, cid);
+      message.success('已删除');
+      loadSvcConvs(sid);
+    } catch (e: unknown) {
+      message.error((e as Error).message);
+    }
+  };
+
   /* ─── Service CRUD ─── */
 
   const selectService = (svc: ServiceConfig) => {
@@ -512,6 +585,8 @@ export default function AdminServicesPage() {
     } else {
       setWcSessions([]);
     }
+    loadSvcConvs(svc.id);
+    loadSvcUsage(svc.id);
   };
 
   const openCreateModal = () => {
@@ -688,6 +763,120 @@ export default function AdminServicesPage() {
           </Popconfirm>
         </Space>
       ),
+    },
+  ];
+
+  /* ─── 使用情况 table 列 ─── */
+
+  const SOURCE_LABELS: Record<string, string> = {
+    web: '网页', api: 'API', wechat: '微信', '': '未知',
+  };
+  const SOURCE_COLORS: Record<string, string> = {
+    web: 'blue', api: 'purple', wechat: 'green', '': 'default',
+  };
+
+  const svcConvColumns = [
+    {
+      title: '来源', dataIndex: 'source', key: 'source', width: 80,
+      render: (s: string) => (
+        <Tag color={SOURCE_COLORS[s] ?? 'default'}>{SOURCE_LABELS[s] ?? s}</Tag>
+      ),
+    },
+    {
+      title: '标题', dataIndex: 'title', key: 'title', ellipsis: true,
+      render: (t: string, r: ServiceConvSummary) =>
+        t ? (
+          <span>{t}</span>
+        ) : (
+          <span style={{ color: C.muted, fontSize: 12 }}>
+            (无标题 · {r.id.slice(0, 8)})
+          </span>
+        ),
+    },
+    {
+      title: '消息', dataIndex: 'message_count', key: 'message_count',
+      width: 70, align: 'right' as const,
+    },
+    {
+      title: '最近活跃', dataIndex: 'updated_at', key: 'updated_at', width: 140,
+      render: (v: string) => fmtUserTime(v, 'short') || '-',
+    },
+    {
+      title: '', key: 'actions', width: 130,
+      render: (_: unknown, r: ServiceConvSummary) => (
+        <Space size={4}>
+          <Button
+            size="small"
+            onClick={() => currentSvc && openSvcConvDrawer(currentSvc.id, r.id)}
+          >
+            查看
+          </Button>
+          <Popconfirm
+            title="删除此会话？历史消息和上传文件都会被清掉，无法恢复。"
+            onConfirm={() => currentSvc && handleDeleteSvcConv(currentSvc.id, r.id)}
+          >
+            <Button size="small" danger>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  const svcUsageColumns = [
+    {
+      title: '时间', dataIndex: 'ts', key: 'ts', width: 150,
+      render: (v: string) => fmtUserTime(v, 'short') || v,
+    },
+    {
+      title: '来源', dataIndex: 'channel', key: 'channel', width: 70,
+      render: (c: string) => (
+        <Tag color={SOURCE_COLORS[c] ?? 'default'}>{SOURCE_LABELS[c] ?? c}</Tag>
+      ),
+    },
+    {
+      title: 'Endpoint', dataIndex: 'endpoint', key: 'endpoint', ellipsis: true,
+      render: (e: string) => (
+        <code style={{ fontSize: 11, fontFamily: "'Cascadia Code',monospace", color: C.text }}>
+          {e}
+        </code>
+      ),
+    },
+    {
+      title: 'Key', dataIndex: 'key_id', key: 'key_id', width: 110,
+      render: (v: string) =>
+        v ? (
+          <code style={{ fontSize: 11, fontFamily: "'Cascadia Code',monospace", color: C.muted }}>
+            {v}
+          </code>
+        ) : (
+          <span style={{ color: C.muted }}>-</span>
+        ),
+    },
+    {
+      title: '会话', dataIndex: 'conv_id', key: 'conv_id', width: 100,
+      render: (cid: string) =>
+        cid ? (
+          <Button
+            type="link" size="small"
+            style={{ padding: 0, fontSize: 11 }}
+            onClick={() => currentSvc && openSvcConvDrawer(currentSvc.id, cid)}
+          >
+            {cid.slice(0, 8)}
+          </Button>
+        ) : (
+          <span style={{ color: C.muted }}>-</span>
+        ),
+    },
+    {
+      title: '状态', dataIndex: 'status_code', key: 'status_code', width: 70,
+      render: (sc: number, r: ServiceUsageRecord) => (
+        <Tag color={r.ok ? 'success' : 'error'}>{sc}</Tag>
+      ),
+    },
+    {
+      title: '耗时', dataIndex: 'latency_ms', key: 'latency_ms',
+      width: 80, align: 'right' as const,
+      render: (ms: number) => `${ms} ms`,
     },
   ];
 
@@ -1110,6 +1299,83 @@ export default function AdminServicesPage() {
                 {renderWeChatContent()}
               </ModuleCard>
 
+              {/* Module: 使用情况 — consumer 会话历史 + API 调用记录 */}
+              <ModuleCard
+                title="使用情况"
+                icon={<ChartBar size={16} />}
+                extra={
+                  <Space size={8}>
+                    <Segmented
+                      size="small"
+                      value={usageView}
+                      onChange={(v) => setUsageView(v as 'convs' | 'records')}
+                      options={[
+                        { value: 'convs', label: `会话 (${svcConvs.length})` },
+                        { value: 'records', label: `调用 (${svcUsage.length})` },
+                      ]}
+                    />
+                    <Button
+                      size="small"
+                      icon={<ArrowsClockwise size={14} />}
+                      onClick={() => {
+                        if (!currentSvc) return;
+                        if (usageView === 'convs') loadSvcConvs(currentSvc.id);
+                        else loadSvcUsage(currentSvc.id, usageChannelFilter);
+                      }}
+                    >
+                      刷新
+                    </Button>
+                  </Space>
+                }
+              >
+                {usageView === 'convs' ? (
+                  <Table
+                    dataSource={svcConvs}
+                    columns={svcConvColumns}
+                    rowKey="id"
+                    size="small"
+                    loading={svcConvsLoading}
+                    pagination={{ pageSize: 20, hideOnSinglePage: true, size: 'small' }}
+                    locale={{ emptyText: '暂无 consumer 会话' }}
+                    onRow={(_, index) => ({
+                      style: { background: (index ?? 0) % 2 === 0 ? C.bg1 : C.bg2 },
+                    })}
+                  />
+                ) : (
+                  <>
+                    <div style={{ marginBottom: 8 }}>
+                      <Segmented
+                        size="small"
+                        value={usageChannelFilter}
+                        onChange={(v) => {
+                          const ch = v as '' | 'web' | 'api' | 'wechat';
+                          setUsageChannelFilter(ch);
+                          if (currentSvc) loadSvcUsage(currentSvc.id, ch);
+                        }}
+                        options={[
+                          { value: '', label: '全部' },
+                          { value: 'web', label: '网页' },
+                          { value: 'api', label: 'API' },
+                          { value: 'wechat', label: '微信' },
+                        ]}
+                      />
+                    </div>
+                    <Table
+                      dataSource={svcUsage}
+                      columns={svcUsageColumns}
+                      rowKey={(r, idx) => `${r.ts}-${idx ?? 0}`}
+                      size="small"
+                      loading={svcUsageLoading}
+                      pagination={{ pageSize: 50, hideOnSinglePage: true, size: 'small' }}
+                      locale={{ emptyText: '暂无调用记录' }}
+                      onRow={(_, index) => ({
+                        style: { background: (index ?? 0) % 2 === 0 ? C.bg1 : C.bg2 },
+                      })}
+                    />
+                  </>
+                )}
+              </ModuleCard>
+
               {/* Module: Test / API Endpoints */}
               <ModuleCard title="API 端点 & 测试" icon={<ArrowSquareOut size={16} />}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1428,6 +1694,71 @@ export default function AdminServicesPage() {
           </div>
         )}
       </Modal>
+
+      {/* ── Service Consumer 会话查看 Drawer ── */}
+      <Drawer
+        open={convDrawerOpen}
+        onClose={() => setConvDrawerOpen(false)}
+        width={720}
+        destroyOnClose
+        title={
+          convDrawerData ? (
+            <Space size={8}>
+              <Tag color={SOURCE_COLORS[convDrawerData.source] ?? 'default'}>
+                {SOURCE_LABELS[convDrawerData.source] ?? convDrawerData.source}
+              </Tag>
+              <span>{convDrawerData.title || `(无标题 · ${convDrawerData.id.slice(0, 8)})`}</span>
+              <Text style={{ color: C.muted, fontSize: 12 }}>
+                · {convDrawerData.message_count} 条
+              </Text>
+            </Space>
+          ) : (
+            '会话详情'
+          )
+        }
+      >
+        {convDrawerLoading ? (
+          <div style={{ padding: 32, textAlign: 'center' }}><Spin /></div>
+        ) : !convDrawerData || convDrawerData.messages.length === 0 ? (
+          <Empty description="暂无消息" />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {convDrawerData.messages.map((m, i) => (
+              <div
+                key={i}
+                style={{
+                  borderLeft: `3px solid ${m.role === 'user' ? C.primary : C.secondary}`,
+                  padding: '8px 12px',
+                  background: C.bg2,
+                  borderRadius: 4,
+                }}
+              >
+                <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
+                  <strong style={{ color: C.text }}>{m.role}</strong>
+                  {m.timestamp ? ` · ${fmtUserTime(m.timestamp, 'short')}` : ''}
+                </div>
+                <div style={{
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                  fontSize: 13, lineHeight: 1.6,
+                }}
+                >
+                  {typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}
+                </div>
+                {m.tool_calls != null && (
+                  <div style={{
+                    fontSize: 11, color: C.muted, marginTop: 6,
+                    fontFamily: "'Cascadia Code',monospace",
+                  }}
+                  >
+                    tool_calls: {JSON.stringify(m.tool_calls).slice(0, 300)}
+                    {JSON.stringify(m.tool_calls).length > 300 ? '…' : ''}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Drawer>
     </div>
   );
 }

@@ -5,6 +5,7 @@ import BatchRunner from '../../components/modals/BatchRunner';
 import * as api from '../../services/api';
 import { getTzOffset, setTzOffset, tzLabel, fmtUserTime } from '../../utils/timezone';
 import { useTheme, type UiStyle } from '../../stores/themeContext';
+import { getYoloMode, setYoloMode, YOLO_EVENT } from '../../utils/yoloMode';
 import LogoLoading from '../../components/LogoLoading';
 
 const { Text } = Typography;
@@ -108,6 +109,38 @@ const KEY_SECTIONS: { title: string; fields: KeyField[] }[] = [
     ],
   },
   {
+    title: 'Kimi (Moonshot)',
+    fields: [
+      {
+        field: 'kimi_api_key',
+        label: 'API Key',
+        placeholder: 'sk-...',
+        helpUrl: 'https://platform.moonshot.cn/console/api-keys',
+        helpText: '获取 Key',
+      },
+      { field: 'kimi_base_url', label: 'Base URL (可选)', placeholder: '默认 https://api.moonshot.cn/v1', isUrl: true },
+    ],
+  },
+  {
+    title: 'MiniMax（语音/视频/对话）',
+    fields: [
+      {
+        field: 'minimax_api_key',
+        label: 'API Key',
+        placeholder: 'eyJ... (Bearer)',
+        helpUrl: 'https://platform.minimax.io/user-center/basic-information/interface-key',
+        helpText: '获取 Key',
+      },
+      {
+        field: 'minimax_group_id',
+        label: 'Group ID',
+        placeholder: 'TTS / Video 必填，LLM 可不填',
+        helpUrl: 'https://platform.minimax.io/user-center/basic-information',
+        helpText: '查看 Group ID',
+      },
+    ],
+  },
+  {
     title: '搜索 (Tavily)',
     fields: [
       {
@@ -191,6 +224,8 @@ function ApiKeysCard() {
   const providerMap: Record<string, string> = {
     'Anthropic (Claude)': 'anthropic',
     'OpenAI': 'openai',
+    'Kimi (Moonshot)': 'kimi',
+    'MiniMax（语音/视频/对话）': 'minimax',
     '搜索 (Tavily)': 'tavily',
   };
 
@@ -353,6 +388,13 @@ export default function GeneralPage() {
   const { uiStyle, setUiStyle } = useTheme();
   const [showSystem, setShowSystem] = useState(getAdvFlag(ADV_SYSTEM_KEY));
   const [showSoul, setShowSoul] = useState(getAdvFlag(ADV_SOUL_KEY));
+  const [yolo, setYolo] = useState(getYoloMode());
+
+  useEffect(() => {
+    const sync = () => setYolo(getYoloMode());
+    window.addEventListener(YOLO_EVENT, sync);
+    return () => window.removeEventListener(YOLO_EVENT, sync);
+  }, []);
 
   useEffect(() => {
     api.getPreferences().then((prefs) => {
@@ -471,6 +513,44 @@ export default function GeneralPage() {
           <Text style={{ color: C.muted, fontSize: 12 }}>
             终端样式会将界面切换为 monospace 字体、直角边框和 CRT 扫描线效果。明暗色可通过左下角的切换按钮调整。
           </Text>
+        </div>
+      </div>
+
+      {/* YOLO mode (admin) */}
+      <div style={{
+        background: C.bg2,
+        borderRadius: 'var(--jf-radius-lg)',
+        border: `1px solid ${C.border}`,
+        padding: '20px 24px',
+        marginTop: 16,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <Lightning size={18} color={C.primary} weight={yolo ? 'fill' : 'regular'} />
+          <Text style={{ color: C.text, fontSize: 14, fontWeight: 500 }}>YOLO 模式</Text>
+          {yolo && (
+            <Tag color="orange" style={{ fontSize: 11, lineHeight: '16px', padding: '0 6px', marginLeft: 4 }}>
+              已开启
+            </Tag>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ color: C.muted, fontSize: 12, display: 'block' }}>
+              开启后写文件、改文件、规划等操作不再弹审批卡，由 Agent 直接执行；适合自己一人快速迭代时使用。
+            </Text>
+            <Text style={{ color: 'var(--jf-warning, #d4a017)', fontSize: 12, display: 'block', marginTop: 6 }}>
+              ⚠️ 仅限信任的 Agent / Prompt — Agent 可在你的工作区里任意写文件，请勿在公开或共享环境下打开。
+            </Text>
+            <Text style={{ color: C.muted, fontSize: 11, display: 'block', marginTop: 6 }}>
+              仅作用于 Admin 端聊天；服务（消费者/微信）端默认就是无审批模式，本开关不影响其行为。
+            </Text>
+          </div>
+          <Switch
+            checked={yolo}
+            onChange={(v) => { setYolo(v); setYoloMode(v); }}
+            style={{ flexShrink: 0 }}
+          />
         </div>
       </div>
 

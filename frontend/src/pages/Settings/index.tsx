@@ -11,6 +11,7 @@ import {
   Tray,
   Package,
   GearSix,
+  Archive,
 } from '@phosphor-icons/react';
 import * as api from '../../services/api';
 
@@ -49,6 +50,7 @@ export default function SettingsLayout() {
       ),
     },
     { key: '/settings/general', icon: <GearSix size={18} />, label: '通用' },
+    { key: '/settings/backup', icon: <Archive size={18} />, label: '数据备份' },
   ], [inboxUnread]);
 
   const selectedKey = settingsNav.find((item) =>
