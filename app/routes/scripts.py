@@ -1,4 +1,3 @@
-import httpx
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 
 from app.schemas.requests import RunScriptRequest
@@ -29,11 +28,11 @@ async def api_run_script(req: RunScriptRequest, user=Depends(get_current_user)):
 
 @router.post("/api/audio/transcribe")
 async def api_transcribe_audio(file: UploadFile = File(...), user=Depends(get_current_user)):
-    from app.core.api_config import get_api_config
-    try:
-        stt_key, stt_base = get_api_config("stt", user_id=user["user_id"])
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """STT 上传转写。模型来源：用户偏好 > catalog defaults（Phase 0 起走 dispatch）。"""
+    from app.services.providers import dispatch, ProviderError
+    from app.services.model_catalog import resolve_model
+
+    user_id = user["user_id"]
 
     audio_data = await file.read()
     if len(audio_data) == 0:
@@ -41,21 +40,26 @@ async def api_transcribe_audio(file: UploadFile = File(...), user=Depends(get_cu
     if len(audio_data) > 25 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="音频文件过大，最大 25MB")
 
+    model_id = resolve_model("stt", user_id=user_id)
+    if not model_id:
+        raise HTTPException(status_code=500, detail="未配置可用的 STT 模型")
+
     filename = file.filename or "audio.webm"
+    content_type = file.content_type or "audio/webm"
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{stt_base}/audio/transcriptions",
-                headers={"Authorization": f"Bearer {stt_key}"},
-                files={"file": (filename, audio_data, file.content_type or "audio/webm")},
-                data={"model": "whisper-1"},
-            )
-        if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Whisper API 错误: {resp.text[:200]}")
-        return {"text": resp.json().get("text", "").strip()}
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Whisper API 超时")
+        # dispatch 是同步调用；STT 文件较小（<=25MB）放进线程池避免阻塞 event loop。
+        import asyncio
+        text = await asyncio.to_thread(
+            dispatch, "stt", model_id,
+            user_id=user_id,
+            audio_bytes=audio_data,
+            filename=filename,
+            content_type=content_type,
+        )
+        return {"text": text}
+    except ProviderError as e:
+        raise HTTPException(status_code=502, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"语音识别失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"语音识别失败: {e}")

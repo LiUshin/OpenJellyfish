@@ -189,14 +189,18 @@ def _format_messages(messages: List[Dict], last_n: int = 20) -> str:
 
 def load_recent_admin_messages(user_id: str, conv_id: str,
                                max_n: Optional[int] = None) -> str:
-    """Load recent messages from an admin conversation for context injection."""
+    """Load recent messages from an admin conversation for context injection.
+
+    Uses the JSONL tail-read so we don't pay O(file_size) for context-window
+    injection on long conversations.
+    """
     if not max_n:
         max_n = get_soul_config(user_id).get("max_recent_messages", 10)
-    from app.services.conversations import get_conversation
-    conv = get_conversation(user_id, conv_id)
-    if not conv or not conv.get("messages"):
+    from app.services.conversations import get_recent_messages
+    msgs = get_recent_messages(user_id, conv_id, max_n)
+    if not msgs:
         return ""
-    return _format_messages(conv["messages"], last_n=max_n)
+    return _format_messages(msgs, last_n=max_n)
 
 
 def load_recent_consumer_messages(admin_id: str, service_id: str,
@@ -205,11 +209,11 @@ def load_recent_consumer_messages(admin_id: str, service_id: str,
     """Load recent messages from a consumer conversation for context injection."""
     if not max_n:
         max_n = get_soul_config(admin_id).get("max_recent_messages", 5)
-    from app.services.published import get_consumer_conversation
-    conv = get_consumer_conversation(admin_id, service_id, conv_id)
-    if not conv or not conv.get("messages"):
+    from app.services.published import get_consumer_recent_messages
+    msgs = get_consumer_recent_messages(admin_id, service_id, conv_id, max_n)
+    if not msgs:
         return ""
-    return _format_messages(conv["messages"], last_n=max_n)
+    return _format_messages(msgs, last_n=max_n)
 
 
 def load_recent_inbox(admin_id: str, last_n: int = 3) -> str:
@@ -301,19 +305,38 @@ def create_admin_memory_tools(user_id: str) -> List:
                 continue
             convs = []
             for cdir in os.listdir(conv_base):
-                msg_file = os.path.join(conv_base, cdir, "messages.json")
-                if os.path.isfile(msg_file):
+                # Trigger lazy migration so the post-2026-04-23 meta.json
+                # exists before we try to read it.
+                from app.services.published import _migrate_consumer_conv
+                try:
+                    _migrate_consumer_conv(user_id, svc_id, cdir)
+                except Exception:
+                    pass
+                meta_file = os.path.join(conv_base, cdir, "meta.json")
+                legacy_file = os.path.join(conv_base, cdir, "messages.json")
+                meta = None
+                msg_count = 0
+                if os.path.isfile(meta_file):
                     try:
-                        with open(msg_file, "r", encoding="utf-8") as f:
+                        with open(meta_file, "r", encoding="utf-8") as f:
                             meta = json.load(f)
-                        convs.append({
-                            "id": meta.get("id", cdir),
-                            "title": meta.get("title", ""),
-                            "msg_count": len(meta.get("messages", [])),
-                            "updated": meta.get("updated_at", "")[:16],
-                        })
+                        msg_count = int(meta.get("message_count", 0))
+                    except Exception:
+                        meta = None
+                if not meta and os.path.isfile(legacy_file):
+                    try:
+                        with open(legacy_file, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                        msg_count = len(meta.get("messages", []))
                     except Exception:
                         continue
+                if meta:
+                    convs.append({
+                        "id": meta.get("id", cdir),
+                        "title": meta.get("title", ""),
+                        "msg_count": msg_count,
+                        "updated": meta.get("updated_at", "")[:16],
+                    })
             if convs:
                 convs.sort(key=lambda x: x.get("updated", ""), reverse=True)
                 results.append(f"Service「{svc_name}」({svc_id})：")

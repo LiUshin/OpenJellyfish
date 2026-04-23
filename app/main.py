@@ -38,6 +38,7 @@ from app.routes.consumer import router as consumer_router
 from app.routes.scheduler import router as scheduler_router
 from app.routes.consumer_ui import router as consumer_ui_router
 from app.routes.inbox import router as inbox_router
+from app.routes.backup import router as backup_router
 from app.voice.router import router as voice_router
 try:
     from app.channels.wechat.router import router as wechat_api_router
@@ -76,6 +77,7 @@ app.include_router(consumer_router)
 app.include_router(consumer_ui_router)
 app.include_router(scheduler_router)
 app.include_router(inbox_router)
+app.include_router(backup_router)
 app.include_router(voice_router)
 if _WECHAT_AVAILABLE:
     app.include_router(wechat_api_router)

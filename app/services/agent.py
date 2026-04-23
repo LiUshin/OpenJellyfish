@@ -43,6 +43,12 @@ async def init_checkpointer():
 # ==================== Model resolution ====================
 
 THINKING_MODEL_CONFIG = {
+    # Opus 4.7: 新 API 仅支持 adaptive thinking（设 budget_tokens 会 400）；
+    # 同时 temperature/top_p/top_k 不接受非默认值，所以 params 里不能传采样参数。
+    "anthropic:claude-opus-4-7-thinking": {
+        "base_model": "anthropic:claude-opus-4-7",
+        "params": {"thinking": {"type": "adaptive"}, "max_tokens": 32000},
+    },
     "anthropic:claude-opus-4-6-thinking": {
         "base_model": "anthropic:claude-opus-4-6",
         "params": {"thinking": {"type": "enabled", "budget_tokens": 16000}, "max_tokens": 32000},
@@ -69,7 +75,20 @@ THINKING_MODEL_CONFIG = {
 }
 
 
-def _get_default_model() -> str:
+def _get_default_model(user_id: Optional[str] = None) -> str:
+    """默认 LLM 解析顺序：用户偏好（capability_defaults.llm）> agent_config.json > DEFAULT_MODEL。
+
+    历史调用点没传 user_id（如 inbox / scheduler 顶层），此时跳过用户偏好直接读全局配置；
+    传了 user_id 则优先尊重用户在设置页选择的默认 LLM。
+    """
+    if user_id:
+        try:
+            from app.services.model_catalog import get_default_model
+            mid = get_default_model("llm", user_id=user_id)
+            if mid:
+                return mid
+        except Exception:
+            pass
     config_path = os.path.join(ROOT_DIR, "config", "agent_config.json")
     if os.path.exists(config_path):
         with open(config_path, "r", encoding="utf-8") as f:
@@ -79,7 +98,11 @@ def _get_default_model() -> str:
 
 
 def _get_llm_config(model_id: str, user_id: Optional[str] = None):
-    """Return (api_key, base_url_or_None) for a model's provider."""
+    """Return (api_key, base_url_or_None) for a model's provider.
+
+    用于内置「prefix == LangChain provider」的两家（openai / anthropic）。
+    其他厂商（kimi 等 OpenAI-compat）走 _resolve_model 内的特例分支。
+    """
     from app.core.api_config import get_openai_llm_config, get_anthropic_llm_config
     if model_id.startswith("openai:"):
         return get_openai_llm_config(user_id=user_id)
@@ -89,6 +112,36 @@ def _get_llm_config(model_id: str, user_id: Optional[str] = None):
 
 
 def _resolve_model(model_id: str, user_id: Optional[str] = None):
+    # Kimi（Moonshot）走 OpenAI-compat：去掉 kimi: 前缀，强制 model_provider=openai，
+    # api_key/base_url 来自 get_provider_credentials("kimi")。
+    if model_id.startswith("kimi:"):
+        from app.core.api_config import get_provider_credentials
+        creds = get_provider_credentials("kimi", user_id=user_id)
+        if not creds.get("api_key"):
+            raise RuntimeError("未配置 Kimi（Moonshot）API Key（设置页 → Kimi）")
+        bare_model = model_id.split(":", 1)[1]
+        return init_chat_model(
+            model=bare_model,
+            model_provider="openai",
+            api_key=creds["api_key"],
+            base_url=creds["base_url"],
+        )
+
+    # MiniMax LLM 走 Anthropic-compat（官方推荐，tool-use 原生）。
+    # endpoint: https://api.minimax.io/anthropic
+    if model_id.startswith("minimax:"):
+        from app.core.api_config import get_provider_credentials
+        creds = get_provider_credentials("minimax", user_id=user_id)
+        if not creds.get("api_key"):
+            raise RuntimeError("未配置 MiniMax API Key（设置页 → MiniMax）")
+        bare_model = model_id.split(":", 1)[1]
+        return init_chat_model(
+            model=bare_model,
+            model_provider="anthropic",
+            api_key=creds["api_key"],
+            base_url="https://api.minimax.io/anthropic",
+        )
+
     api_key, base_url = _get_llm_config(model_id, user_id=user_id)
     extra_kwargs: Dict[str, Any] = {}
     if base_url:
@@ -130,7 +183,7 @@ def create_user_agent(
     from app.services.tools import (
         create_run_script_tool, create_ai_gen_tools, create_send_message_tool,
         create_web_tools, create_schedule_tool, create_manage_scheduled_tasks_tool,
-        create_publish_service_task_tool,
+        create_publish_service_task_tool, create_list_files_sorted_tool,
         propose_plan, CAPABILITY_PROMPTS, PLAN_MODE_PROMPT,
     )
     from app.services.prompt import (
@@ -140,7 +193,7 @@ def create_user_agent(
     from app.services.subagents import build_subagents_for_agent
 
     if not model:
-        model = _get_default_model()
+        model = _get_default_model(user_id=user_id)
     if not capabilities:
         capabilities = []
 
@@ -181,7 +234,10 @@ def create_user_agent(
 
     backend = create_agent_backend(root_dir=fs_dir, user_id=user_id)
 
-    tools = [create_run_script_tool(user_id)]
+    tools = [
+        create_run_script_tool(user_id),
+        create_list_files_sorted_tool(user_id),
+    ]
     if capabilities:
         ai_tools = create_ai_gen_tools(user_id)
         tool_map = {"image": ai_tools[0], "speech": ai_tools[1], "video": ai_tools[2]}

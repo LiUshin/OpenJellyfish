@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "_comment": "JellyfishBot 模型目录（仓库内置默认）。用户可在 users/{uid}/model_catalog.json 中追加/覆盖条目（深合并：同 id 整条覆盖；新 id 追加）。修改后无需重启即可被设置页与运行时读取。",
+
+  "defaults": {
+    "llm":   "anthropic:claude-sonnet-4-5-20250929",
+    "image": "openai:gpt-image-1",
+    "tts":   "openai:tts-1",
+    "video": "openai:sora-2-2025-12-08",
+    "stt":   "openai:whisper-1",
+    "s2s":   "openai:gpt-4o-realtime-preview"
+  },
+
+  "llm": [
+    {"id": "anthropic:claude-opus-4-7-thinking",   "provider": "anthropic", "display_name": "Claude Opus 4.7 (Thinking)",   "tier": "thinking"},
+    {"id": "anthropic:claude-opus-4-6-thinking",   "provider": "anthropic", "display_name": "Claude Opus 4.6 (Thinking)",   "tier": "thinking"},
+    {"id": "anthropic:claude-sonnet-4-6-thinking", "provider": "anthropic", "display_name": "Claude Sonnet 4.6 (Thinking)", "tier": "thinking"},
+    {"id": "anthropic:claude-haiku-4-5-thinking",  "provider": "anthropic", "display_name": "Claude Haiku 4.5 (Thinking)",  "tier": "thinking"},
+    {"id": "anthropic:claude-sonnet-4-5-thinking", "provider": "anthropic", "display_name": "Claude Sonnet 4.5 (Thinking)", "tier": "thinking"},
+    {"id": "anthropic:claude-opus-4-7",            "provider": "anthropic", "display_name": "Claude Opus 4.7",              "tier": "high"},
+    {"id": "anthropic:claude-opus-4-6",            "provider": "anthropic", "display_name": "Claude Opus 4.6",              "tier": "high"},
+    {"id": "anthropic:claude-sonnet-4-6",          "provider": "anthropic", "display_name": "Claude Sonnet 4.6",            "tier": "high"},
+    {"id": "anthropic:claude-haiku-4-5-20251001",  "provider": "anthropic", "display_name": "Claude Haiku 4.5",             "tier": "fast"},
+    {"id": "anthropic:claude-opus-4-5-20251101",   "provider": "anthropic", "display_name": "Claude Opus 4.5",              "tier": "high"},
+    {"id": "anthropic:claude-opus-4-1-20250805",   "provider": "anthropic", "display_name": "Claude Opus 4.1",              "tier": "high"},
+    {"id": "anthropic:claude-sonnet-4-5-20250929", "provider": "anthropic", "display_name": "Claude Sonnet 4.5",            "tier": "high"},
+    {"id": "anthropic:claude-opus-4-20250514",     "provider": "anthropic", "display_name": "Claude Opus 4",                "tier": "high"},
+    {"id": "anthropic:claude-sonnet-4-20250514",   "provider": "anthropic", "display_name": "Claude Sonnet 4",              "tier": "high"},
+    {"id": "openai:gpt-5.4",                       "provider": "openai",    "display_name": "GPT-5.4 (Reasoning)",          "tier": "thinking"},
+    {"id": "openai:gpt-5.3-chat-latest",           "provider": "openai",    "display_name": "GPT-5.3",                      "tier": "high"},
+    {"id": "openai:gpt-5.2-2025-12-11",            "provider": "openai",    "display_name": "GPT-5.2",                      "tier": "high"},
+    {"id": "openai:gpt-4o",                        "provider": "openai",    "display_name": "GPT-4o",                       "tier": "high"},
+    {"id": "openai:gpt-4o-mini",                   "provider": "openai",    "display_name": "GPT-4o Mini",                  "tier": "fast"},
+    {"id": "openai:o3-mini",                       "provider": "openai",    "display_name": "o3-mini",                      "tier": "reasoning"},
+    {"id": "kimi:moonshot-v1-128k",                "provider": "kimi",      "display_name": "Kimi (Moonshot v1 128k)",      "tier": "high"},
+    {"id": "kimi:moonshot-v1-32k",                 "provider": "kimi",      "display_name": "Kimi (Moonshot v1 32k)",       "tier": "high"},
+    {"id": "kimi:moonshot-v1-8k",                  "provider": "kimi",      "display_name": "Kimi (Moonshot v1 8k)",        "tier": "fast"},
+    {"id": "kimi:moonshot-v1-auto",                "provider": "kimi",      "display_name": "Kimi (Moonshot v1 Auto)",      "tier": "high"},
+    {"id": "minimax:MiniMax-M2.7",                 "provider": "minimax",   "display_name": "MiniMax M2.7",                 "tier": "high"},
+    {"id": "minimax:MiniMax-M2.7-highspeed",       "provider": "minimax",   "display_name": "MiniMax M2.7 HighSpeed",       "tier": "fast"},
+    {"id": "minimax:MiniMax-M2.5",                 "provider": "minimax",   "display_name": "MiniMax M2.5",                 "tier": "high"},
+    {"id": "minimax:MiniMax-M2.5-highspeed",       "provider": "minimax",   "display_name": "MiniMax M2.5 HighSpeed",       "tier": "fast"},
+    {"id": "minimax:MiniMax-M2",                   "provider": "minimax",   "display_name": "MiniMax M2",                   "tier": "high"}
+  ],
+
+  "image": [
+    {"id": "openai:gpt-image-1", "provider": "openai", "display_name": "GPT-Image-1",
+     "default_params": {"size": "1024x1024", "quality": "auto"},
+     "params_schema": {
+       "size":    {"type": "enum", "options": ["1024x1024", "1536x1024", "1024x1536", "auto"]},
+       "quality": {"type": "enum", "options": ["low", "medium", "high", "auto"]}
+     }}
+  ],
+
+  "tts": [
+    {"id": "openai:tts-1",    "provider": "openai", "display_name": "OpenAI TTS-1",
+     "default_params": {"voice": "alloy", "speed": 1.0, "response_format": "mp3"},
+     "params_schema": {
+       "voice": {"type": "enum", "options": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]},
+       "speed": {"type": "number", "min": 0.25, "max": 4.0}
+     }},
+    {"id": "openai:tts-1-hd", "provider": "openai", "display_name": "OpenAI TTS-1 HD",
+     "default_params": {"voice": "alloy", "speed": 1.0, "response_format": "mp3"}},
+    {"id": "minimax:speech-02-hd", "provider": "minimax", "display_name": "MiniMax Speech-02 HD",
+     "default_params": {"voice": "male-qn-qingse", "speed": 1.0, "response_format": "mp3"},
+     "params_schema": {
+       "voice":   {"type": "string", "hint": "MiniMax voice_id，如 male-qn-qingse / female-shaonv / Calm_Woman"},
+       "speed":   {"type": "number", "min": 0.5, "max": 2.0},
+       "vol":     {"type": "number", "min": 0.0, "max": 10.0, "extras": true},
+       "emotion": {"type": "enum", "options": ["happy", "sad", "angry", "fearful", "disgusted", "surprised", "neutral"], "extras": true},
+       "sample_rate": {"type": "enum", "options": [8000, 16000, 22050, 24000, 32000, 44100], "extras": true}
+     }},
+    {"id": "minimax:speech-02-turbo", "provider": "minimax", "display_name": "MiniMax Speech-02 Turbo",
+     "default_params": {"voice": "male-qn-qingse", "speed": 1.0, "response_format": "mp3"}}
+  ],
+
+  "video": [
+    {"id": "openai:sora-2-2025-12-08", "provider": "openai", "display_name": "Sora 2",
+     "default_params": {"seconds": 4, "size": "1280x720"},
+     "params_schema": {
+       "seconds": {"type": "enum", "options": [4, 8, 12]},
+       "size":    {"type": "enum", "options": ["1280x720", "720x1280"]}
+     }},
+    {"id": "minimax:MiniMax-Hailuo-02", "provider": "minimax", "display_name": "MiniMax Hailuo-02",
+     "default_params": {"seconds": 6, "size": "1280x720"},
+     "params_schema": {
+       "seconds": {"type": "enum", "options": [6, 10]},
+       "size":    {"type": "enum", "options": ["1280x720", "720x1280", "1920x1080"]},
+       "prompt_optimizer": {"type": "boolean", "extras": true}
+     }}
+  ],
+
+  "stt": [
+    {"id": "openai:whisper-1", "provider": "openai", "display_name": "Whisper",
+     "default_params": {"language": null}}
+  ],
+
+  "s2s": [
+    {"id": "openai:gpt-4o-realtime-preview", "provider": "openai", "display_name": "GPT-4o Realtime"}
+  ]
+}

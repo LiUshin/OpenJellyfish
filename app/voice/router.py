@@ -217,8 +217,13 @@ async def voice_realtime(websocket: WebSocket, token: str = Query("")):
     _prev_context = _load_latest_transcript(user_id)
     _prev_context_text = _build_transcript_context(_prev_context) if _prev_context else ""
 
+    # Realtime 模型从 catalog 读取，不再硬编码；保持 provider:model 形式。
+    from app.services.model_catalog import resolve_model
+    s2s_model_id = resolve_model("s2s", user_id=user_id) or "openai:gpt-4o-realtime-preview"
+    s2s_model = s2s_model_id.split(":", 1)[-1]
+
     ws_base = s2s_base.replace("https://", "wss://").replace("http://", "ws://")
-    openai_url = f"{ws_base}/realtime?model=gpt-4o-realtime-preview"
+    openai_url = f"{ws_base}/realtime?model={s2s_model}"
 
     try:
         async with websockets.connect(

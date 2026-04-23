@@ -3,6 +3,7 @@ Scheduled task engine.
 
 == Admin tasks ==
     Stored at: {user_dir}/tasks/{task_id}.json
+    Steps  at: {user_dir}/tasks/{task_id}.steps/{run_id}.jsonl  (one line per step)
     task_type: "script" | "agent"
     agent tasks use the full user agent (create_user_agent) with humanchat
     capability, enabling send_message tool calls that are intercepted and
@@ -10,9 +11,19 @@ Scheduled task engine.
 
 == Service tasks ==
     Stored at: {user_dir}/services/{service_id}/tasks/{task_id}.json
+    Steps  at: {user_dir}/services/{service_id}/tasks/{task_id}.steps/{run_id}.jsonl
     task_type: "agent" only (no scripts)
     Executes using the service's consumer agent with humanchat injected.
     send_message tool calls are intercepted and forwarded to WeChat.
+
+== Storage layout (since 2026-04-23) ==
+    Task JSONs no longer embed each run's `steps[]` — they only keep run
+    SUMMARIES (run_id/started_at/finished_at/status/output).  Each run's
+    full step log lives in its own JSONL sibling so listing tasks /
+    reading task config doesn't need to drag hundreds of step entries
+    into memory.  Lazy migration: when a legacy task.json with embedded
+    steps is loaded, ``_externalize_steps`` splits them out on the next
+    save (or eagerly via ``get_task_runs``).
 
 Common fields:
     id, name, description
@@ -52,6 +63,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
 from app.core.security import get_user_dir
+from app.core.jsonl_store import append_jsonl_many, read_jsonl
 
 log = logging.getLogger("scheduler")
 
@@ -70,12 +82,175 @@ def _task_path(user_id: str, task_id: str) -> str:
     return os.path.join(_tasks_dir(user_id), f"{task_id}.json")
 
 
+def _task_steps_dir(user_id: str, task_id: str) -> str:
+    return os.path.join(_tasks_dir(user_id), f"{task_id}.steps")
+
+
+def _task_steps_path(user_id: str, task_id: str, run_id: str) -> str:
+    return os.path.join(_task_steps_dir(user_id, task_id), f"{run_id}.jsonl")
+
+
 def _service_tasks_dir(admin_id: str, service_id: str) -> str:
     return os.path.join(get_user_dir(admin_id), "services", service_id, "tasks")
 
 
 def _service_task_path(admin_id: str, service_id: str, task_id: str) -> str:
     return os.path.join(_service_tasks_dir(admin_id, service_id), f"{task_id}.json")
+
+
+def _service_task_steps_dir(admin_id: str, service_id: str, task_id: str) -> str:
+    return os.path.join(_service_tasks_dir(admin_id, service_id),
+                        f"{task_id}.steps")
+
+
+def _service_task_steps_path(admin_id: str, service_id: str,
+                             task_id: str, run_id: str) -> str:
+    return os.path.join(_service_task_steps_dir(admin_id, service_id, task_id),
+                        f"{run_id}.jsonl")
+
+
+# ── Step externalization (per-run JSONL, written once per run) ────────────
+
+def _externalize_run_steps(steps_dir: str, runs: List[Dict[str, Any]]) -> None:
+    """Move each run's ``steps`` array out of the task dict into a per-run
+    JSONL file.  Mutates ``runs`` in place (drops the ``steps`` key).
+
+    Idempotent: if the JSONL already exists we don't overwrite it.  Runs
+    without a ``run_id`` (very old shape) are left untouched so we don't
+    silently lose data.
+    """
+    for r in runs:
+        steps = r.get("steps")
+        if not steps:
+            r.pop("steps", None)
+            continue
+        run_id = r.get("run_id")
+        if not run_id:
+            continue
+        path = os.path.join(steps_dir, f"{run_id}.jsonl")
+        try:
+            if not os.path.isfile(path):
+                os.makedirs(steps_dir, exist_ok=True)
+                append_jsonl_many(path, steps)
+            r.pop("steps", None)
+        except OSError:
+            log.exception("Failed to externalize steps for run %s -> %s",
+                          run_id, path)
+
+
+def _attach_run_steps(steps_dir: str, runs: List[Dict[str, Any]]
+                      ) -> List[Dict[str, Any]]:
+    """For UI / API responses: re-attach steps[] from per-run JSONL files
+    into a copy of the run summaries.  Falls back to the inline ``steps``
+    array if it's still there (un-migrated runs)."""
+    out = []
+    for r in runs:
+        rec = dict(r)
+        if "steps" in rec and rec["steps"]:
+            out.append(rec)
+            continue
+        run_id = rec.get("run_id")
+        if run_id:
+            path = os.path.join(steps_dir, f"{run_id}.jsonl")
+            if os.path.isfile(path):
+                rec["steps"] = read_jsonl(path)
+        out.append(rec)
+    return out
+
+
+# ── Scheduled-task tool-block builder ─────────────────────────────────────
+
+def _build_scheduled_task_block(task_meta: Optional[Dict[str, Any]],
+                                output: str,
+                                success: bool = True,
+                                error: Optional[str] = None) -> Dict[str, Any]:
+    """Build a `tool` block representing a scheduled task execution result.
+
+    Persisted into messages.json so the frontend renders it as a dedicated
+    ScheduledTaskCard (admin) or friendly variant (service-chat), instead of an
+    indistinguishable agent reply. `args` carries metadata (task_name / id /
+    schedule type / scheduled_at / status) for the card header; `result` holds
+    the full output text rendered as markdown body.
+
+    `task_meta` may be None for legacy callers — in that case we fall back to a
+    minimal block. Tool name `scheduled_task` is reserved and matched verbatim
+    by the frontend (see MessageBubble.BlocksRenderer / ScheduledTaskCard).
+    """
+    meta = dict(task_meta or {})
+    meta["status"] = "success" if success else "error"
+    if error:
+        meta["error"] = error[:200]
+    return {
+        "type": "tool",
+        "name": "scheduled_task",
+        "args": json.dumps(meta, ensure_ascii=False),
+        "result": output,
+        "done": True,
+        "source": "scheduled_task",
+    }
+
+
+async def _safe_persist_admin_failure(user_id: str,
+                                      conv_id: str,
+                                      task_meta: Optional[Dict[str, Any]],
+                                      error_text: str) -> None:
+    """Persist a failed admin scheduled-task as a tool block (visible in chat)
+    and also enqueue an L2 injection so the agent's next turn knows it failed.
+
+    Best-effort; swallows persistence errors so the scheduler loop keeps running.
+    No-op when conv_id is missing (task without a target conversation).
+    """
+    if not conv_id:
+        return
+    output_text = f"任务执行失败：{error_text}"
+    try:
+        from app.services.conversations import save_message
+        block = _build_scheduled_task_block(
+            task_meta, output_text, success=False, error=error_text,
+        )
+        save_message(user_id, conv_id, "assistant", output_text, blocks=[block])
+    except Exception:
+        log.exception("Failed to persist admin task FAILURE to conv %s", conv_id)
+    try:
+        from app.services import scheduled_inject
+        await scheduled_inject.enqueue_admin(
+            user_id=user_id, conv_id=conv_id,
+            task_meta=task_meta or {}, output=output_text,
+            success=False, error=error_text,
+        )
+    except Exception:
+        log.exception("Failed to enqueue admin task FAILURE L2 injection for conv %s",
+                      conv_id)
+
+
+async def _safe_persist_service_failure(admin_id: str, service_id: str,
+                                        conversation_id: str,
+                                        task_meta: Optional[Dict[str, Any]],
+                                        error_text: str) -> None:
+    """Persist a failed service scheduled-task as a tool block + enqueue L2 injection."""
+    if not conversation_id:
+        return
+    output_text = f"任务执行失败：{error_text}"
+    try:
+        from app.services.published import save_consumer_message
+        block = _build_scheduled_task_block(
+            task_meta, output_text, success=False, error=error_text,
+        )
+        save_consumer_message(admin_id, service_id, conversation_id, "assistant",
+                              output_text, blocks=[block])
+    except Exception:
+        log.exception("Failed to persist service task FAILURE to conv %s",
+                      conversation_id)
+    try:
+        from app.services import scheduled_inject
+        await scheduled_inject.enqueue_service(
+            admin_id=admin_id, service_id=service_id, conv_id=conversation_id,
+            task_meta=task_meta or {}, output=output_text,
+            success=False, error=error_text,
+        )
+    except Exception:
+        log.exception("Failed to enqueue service task FAILURE L2 injection for conv %s",
+                      conversation_id)
 
 
 # ── croniter (optional dep) ───────────────────────────────────────────────
@@ -115,6 +290,9 @@ def _load_task(user_id: str, task_id: str) -> Optional[Dict[str, Any]]:
 
 def _save_task(user_id: str, task: Dict[str, Any]) -> None:
     os.makedirs(_tasks_dir(user_id), exist_ok=True)
+    runs = task.get("runs") or []
+    _externalize_run_steps(_task_steps_dir(user_id, task["id"]), runs)
+    task["runs"] = runs
     from app.core.fileutil import atomic_json_save
     atomic_json_save(_task_path(user_id, task["id"]), task, ensure_ascii=False, indent=2)
 
@@ -193,17 +371,27 @@ def update_task(user_id: str, task_id: str, updates: Dict[str, Any]) -> Optional
 
 def delete_task(user_id: str, task_id: str) -> bool:
     path = _task_path(user_id, task_id)
-    if not os.path.isfile(path):
-        return False
-    os.remove(path)
-    return True
+    steps_dir = _task_steps_dir(user_id, task_id)
+    existed = False
+    if os.path.isfile(path):
+        os.remove(path)
+        existed = True
+    if os.path.isdir(steps_dir):
+        import shutil
+        try:
+            shutil.rmtree(steps_dir)
+            existed = True
+        except OSError:
+            pass
+    return existed
 
 
 def get_task_runs(user_id: str, task_id: str) -> List[Dict[str, Any]]:
     task = _load_task(user_id, task_id)
     if not task:
         return []
-    return task.get("runs", [])
+    return _attach_run_steps(_task_steps_dir(user_id, task_id),
+                             task.get("runs", []))
 
 
 # ── Service task CRUD ─────────────────────────────────────────────────────
@@ -219,6 +407,11 @@ def _load_service_task(admin_id: str, service_id: str, task_id: str) -> Optional
 def _save_service_task(admin_id: str, service_id: str, task: Dict[str, Any]) -> None:
     d = _service_tasks_dir(admin_id, service_id)
     os.makedirs(d, exist_ok=True)
+    runs = task.get("runs") or []
+    _externalize_run_steps(
+        _service_task_steps_dir(admin_id, service_id, task["id"]), runs,
+    )
+    task["runs"] = runs
     from app.core.fileutil import atomic_json_save
     atomic_json_save(os.path.join(d, f"{task['id']}.json"), task, ensure_ascii=False, indent=2)
 
@@ -298,17 +491,29 @@ def update_service_task(
 
 def delete_service_task(admin_id: str, service_id: str, task_id: str) -> bool:
     path = _service_task_path(admin_id, service_id, task_id)
-    if not os.path.isfile(path):
-        return False
-    os.remove(path)
-    return True
+    steps_dir = _service_task_steps_dir(admin_id, service_id, task_id)
+    existed = False
+    if os.path.isfile(path):
+        os.remove(path)
+        existed = True
+    if os.path.isdir(steps_dir):
+        import shutil
+        try:
+            shutil.rmtree(steps_dir)
+            existed = True
+        except OSError:
+            pass
+    return existed
 
 
 def get_service_task_runs(admin_id: str, service_id: str, task_id: str) -> List[Dict[str, Any]]:
     task = _load_service_task(admin_id, service_id, task_id)
     if not task:
         return []
-    return task.get("runs", [])
+    return _attach_run_steps(
+        _service_task_steps_dir(admin_id, service_id, task_id),
+        task.get("runs", []),
+    )
 
 
 def list_all_service_tasks(admin_id: str) -> List[Dict[str, Any]]:
@@ -722,8 +927,14 @@ async def _run_agent_loop(agent, input_payload, agent_config, steps: List[dict],
 
 
 async def _run_agent_task(user_id: str, config: Dict[str, Any],
-                          reply_to: Optional[Dict[str, Any]] = None) -> dict:
+                          reply_to: Optional[Dict[str, Any]] = None,
+                          task_meta: Optional[Dict[str, Any]] = None) -> dict:
     """Run an admin agent task using the full user agent with humanchat.
+
+    `task_meta` carries {task_id, task_name, schedule_type, scheduled_at}; when
+    provided and the task has a target conversation, the final output is
+    persisted as a `scheduled_task` tool block (rendered as a dedicated card
+    in chat history) instead of a plain text bubble. See `_persist_scheduled_task_result`.
 
     Returns {"output": str, "success": bool, "steps": list}.
     """
@@ -805,28 +1016,48 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
         steps.append(_step("finish", "Agent 执行完成"))
     except asyncio.TimeoutError:
         steps.append(_step("error", "任务超时"))
+        await _safe_persist_admin_failure(user_id, conv_id, task_meta, "任务超时（>5min）")
         return {"output": "任务超时", "success": False, "steps": steps}
     except Exception as e:
         steps.append(_step("error", f"Agent 执行失败: {e}"))
+        await _safe_persist_admin_failure(user_id, conv_id, task_meta, str(e))
         return {"output": f"Agent 执行失败: {e}", "success": False, "steps": steps}
     text = "\n".join(output_parts) or "（Agent 未返回输出）"
 
-    # Persist task output to conversation history
+    # Persist task output to conversation history as a scheduled_task tool block,
+    # so the frontend renders it via ScheduledTaskCard (admin) / friendly variant
+    # (service-chat) and can be visually distinguished from spontaneous agent replies.
     if conv_id:
         try:
             from app.services.conversations import save_message
+            block = _build_scheduled_task_block(task_meta, text, success=True)
             save_message(user_id, conv_id, "assistant", text,
-                         blocks=[{"type": "text", "content": text,
-                                  "source": "scheduled_task"}])
+                         blocks=[block])
         except Exception:
             log.exception("Failed to persist admin task output to conv %s", conv_id)
+
+        # Phase 2 (L2): also inject into the main conversation's LangGraph state
+        # so the agent's NEXT user turn naturally remembers the task ran. The
+        # injection is queued and drained when the thread is idle (see
+        # scheduled_inject.enqueue_admin); failure here is non-fatal — L1 above
+        # already ensures the task is visible to the user.
+        try:
+            from app.services import scheduled_inject
+            await scheduled_inject.enqueue_admin(
+                user_id=user_id, conv_id=conv_id,
+                task_meta=task_meta or {}, output=text, success=True,
+            )
+        except Exception:
+            log.exception("Failed to enqueue admin task L2 injection for conv %s",
+                          conv_id)
 
     return {"output": text, "success": True, "steps": steps}
 
 
 async def _run_service_agent_task(admin_id: str, service_id: str, conversation_id: str,
                                   config: Dict[str, Any],
-                                  reply_to: Optional[Dict[str, Any]] = None) -> dict:
+                                  reply_to: Optional[Dict[str, Any]] = None,
+                                  task_meta: Optional[Dict[str, Any]] = None) -> dict:
     """Run a service agent task using the full consumer agent with humanchat.
 
     If reply_to points to a WeChat session, send_message tool calls are
@@ -913,22 +1144,41 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
         steps.append(_step("finish", "Service Agent 执行完成"))
     except asyncio.TimeoutError:
         steps.append(_step("error", "任务超时"))
+        await _safe_persist_service_failure(admin_id, service_id, conversation_id,
+                                            task_meta, "任务超时（>5min）")
         return {"output": "任务超时", "success": False, "steps": steps}
     except Exception as e:
         steps.append(_step("error", f"Service Agent 执行失败: {e}"))
+        await _safe_persist_service_failure(admin_id, service_id, conversation_id,
+                                            task_meta, str(e))
         return {"output": f"Service Agent 执行失败: {e}", "success": False, "steps": steps}
 
     text = "\n".join(output_parts) or "（Agent 未返回输出）"
 
-    # Persist task output to consumer conversation history
+    # Persist task output to consumer conversation history as a scheduled_task tool
+    # block. Service-chat renders this via the friendly ScheduledTaskCard variant
+    # which hides task_id / internal prompt from end users (see ServiceChatApp).
     try:
         from app.services.published import save_consumer_message
+        block = _build_scheduled_task_block(task_meta, text, success=True)
         save_consumer_message(admin_id, service_id, conversation_id,
                               "assistant", text,
-                              blocks=[{"type": "text", "content": text,
-                                       "source": "admin_broadcast"}])
+                              blocks=[block])
     except Exception:
         log.exception("Failed to persist service task output to conv %s", conversation_id)
+
+    # Phase 2 (L2): inject into the consumer conversation's LangGraph state so
+    # the agent remembers the task on its next user turn. Queued + drained when
+    # the thread is idle (see scheduled_inject.enqueue_service).
+    try:
+        from app.services import scheduled_inject
+        await scheduled_inject.enqueue_service(
+            admin_id=admin_id, service_id=service_id, conv_id=conversation_id,
+            task_meta=task_meta or {}, output=text, success=True,
+        )
+    except Exception:
+        log.exception("Failed to enqueue service task L2 injection for conv %s",
+                      conversation_id)
 
     return {"output": text, "success": True, "steps": steps}
 
@@ -947,6 +1197,14 @@ async def _execute_task(user_id: str, task_id: str) -> None:
     status = "success"
     output = ""
     steps: List[dict] = []
+    task_meta = {
+        "task_id": task.get("id"),
+        "task_name": task.get("name") or task.get("id"),
+        "schedule_type": task.get("schedule_type"),
+        "scheduled_at": started.isoformat(),
+        "scope": "admin",
+    }
+
     try:
         ttype = task.get("task_type", "script")
         cfg = task.get("task_config", {})
@@ -956,7 +1214,9 @@ async def _execute_task(user_id: str, task_id: str) -> None:
             )
         elif ttype == "agent":
             result = await asyncio.wait_for(
-                _run_agent_task(user_id, cfg, reply_to=reply_to), timeout=_TASK_TIMEOUT_S
+                _run_agent_task(user_id, cfg, reply_to=reply_to,
+                                task_meta=task_meta),
+                timeout=_TASK_TIMEOUT_S,
             )
         else:
             result = {"output": f"未知任务类型: {ttype}", "success": False, "steps": []}
@@ -1012,13 +1272,23 @@ async def _execute_service_task(admin_id: str, service_id: str, task_id: str) ->
     status = "success"
     output = ""
     steps: List[dict] = []
+    task_meta = {
+        "task_id": task.get("id"),
+        "task_name": task.get("name") or task.get("id"),
+        "schedule_type": task.get("schedule_type"),
+        "scheduled_at": started.isoformat(),
+        "scope": "service",
+        "service_id": service_id,
+    }
+
     try:
         cfg = task.get("task_config", {})
         conv_id = reply_to.get("conversation_id", f"sched-{task_id}")
 
         result = await asyncio.wait_for(
             _run_service_agent_task(admin_id, service_id, conv_id, cfg,
-                                   reply_to=reply_to or None),
+                                   reply_to=reply_to or None,
+                                   task_meta=task_meta),
             timeout=_TASK_TIMEOUT_S,
         )
         output = result["output"]

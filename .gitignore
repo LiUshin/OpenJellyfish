@@ -73,3 +73,5 @@ tauri-launcher/bundle-resources/
 
 # External/embedded repos
 wechatskill/
+docs/CONSUMER_API_INTEGRATION.md
+scripts/test_consumer_api.py

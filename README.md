@@ -1,496 +1,447 @@
-# JellyfishBot
-
 <p align="center">
   <img src="frontend/public/media_resources/jellyfishlogo.png" width="120" alt="JellyfishBot Logo" />
 </p>
 
+<h1 align="center">JellyfishBot</h1>
+
 <p align="center">
-  <strong>基于 deepagents + LangGraph 构建的企业级 AI Agent 平台</strong><br>
-  多用户隔离 · 服务发布 · 微信集成 · 定时任务 · 实时语音
+  <strong>Enterprise-grade AI Agent Platform built on deepagents + LangGraph</strong><br>
+  <em>企业级 AI Agent 管理与分发平台，基于 deepagents + LangGraph 构建</em>
+</p>
+
+<p align="center">
+  <a href="#english">English</a> ·
+  <a href="#中文">中文</a>
 </p>
 
 ---
 
-## 概览
+<h2 id="english">🇬🇧 English</h2>
 
-JellyfishBot 是一个功能完整的 AI Agent 管理与分发平台，支持 **Admin 管理 + Consumer 消费** 两层架构。管理员可以配置 Agent（模型、文档、脚本、System Prompt、子代理），发布为 Service 并生成 API Key 供外部消费者调用，也可通过微信 iLink 渠道扫码接入。
+### Overview
 
-### 核心特性
+JellyfishBot is a full-featured AI Agent management and delivery platform built on the **Admin + Consumer** two-tier architecture. Admins configure Agents (model, documents, scripts, System Prompt, Subagents), publish them as Services with API Keys for external consumers, and optionally connect via WeChat iLink for mobile conversations.
 
-- **多模型支持**：Claude Opus/Sonnet/Haiku 4.x（含 Thinking）、GPT-5.x、GPT-4o、o3-mini
-- **SSE 流式对话**：Thinking 块、工具调用、子代理执行全程流式展示
-- **HITL 审批**：文件操作 diff 预览、Plan Mode 审批与编辑
-- **多模态**：图片附件（粘贴/拖拽）、语音输入转写、AI 图片/语音/视频生成
-- **文件系统**：per-user 隔离的虚拟文件系统，支持本地或 S3 后端
-- **脚本沙箱**：AST 静态分析 + 运行时沙箱双层安全
-- **Service 发布**：API Key 认证、OpenAI 兼容接口、独立 Consumer 对话
-- **微信集成**：iLink Bot 协议、双向图片/语音/视频、定时任务推送
-- **定时任务**：cron / interval / once 调度，脚本或 Agent 任务类型
-- **实时语音**：OpenAI Realtime WebSocket S2S 代理
-- **联网工具**：CloudsWay / Tavily 双 provider 搜索 + 网页抓取
-- **批量处理**：Excel 上传 → 批量 Agent 执行 → 结果下载（前端入口：**设置 → 通用**）
-- **可观测性**：Langfuse / LangSmith 追踪集成
+### ✨ Core Features
 
----
+| Feature | Description |
+|---------|-------------|
+| **Multi-model** | Claude Opus/Sonnet/Haiku 4.x (w/ Thinking), GPT-5.x, GPT-4o, o3-mini |
+| **SSE Streaming** | Thinking blocks, tool calls, and Subagent executions all streamed in real time |
+| **HITL Approval** | File diff preview, Plan Mode review + edit before execution |
+| **Multimodal** | Image paste/drag, voice input transcription, AI image/speech/video generation |
+| **Virtual Filesystem** | Per-user isolated filesystem (Local or S3 backend) |
+| **Script Sandbox** | Two-layer defense: AST static analysis + runtime path whitelist |
+| **Service Publishing** | API Key auth, OpenAI-compatible interface, standalone Consumer chat page |
+| **WeChat Integration** | iLink Bot protocol — bidirectional image/voice/video, dual-stack (Admin + Service) |
+| **Scheduler** | cron / interval / once scheduling, script or Agent task types, WeChat push |
+| **Soul Memory** | Long-term memory system — Memory Subagent writes soul notes, short-term injection |
+| **Per-user venv** | Each Admin gets an isolated Python virtualenv for script execution |
+| **Per-user API Keys** | AES-256-GCM encrypted keys stored per Admin, priority over env vars |
+| **Realtime Voice** | OpenAI Realtime WebSocket S2S proxy |
+| **Web Search** | CloudsWay / Tavily dual-provider search + web fetch |
+| **Batch Processing** | Excel upload → bulk Agent execution → result download |
+| **Multi-theme** | Dark (default) / Cyber Ocean / Terminal (phosphor-green CRT) |
+| **Desktop App** | Tauri v2 launcher — double-click to start, no CLI needed |
+| **Observability** | Langfuse / LangSmith tracing integration |
 
-## 架构
+### 🏗️ Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Nginx (:80)  — 反向代理（生产环境）                      │
-├──────────────────────────────────────────────────────────┤
-│  React SPA (:3000)                                      │
-│  ├─ Vite 6 + React 19 + TypeScript + Ant Design 5       │
-│  ├─ 开发: Vite dev server, proxy /api → FastAPI         │
-│  └─ 生产: Express 托管 dist/, proxy /api → FastAPI      │
-├──────────────────────────────────────────────────────────┤
-│  FastAPI Backend (:8000)                                │
-│  ├─ 用户认证 (注册码制, Bearer Token)                    │
-│  ├─ 对话管理 (CRUD + SSE Streaming)                     │
-│  ├─ 文件管理 (浏览/读写/上传/下载)                       │
-│  ├─ 脚本执行 (沙箱 Python)                              │
-│  ├─ Service 发布 (API Key + Consumer API)               │
-│  ├─ 微信 iLink 渠道 (Bridge + Session)                  │
-│  ├─ 定时任务 (Scheduler)                                │
-│  ├─ 语音 (S2S Realtime WebSocket)                       │
-│  └─ 收件箱 (Inbox)                                      │
-├──────────────────────────────────────────────────────────┤
-│  deepagents + LangGraph Engine                          │
-│  ├─ per-user Agent 实例 + SQLite Checkpoint             │
-│  ├─ FilesystemBackend (Local / S3)                      │
-│  ├─ SubAgent 调度                                       │
-│  └─ 工具链 (文件/脚本/联网/多媒体/调度)                  │
-└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Clients                                                     │
+│  Admin SPA (React 19)  │  Service Page (/s/{id})  │  WeChat │
+│  Tauri Desktop App     │  WeChat Scan (/wc/{id})   │  iLink  │
+├─────────────────────────────────────────────────────────────┤
+│  Nginx (:80) — SSL termination + reverse proxy               │
+│  → Express (:3000) — static dist/ + /api proxy               │
+│  → FastAPI (:8000) — core backend                            │
+├─────────────────────────────────────────────────────────────┤
+│  FastAPI  app/                                               │
+│  routes/  ·  services/  ·  channels/wechat/  ·  storage/    │
+│  core/    ·  schemas/   ·  voice/                            │
+├─────────────────────────────────────────────────────────────┤
+│  deepagents + LangGraph                                      │
+│  Per-user Agent instances · AsyncSqlite Checkpoint           │
+│  FilesystemBackend (Local / S3) · Subagent orchestration     │
+└─────────────────────────────────────────────────────────────┘
+
+External:
+  WeChat iLink ⇄ app/channels/wechat/
+  OpenAI Realtime ⇄ app/voice/router.py
+  CloudsWay / Tavily ⇄ app/services/web_tools.py
 ```
 
----
+### 🚀 Quick Start
 
-## 环境要求
+#### Option 1 — Desktop App (Recommended for non-developers)
 
-- Python 3.11+
-- Node.js 20+
-- Anthropic API Key 和/或 OpenAI API Key（至少配置一个）
+1. Download the installer from GitHub Releases:
+   - Windows: `JellyfishBot-x.y.z-x64.exe`
+   - macOS Apple Silicon: `JellyfishBot-x.y.z-aarch64.dmg`
+   - macOS Intel: `JellyfishBot-x.y.z-x64.dmg`
+2. Install and open JellyfishBot. The embedded Python 3.12 + Node.js 20 runtime starts automatically.
+3. Enter your LLM API Key on the **Console** page and click **Test** to verify.
+4. Press the central **START** button. The browser opens automatically at `http://localhost:3000`.
+5. Use a registration code from the **Registration Keys** tab to create your account.
 
----
+#### Option 2 — Command Line
 
-## 方式一：本地开发运行
-
-### 1. 克隆仓库
+**Prerequisites:** Python 3.11+, Node.js 20+, at least one LLM API Key.
 
 ```bash
 git clone https://github.com/LiUshin/semi-deep-agent.git
 cd semi-deep-agent
-```
 
-### 2. 配置环境变量
-
-```bash
+# Configure environment
 cp .env.example .env
-```
+# Edit .env — set ANTHROPIC_API_KEY and/or OPENAI_API_KEY
 
-编辑 `.env`，至少填入一个 LLM API Key：
-
-```bash
-# Anthropic（Claude 系列）
-ANTHROPIC_API_KEY=sk-ant-your-actual-key
-
-# OpenAI（GPT 系列 + 图片/语音/视频生成 + 实时语音对话）
-OPENAI_API_KEY=sk-your-actual-key
-```
-
-两者可同时配置，前端会自动显示所有可用模型供切换。完整可配置项见 `.env.example`。
-
-### 3. 生成注册码
-
-注册采用**注册码制**，用户注册时必须提供一个有效的一次性注册码。
-
-```bash
-# 生成 10 个注册码（默认）
+# Generate registration codes
 python generate_keys.py
 
-# 或指定数量
-python generate_keys.py 20
-
-# 追加到已有注册码文件
-python generate_keys.py 5 --append
-```
-
-注册码保存在 `config/registration_keys.json`（已被 `.gitignore` 排除）。
-
-### 4. 安装 Python 依赖
-
-```bash
+# Install dependencies
 python -m venv venv
-
-# Linux / macOS
-source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
-
+source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+cd frontend && npm install && cd ..
+
+# Start everything (recommended)
+python launcher.py
+
+# Or start manually:
+# Terminal 1: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+# Terminal 2: cd frontend && npm run dev
 ```
 
-### 5. 安装前端依赖
+Open `http://localhost:3000`, register with a generated code, and start chatting.
+
+#### Option 3 — Docker
 
 ```bash
-cd frontend
-npm install
-cd ..
-```
-
-### 6. 启动后端（FastAPI）
-
-```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-后端启动后可访问 API 文档：http://localhost:8000/docs
-
-### 7. 启动前端（Vite 开发服务器）
-
-新开一个终端：
-
-```bash
-cd frontend
-npm run dev
-```
-
-Vite 开发服务器运行在 `:3000`，自动将 `/api` 请求代理到 FastAPI `:8000`，支持热更新。
-
-### 8. 访问应用
-
-打开浏览器访问 http://localhost:3000
-
-使用步骤 3 中生成的注册码注册账号，即可开始使用。
-
----
-
-## 方式二：Docker 运行
-
-### 1. 配置环境变量
-
-```bash
-cp .env.example .env
-# 编辑 .env，填入 ANTHROPIC_API_KEY 等必要配置
-```
-
-### 2. 生成注册码
-
-```bash
-python generate_keys.py
-```
-
-生成的 `config/registration_keys.json` 会在构建 Docker 镜像时一并打包。
-
-### 3. 构建并启动
-
-```bash
+cp .env.example .env        # fill in API Keys
+python generate_keys.py     # generate registration codes
 docker compose up -d --build
+# Open http://localhost (Nginx port 80)
 ```
 
-Docker 镜像采用多阶段构建：
-- **Stage 1**：Node.js 20 编译 React 前端（`npm ci` + `npm run build`）
-- **Stage 2**：Python 3.11 + Node.js 20 运行时，Express 托管构建产物 + FastAPI 后端
+Docker multi-stage build: Node.js 20 compiles the React frontend, then Python 3.11 + Node.js 20 run it alongside FastAPI.
 
-架构：`Nginx (:80) → Express (:3000) → FastAPI (:8000)`
+### 🔑 Environment Variables
 
-### 4. 访问应用
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | One of these | Anthropic API key (Claude models) |
+| `OPENAI_API_KEY` | One of these | OpenAI API key (GPT + media generation) |
+| `ANTHROPIC_BASE_URL` | No | Custom Anthropic endpoint |
+| `OPENAI_BASE_URL` | No | Custom OpenAI endpoint |
+| `IMAGE_API_KEY` / `IMAGE_BASE_URL` | No | Override for image generation |
+| `TTS_API_KEY` / `TTS_BASE_URL` | No | Override for text-to-speech |
+| `VIDEO_API_KEY` / `VIDEO_BASE_URL` | No | Override for video generation |
+| `S2S_API_KEY` / `S2S_BASE_URL` | No | Override for realtime voice |
+| `STT_API_KEY` / `STT_BASE_URL` | No | Override for speech-to-text |
+| `CLOUDSWAY_SEARCH_KEY` | No | CloudsWay search API (preferred) |
+| `TAVILY_API_KEY` | No | Tavily search API (fallback) |
+| `STORAGE_BACKEND` | No | `local` (default) or `s3` |
+| `S3_BUCKET` / `S3_REGION` / `S3_ENDPOINT_URL` / ... | No | S3-compatible storage |
+| `ENCRYPTION_KEY` | No | AES-256-GCM master key for per-user API Keys (auto-generated if omitted) |
+| `SCRIPT_CONCURRENCY` | No | Max concurrent sandboxed scripts (default: 4) |
+| `LANGFUSE_*` / `LANGCHAIN_*` | No | Observability |
 
-打开浏览器访问 http://localhost（Nginx 默认 80 端口）
+> **Tip:** From v2.x, every Admin can configure their own API Keys in **Settings → General → API Keys** (AES-256-GCM encrypted). These take priority over environment variables.
 
-如需本机调试，可取消 `docker-compose.yml` 中端口映射的注释。
+Full list: see [.env.example](.env.example).
 
-### 5. 查看日志
+### 📦 Supported Models
 
-```bash
-docker compose logs -f
+**Anthropic** (`ANTHROPIC_API_KEY`): Claude Opus/Sonnet/Haiku 4.x, optional Thinking variants  
+**OpenAI** (`OPENAI_API_KEY`): GPT-5.4/5.3/5.2, GPT-4o, o3-mini, gpt-image-2, tts-1/tts-1-hd, Sora 2, Whisper, gpt-4o-realtime-preview
+
+Model IDs use `provider:model-id` format (e.g., `anthropic:claude-sonnet-4-6-20250929`).
+
+### 🗂️ Two-Tier Architecture
+
+```
+Admin Layer
+  ├── Full Web UI: chat, files, scripts, settings, Service management
+  ├── publish Services → generate sk-svc-... API Keys
+  ├── WeChat self-onboarding (/api/admin/wechat/*)
+  ├── Scheduler (Admin tasks + Service tasks)
+  └── Inbox (notifications from Consumer Agents → auto WeChat forward)
+
+Consumer Layer
+  ├── Authenticate via sk-svc-... Bearer Token
+  ├── Isolated filesystem: users/{admin}/services/{svc}/conversations/{conv}/
+  ├── POST /api/v1/chat        (custom SSE)
+  ├── POST /api/v1/chat/completions  (OpenAI-compatible)
+  ├── GET  /s/{service_id}     (standalone React chat page)
+  └── GET  /wc/{service_id}    (WeChat scan landing page)
 ```
 
-### 6. 停止服务
+### 📁 User Data Layout
 
-```bash
-docker compose down
+```
+users/
+└── {user_id}/
+    ├── filesystem/          # Agent virtual filesystem (Local or S3)
+    │   ├── docs/            # Reference documents
+    │   ├── scripts/         # Python scripts (sandboxed)
+    │   ├── generated/       # AI-generated files (images/audio/video)
+    │   └── soul/            # Soul memory notes (if enabled)
+    ├── conversations/       # Admin chat history JSON
+    ├── services/{svc_id}/
+    │   ├── config.json      # Model, capabilities, allowed docs/scripts
+    │   ├── keys.json        # Hashed API Keys
+    │   ├── wechat_sessions.json
+    │   ├── conversations/   # Consumer conversations
+    │   └── tasks/           # Service scheduled tasks
+    ├── tasks/               # Admin scheduled tasks
+    ├── inbox/               # Inbox messages from Service Agents
+    ├── soul/config.json     # Soul system config (app-layer, not agent-visible)
+    ├── venv/                # Per-user Python virtualenv
+    ├── api_keys.json        # AES-256-GCM encrypted per-user API Keys
+    └── admin_wechat_session.json  # Persistent Admin WeChat session
+
+data/
+└── checkpoints.db           # SQLite Agent state (LangGraph)
+config/
+└── registration_keys.json   # One-time registration codes
 ```
 
-### 数据持久化
+### 📚 Documentation
 
-用户数据（对话、文件、checkpoints）挂载到宿主机 `./data/users/`，容器重建不会丢失。
+| Document | Description |
+|----------|-------------|
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Full user guide (all features, WeChat, FAQ) |
+| [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | Architecture, APIs, extension guide |
+| [docs/filesystem-architecture.md](docs/filesystem-architecture.md) | Filesystem layout, JSON schemas, message flows |
+| [docs/wechat-integration-guide.md](docs/wechat-integration-guide.md) | iLink WeChat integration deep-dive |
+
+### License
+
+MIT
 
 ---
 
-## 可选：Langfuse 可观测性
+<h2 id="中文">🇨🇳 中文</h2>
 
-项目内置 Langfuse 自托管部署配置：
+### 概览
+
+JellyfishBot 是一个功能完整的 AI Agent 管理与分发平台，采用 **Admin 管理 + Consumer 消费** 两层架构。管理员可以配置 Agent（模型、文档、脚本、System Prompt、子代理），发布为 Service 并生成 API Key 供外部消费者调用，也可通过微信 iLink 渠道扫码接入，随时随地在微信中与 Agent 对话。
+
+### ✨ 核心特性
+
+| 功能 | 说明 |
+|------|------|
+| **多模型支持** | Claude Opus/Sonnet/Haiku 4.x（含 Thinking 变体）、GPT-5.x、GPT-4o、o3-mini |
+| **SSE 流式对话** | Thinking 块、工具调用、子代理执行全程流式展示（60fps 节流刷新） |
+| **HITL 审批** | 文件操作 diff 预览、Plan Mode 审批与编辑后才执行 |
+| **多模态** | 图片附件（粘贴/拖拽）、语音输入转写、AI 图片/语音/视频生成 |
+| **虚拟文件系统** | per-user 隔离，支持本地磁盘或 S3 兼容后端 |
+| **脚本沙箱** | 双层防护：AST 静态分析 + 运行时路径白名单沙箱 |
+| **Service 发布** | API Key 认证、OpenAI 兼容接口、独立 Consumer 聊天页 |
+| **微信集成** | iLink Bot 协议，双向图片/语音/视频，双栈（Admin 自接入 + Service 渠道） |
+| **定时任务** | cron / interval / once 调度，脚本或 Agent 任务，支持微信推送 |
+| **Soul 记忆系统** | 长期记忆：Memory Subagent 自主写入 soul 笔记，短期记忆自动注入 prompt |
+| **per-user venv** | 每个 Admin 独立 Python 虚拟环境，可自由安装第三方包 |
+| **per-user API Key** | AES-256-GCM 加密存储，优先级高于环境变量 |
+| **实时语音（S2S）** | OpenAI Realtime WebSocket 代理 |
+| **联网工具** | CloudsWay / Tavily 双 provider 搜索 + 网页抓取 |
+| **批量处理** | Excel 上传 → 批量 Agent 执行 → 结果下载 |
+| **多主题** | 暗色（默认）/ 青蓝 / 磷绿 CRT 终端三套主题 |
+| **桌面 App** | Tauri v2 启动器，双击即用，自带 Python + Node.js 运行时 |
+| **可观测性** | Langfuse / LangSmith 追踪集成 |
+
+### 🏗️ 系统架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  客户端                                                      │
+│  Admin SPA (React 19)  │ Service 聊天页 /s/{id} │ 微信      │
+│  Tauri 桌面 App        │ 微信中间页 /wc/{id}    │ iLink     │
+├─────────────────────────────────────────────────────────────┤
+│  Nginx (:80) — SSL 终止 + 反向代理                           │
+│  → Express (:3000) — 静态资源 dist/ + /api 代理              │
+│  → FastAPI (:8000) — 核心后端                                │
+├─────────────────────────────────────────────────────────────┤
+│  FastAPI  app/                                               │
+│  routes/（路由）· services/（业务）· channels/wechat/（微信）│
+│  storage/（存储）· core/（认证/加密/路径安全）· voice/（S2S）│
+├─────────────────────────────────────────────────────────────┤
+│  deepagents + LangGraph 引擎                                 │
+│  per-user Agent 实例 · AsyncSqlite 状态持久化                │
+│  FilesystemBackend（Local / S3）· Subagent 调度               │
+└─────────────────────────────────────────────────────────────┘
+
+外部协议：
+  微信 iLink ⇄ app/channels/wechat/
+  OpenAI Realtime ⇄ app/voice/router.py
+  CloudsWay / Tavily ⇄ app/services/web_tools.py
+```
+
+### 🚀 快速开始
+
+#### 方式一：桌面 App（推荐非开发者使用）
+
+1. 从 GitHub Release 下载安装包：
+   - Windows：`JellyfishBot-x.y.z-x64.exe`
+   - macOS Apple Silicon：`JellyfishBot-x.y.z-aarch64.dmg`
+   - macOS Intel：`JellyfishBot-x.y.z-x64.dmg`
+2. 安装并打开 JellyfishBot，内置 Python 3.12 + Node.js 20 自动启动。
+3. 在 **控制台** 页填入 LLM API Key，点击 **测试连接** 验证。
+4. 点击中央 **START** 按钮，浏览器自动打开 `http://localhost:3000`。
+5. 在 **注册码管理** Tab 生成注册码，注册账号即可使用。
+
+#### 方式二：命令行（开发者）
+
+**前置条件**：Python 3.11+、Node.js 20+、至少一个 LLM API Key。
+
+```bash
+git clone https://github.com/LiUshin/semi-deep-agent.git
+cd semi-deep-agent
+
+# 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入 ANTHROPIC_API_KEY 或 OPENAI_API_KEY
+
+# 生成注册码（首次部署）
+python generate_keys.py
+
+# 安装依赖
+python -m venv venv
+venv\Scripts\activate          # Windows
+source venv/bin/activate       # Linux/macOS
+pip install -r requirements.txt
+cd frontend && npm install && cd ..
+
+# 一键启动（推荐）
+python launcher.py
+
+# 手动启动（调试用）：
+# 终端 1: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+# 终端 2: cd frontend && npm run dev
+```
+
+打开 `http://localhost:3000`，使用注册码注册账号后即可开始使用。
+
+> **快捷脚本**：`./start_local.sh`（Mac/Linux）或 `start_local.bat`（Windows 双击）。
+
+#### 方式三：Docker
+
+```bash
+cp .env.example .env           # 填入 API Key 等必要配置
+python generate_keys.py        # 生成注册码
+docker compose up -d --build   # 构建并启动
+# 访问 http://localhost（Nginx 端口 80）
+```
+
+Docker 采用多阶段构建：Stage 1 用 Node.js 20 编译前端，Stage 2 用 Python 3.11 + Node.js 20 运行后端和静态文件服务。
+
+```bash
+docker compose logs -f           # 查看日志
+docker compose down              # 停止服务
+```
+
+### 🔑 环境变量说明
+
+| 变量 | 必需 | 说明 |
+|------|------|------|
+| `ANTHROPIC_API_KEY` | 二选一 | Anthropic API 密钥（Claude 系列） |
+| `OPENAI_API_KEY` | 二选一 | OpenAI API 密钥（GPT + 多媒体生成） |
+| `ANTHROPIC_BASE_URL` | 否 | 自定义 Anthropic 端点 |
+| `OPENAI_BASE_URL` | 否 | 自定义 OpenAI 端点 |
+| `IMAGE_API_KEY` / `IMAGE_BASE_URL` | 否 | 图片生成能力覆盖 |
+| `TTS_API_KEY` / `TTS_BASE_URL` | 否 | TTS 能力覆盖 |
+| `VIDEO_API_KEY` / `VIDEO_BASE_URL` | 否 | 视频生成能力覆盖 |
+| `S2S_API_KEY` / `S2S_BASE_URL` | 否 | 实时语音覆盖 |
+| `STT_API_KEY` / `STT_BASE_URL` | 否 | 语音转写覆盖 |
+| `CLOUDSWAY_SEARCH_KEY` | 否 | CloudsWay 搜索（优先） |
+| `TAVILY_API_KEY` | 否 | Tavily 搜索（备选） |
+| `STORAGE_BACKEND` | 否 | `local`（默认）或 `s3` |
+| `S3_BUCKET` / `S3_REGION` / `S3_ENDPOINT_URL` / ... | 否 | S3 兼容存储配置 |
+| `ENCRYPTION_KEY` | 否 | per-user API Key 的 AES-256-GCM master key（不设则自动生成 `data/encryption.key`） |
+| `SCRIPT_CONCURRENCY` | 否 | 全局并发脚本数（默认 4） |
+| `LANGFUSE_*` / `LANGCHAIN_*` | 否 | 可观测性配置 |
+
+> **提示**：从 v2.x 起，每个 Admin 可在 **设置 → 通用 → API Keys** 中配置自己的 Key（AES-256-GCM 加密存储），**优先级高于环境变量**。
+
+完整变量列表见 [.env.example](.env.example)。
+
+### 📦 支持的模型
+
+**Anthropic**（`ANTHROPIC_API_KEY`）：Claude Opus/Sonnet/Haiku 4.x，可选 Thinking 变体  
+**OpenAI**（`OPENAI_API_KEY`）：GPT-5.4/5.3/5.2、GPT-4o、o3-mini、gpt-image-2、tts-1/tts-1-hd、Sora 2、Whisper、gpt-4o-realtime-preview
+
+模型 ID 格式：`provider:model-id`（如 `anthropic:claude-sonnet-4-6-20250929`）。
+
+### 🗂️ 两层架构（Admin / Consumer）
+
+```
+Admin 层（管理员）
+  ├── 完整 Web UI：聊天、文件、脚本、设置、Service 管理、定时任务、微信
+  ├── 发布 Service → 生成 sk-svc-... API Key
+  ├── 微信自接入（/api/admin/wechat/*）
+  ├── 调度器（Admin 任务 + Service 任务）
+  └── 收件箱（接收 Service Agent 通知，自动评估转发到微信）
+
+Consumer 层（消费者）
+  ├── 通过 sk-svc-... Bearer Token 认证
+  ├── 文件系统隔离：users/{admin}/services/{svc}/conversations/{conv}/
+  ├── POST /api/v1/chat                （自定义 SSE 流式）
+  ├── POST /api/v1/chat/completions    （OpenAI 兼容）
+  ├── GET  /s/{service_id}             （独立 React 聊天页）
+  └── GET  /wc/{service_id}            （微信扫码中间页）
+```
+
+### 📁 用户数据目录
+
+```
+users/
+└── {user_id}/
+    ├── filesystem/          # Agent 虚拟文件系统（Local 或 S3）
+    │   ├── docs/            # 文档目录（Agent 可读）
+    │   ├── scripts/         # Python 脚本（沙箱执行）
+    │   ├── generated/       # AI 生成文件（图片/音频/视频）
+    │   └── soul/            # Soul 记忆笔记（启用后可见）
+    ├── conversations/       # Admin 对话历史 JSON
+    ├── services/{svc_id}/
+    │   ├── config.json      # 模型、能力、允许的文档/脚本
+    │   ├── keys.json        # API Key（sha256 哈希）
+    │   ├── wechat_sessions.json  # 微信会话状态
+    │   ├── conversations/   # Consumer 对话
+    │   └── tasks/           # Service 定时任务
+    ├── tasks/               # Admin 定时任务
+    ├── inbox/               # 收件箱消息（来自 Service Agent）
+    ├── soul/config.json     # Soul 配置（应用层，Agent 不可直接访问）
+    ├── venv/                # per-user Python 虚拟环境
+    ├── api_keys.json        # AES-256-GCM 加密的 per-user API Key
+    └── admin_wechat_session.json  # Admin 微信会话持久化
+
+data/
+└── checkpoints.db           # SQLite Agent 状态持久化（LangGraph）
+config/
+└── registration_keys.json   # 一次性注册码
+```
+
+### 📚 项目文档
+
+| 文档 | 说明 |
+|------|------|
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | 完整用户指南（全功能说明、微信接入、FAQ） |
+| [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | 架构设计、API 参考、扩展开发指南 |
+| [docs/filesystem-architecture.md](docs/filesystem-architecture.md) | 文件系统布局、JSON Schema、6 大消息流时序图 |
+| [docs/wechat-integration-guide.md](docs/wechat-integration-guide.md) | iLink 微信集成实战（iLink 协议踩坑记录） |
+
+### 可选：Langfuse 可观测性（自托管）
 
 ```bash
 cd langfuse
 cp env.example .env
-# 编辑 .env，修改密码和密钥
+# 修改密码和密钥
 docker compose up -d
+# 然后在项目根 .env 中配置 LANGFUSE_* 变量
 ```
 
-启动后在 `.env`（项目根目录）中配置 Langfuse 相关环境变量即可开启追踪。
-
----
-
-## 项目结构
-
-```
-jellyfishbot/
-├── app/                           # FastAPI 后端应用
-│   ├── main.py                    # 应用入口（~70 条路由）
-│   ├── deps.py                    # 依赖注入 (admin / consumer)
-│   ├── core/
-│   │   ├── settings.py            # 环境变量、路径常量
-│   │   ├── security.py            # 用户认证 (注册/登录/token)
-│   │   ├── api_config.py          # API Key / Base URL 按能力路由
-│   │   ├── path_security.py       # 路径遍历防护
-│   │   └── observability.py       # Langfuse 追踪集成
-│   ├── schemas/
-│   │   ├── requests.py            # Admin Pydantic 模型
-│   │   └── service.py             # Service / Consumer 模型
-│   ├── services/
-│   │   ├── agent.py               # Agent 创建/缓存/模型解析
-│   │   ├── consumer_agent.py      # Consumer Agent 工厂
-│   │   ├── tools.py               # LangChain @tool 工厂
-│   │   ├── ai_tools.py            # 图片/语音/视频生成底层
-│   │   ├── web_tools.py           # 联网搜索/抓取
-│   │   ├── script_runner.py       # 沙箱 Python 脚本执行
-│   │   ├── _sandbox_wrapper.py    # 运行时文件 I/O 沙箱
-│   │   ├── conversations.py       # 对话持久化
-│   │   ├── prompt.py              # System Prompt 版本控制
-│   │   ├── subagents.py           # Subagent 配置管理
-│   │   ├── published.py           # Service 发布 + Consumer 会话
-│   │   ├── scheduler.py           # 定时任务调度器
-│   │   └── inbox.py               # 收件箱
-│   ├── routes/                    # FastAPI 路由模块
-│   │   ├── auth.py                # /api/auth/*
-│   │   ├── conversations.py       # /api/conversations/*
-│   │   ├── chat.py                # /api/chat (SSE streaming + resume/stop)
-│   │   ├── files.py               # /api/files/*
-│   │   ├── scripts.py             # /api/scripts/run + /api/audio/transcribe
-│   │   ├── models.py              # /api/models
-│   │   ├── settings_routes.py     # system-prompt + user-profile + subagents
-│   │   ├── batch.py               # /api/batch/* (Excel 批量)
-│   │   ├── services.py            # /api/services/* (Service CRUD + API Key)
-│   │   ├── consumer.py            # /api/v1/* (Consumer 对外接口)
-│   │   ├── consumer_ui.py         # Consumer 聊天页
-│   │   ├── scheduler.py           # /api/scheduler/*
-│   │   ├── inbox.py               # /api/inbox/*
-│   │   └── wechat_ui.py           # 微信中间页路由
-│   ├── channels/wechat/           # 微信 iLink 集成
-│   │   ├── client.py              # iLink 协议客户端
-│   │   ├── bridge.py              # Consumer 消息桥接
-│   │   ├── admin_bridge.py        # Admin 微信接入
-│   │   ├── session_manager.py     # 会话管理 (指数退避/清理)
-│   │   ├── media.py               # AES 加解密 + CDN
-│   │   ├── delivery.py            # 统一投递层
-│   │   ├── rate_limiter.py        # 频率限制
-│   │   └── router.py              # 微信 API 路由
-│   ├── storage/                   # 文件存储抽象层
-│   │   ├── local.py               # 本地文件系统
-│   │   ├── s3.py                  # S3 兼容存储
-│   │   └── ...
-│   └── voice/
-│       └── router.py              # WebSocket S2S 实时语音代理
-│
-├── frontend/                      # React 前端 (Vite + TypeScript)
-│   ├── package.json               # jellyfishbot-frontend v2.0.0
-│   ├── vite.config.ts             # Vite 6, :3000, proxy → :8000
-│   ├── index.html                 # Vite 入口
-│   ├── server.js                  # 生产环境 Express (托管 dist/)
-│   ├── src/
-│   │   ├── main.tsx               # React 19 入口
-│   │   ├── App.tsx                # ConfigProvider (antd dark) + Auth + Router
-│   │   ├── router/index.tsx       # BrowserRouter 路由定义
-│   │   ├── layouts/AppLayout.tsx  # 侧栏导航 + 文件面板 + 设置入口
-│   │   ├── services/api.ts        # 统一 API 客户端
-│   │   ├── stores/
-│   │   │   ├── authContext.tsx     # 认证状态管理
-│   │   │   └── streamContext.tsx   # SSE 流状态管理
-│   │   ├── types/index.ts         # TypeScript 类型定义
-│   │   ├── styles/
-│   │   │   ├── theme.ts           # 设计系统 (品牌色/语义色/圆角/阴影)
-│   │   │   └── global.css         # 全局样式
-│   │   ├── pages/
-│   │   │   ├── Login.tsx           # 品牌分栏登录/注册
-│   │   │   ├── Chat/              # 主聊天页面
-│   │   │   │   ├── index.tsx      # 对话列表 + 消息区 + SSE 流式
-│   │   │   │   ├── chat.module.css # CSS Modules 样式
-│   │   │   │   ├── markdown.ts    # Markdown 渲染 (按需高亮)
-│   │   │   │   ├── useSmartScroll.ts # 智能滚动 hook
-│   │   │   │   └── components/
-│   │   │   │       ├── StreamingMessage.tsx  # 流式消息容器
-│   │   │   │       ├── MessageBubble.tsx     # 历史消息气泡
-│   │   │   │       ├── ThinkingBlock.tsx     # 思考过程折叠
-│   │   │   │       ├── ToolIndicator.tsx     # 工具调用指示器
-│   │   │   │       ├── SubagentCard.tsx      # 子代理执行卡片
-│   │   │   │       ├── ApprovalCard.tsx      # HITL 审批卡片
-│   │   │   │       ├── ImageAttachment.tsx   # 图片附件
-│   │   │   │       └── VoiceInput.tsx        # 语音输入
-│   │   │   ├── AdminServices/index.tsx  # Service 管理 (CRUD + Key + 微信 + 测试)
-│   │   │   ├── Scheduler/index.tsx      # 定时任务管理
-│   │   │   ├── WeChat/index.tsx         # 微信接入 (QR/状态/消息)
-│   │   │   └── Settings/               # 设置子页面
-│   │   │       ├── PromptPage.tsx       # System Prompt 版本管理
-│   │   │       ├── SubagentPage.tsx     # Subagent 管理
-│   │   │       ├── GeneralPage.tsx      # 通用（时区/界面样式/高级开关；内嵌 BatchRunner 批量运行）
-│   │   │       └── InboxPage.tsx        # 收件箱
-│   │   └── components/
-│   │       ├── FilePanel.tsx            # 文件浏览/编辑面板
-│   │       └── modals/                  # 各类模态框
-│   ├── public/                    # 静态资源
-│   │   ├── media_resources/       # 品牌素材 (logo 等)
-│   │   └── wechat-scan.html       # 微信扫码中间页
-│   ├── service-chat.html          # Consumer 独立聊天页 (vite multi-entry)
-│   ├── src/service-chat/          # Consumer 聊天页 React 入口 (复用 admin 组件)
-│   └── dist/                      # Vite 构建产物 (gitignore)
-│
-├── config/                        # 应用配置
-│   ├── agent_config.json          # Agent 默认配置
-│   └── registration_keys.json     # 注册码 (gitignore)
-├── docs/                          # 项目文档
-├── langfuse/                      # Langfuse 自托管部署配置
-├── nginx/default.conf             # Nginx 反代配置
-├── wechat-bot/                    # iLink 协议参考实现
-├── Dockerfile                     # 多阶段构建
-├── docker-compose.yml             # Docker Compose 编排
-├── requirements.txt               # Python 依赖
-├── start.sh                       # 容器启动脚本
-├── generate_keys.py               # 注册码生成工具
-└── .env.example                   # 环境变量模板
-```
-
----
-
-## 前端技术栈
-
-| 技术 | 版本 | 用途 |
-|------|------|------|
-| React | 19 | UI 框架 |
-| TypeScript | 5.7 | 类型安全 |
-| Vite | 6 | 构建工具 + 开发服务器 |
-| Ant Design | 5 | UI 组件库 (暗色主题) |
-| React Router | 7 | 客户端路由 (BrowserRouter) |
-| Phosphor Icons | 2.x | 图标库 (全站统一) |
-| marked + DOMPurify | - | Markdown 渲染 (XSS 安全) |
-| highlight.js | 11 | 代码语法高亮 (按需加载) |
-
-### 前端命令
-
-```bash
-cd frontend
-npm run dev        # Vite 开发服务器 (:3000), 热更新, proxy → :8000
-npm run build      # TypeScript 编译 + Vite 生产构建 → dist/
-npm run preview    # 本地预览生产构建
-npm run legacy     # 旧版 Express 服务器 (兼容)
-```
-
----
-
-## 支持的模型与能力
-
-### Anthropic（需配置 `ANTHROPIC_API_KEY`）
-
-| 模型 | 说明 |
-|------|------|
-| Claude Opus 4.6 (Thinking) | 最强模型，自适应 thinking，适合复杂推理与编程 |
-| Claude Sonnet 4.6 (Thinking) | 速度与智能的最佳平衡，支持自适应 thinking |
-| Claude Haiku 4.5 (Thinking) | 最快模型，支持 extended thinking |
-| Claude Opus 4.6 | 最强标准模型，1M token 上下文 |
-| Claude Sonnet 4.6 | 高性能标准模型，1M token 上下文 |
-| Claude Haiku 4.5 | 最快响应，200k token 上下文 |
-
-### OpenAI（需配置 `OPENAI_API_KEY`）
-
-| 模型 / 服务 | 说明 |
-|-------------|------|
-| GPT-5.4 | Reasoning 模型 |
-| GPT-5.3 / GPT-5.2 | 高性能对话 |
-| GPT-4o / GPT-4o Mini | 标准 / 轻量对话 |
-| o3-mini | 推理模型 |
-| gpt-image-1 | AI 图片生成 (`generate_image` 工具) |
-| tts-1 / tts-1-hd | 文字转语音 (6 种音色) |
-| Sora 2 | AI 视频生成 (`generate_video` 工具) |
-| Whisper | 语音转文字 |
-| gpt-4o-realtime-preview | 实时语音对话 (WebSocket S2S) |
-
----
-
-## 环境变量说明
-
-| 变量 | 必需 | 说明 |
-|------|------|------|
-| `ANTHROPIC_API_KEY` | 二选一 | Anthropic API 密钥 |
-| `OPENAI_API_KEY` | 二选一 | OpenAI API 密钥 |
-| `ANTHROPIC_BASE_URL` | 否 | Anthropic 自定义端点 |
-| `OPENAI_BASE_URL` | 否 | OpenAI 自定义端点 |
-| `IMAGE_API_KEY` / `IMAGE_BASE_URL` | 否 | 图片生成能力覆盖 |
-| `TTS_API_KEY` / `TTS_BASE_URL` | 否 | TTS 能力覆盖 |
-| `VIDEO_API_KEY` / `VIDEO_BASE_URL` | 否 | 视频生成能力覆盖 |
-| `S2S_API_KEY` / `S2S_BASE_URL` | 否 | 实时语音能力覆盖 |
-| `STT_API_KEY` / `STT_BASE_URL` | 否 | 语音转写能力覆盖 |
-| `CLOUDSWAY_SEARCH_KEY` | 否 | CloudsWay 搜索 API (优先) |
-| `TAVILY_API_KEY` | 否 | Tavily 搜索 API (备选) |
-| `STORAGE_BACKEND` | 否 | `local` (默认) 或 `s3` |
-| `S3_BUCKET` / `S3_REGION` / ... | 否 | S3 存储配置 |
-| `LANGFUSE_*` | 否 | Langfuse 追踪配置 |
-| `LANGCHAIN_*` | 否 | LangSmith 追踪配置 |
-
-完整变量列表见 [.env.example](.env.example)。
-
----
-
-## 两层架构 (Admin / Consumer)
-
-### Admin 层
-- 注册 / 登录，完整管理界面
-- 配置 Agent：选择模型、上传文档/脚本、自定义 System Prompt、管理子代理
-- 发布 Service：配置能力集、生成 API Key、绑定微信渠道
-- 定时任务、批量执行、收件箱
-
-### Consumer 层
-- 通过 Service API Key (`sk-svc-...`) 认证
-- 独立的对话和文件隔离
-- API 接口：
-  - `POST /api/v1/chat` — 自定义 SSE 流式
-  - `POST /api/v1/chat/completions` — OpenAI 兼容接口
-  - `POST /api/v1/conversations` — 创建对话
-  - `GET /api/v1/conversations/{id}` — 获取对话历史
-- 独立聊天页：`/s/{service_id}`
-
----
-
-## 用户数据存储
-
-```
-users/
-├── {user_id}/
-│   ├── conversations/             # 对话历史 JSON
-│   ├── filesystem/                # 用户虚拟文件系统
-│   │   ├── docs/                  # 文档目录
-│   │   ├── scripts/               # Python 脚本目录
-│   │   └── generated/             # AI 生成文件
-│   ├── services/                  # 发布的 Service
-│   │   └── {service_id}/
-│   │       ├── config.json        # Service 配置
-│   │       ├── keys.json          # API Key (sha256 hash)
-│   │       ├── conversations/     # Consumer 对话
-│   │       └── tasks/             # Service 定时任务
-│   ├── tasks/                     # Admin 定时任务
-│   ├── system_prompt.txt          # 自定义 System Prompt
-│   ├── system_prompt_versions.json
-│   ├── user_profile.json          # 用户画像
-│   └── subagents.json             # 子代理配置
-└── users.json                     # 用户账号信息
-
-data/
-└── checkpoints.db                 # SQLite Agent 状态持久化
-```
-
----
-
-## License
+### License
 
 MIT

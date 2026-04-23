@@ -68,20 +68,30 @@ except Exception:
     pass
 
 # ── System shared directories (read-only exemption) ──────────────────
-# Libraries like matplotlib scan system font/SSL/locale directories.
-# These are safe to read and not user-data paths.
+# 大量第三方库（matplotlib 字体扫描、requests SSL CA、PIL 图像 codec、
+# locale/timezone/mime 等）会在 import 阶段就遍历系统目录。把这些路径
+# 加进白名单后，沙盒仍然只允许「读」，写依然走 _ALLOWED_WRITE。
+# 用户家目录里的敏感文件（~/.ssh、~/.aws、~/Library/Application Support
+# 等）不在白名单里，依旧受保护。
 _SYSTEM_READ_DIRS: list = []
 for _d in [
-    "/usr/share",               # fonts, locale, mime, misc shared data
-    "/usr/local/share",         # locally installed shared data
-    "/usr/X11R6",               # X11 fonts (matplotlib font_manager)
-    "/etc/fonts",               # fontconfig
-    "/etc/ssl",                 # SSL certificates (requests/urllib3)
-    "/etc/mime.types",          # MIME type database
-    "/System/Library/Fonts",    # macOS system fonts
-    "/Library/Fonts",           # macOS user fonts
+    # Unix-like 系统库根目录
+    "/usr",                     # 含 /usr/share, /usr/local, /usr/X11, /usr/lib 等
+    "/etc",                     # 配置文件（fontconfig, ssl, mime 等）
+    "/opt",                     # /opt/X11, /opt/homebrew, /opt/local 等
+    "/bin", "/sbin",            # 偶尔被库 stat 检测
+    "/lib", "/lib64",           # 共享库（Linux）
+    "/var/cache/fontconfig",    # fontconfig 字体缓存（Linux）
+    # macOS 系统/库目录
+    "/Library",
+    "/System",
+    "/Applications",            # 偶尔被字体管理器扫描
+    "/private/etc",             # macOS 上 /etc 实际指向这里
+    "/private/var/folders",     # 系统级临时目录的 realpath
+    # 用户家目录里少数已知的「字体/字典/locale」类公开数据，仅供扫描
     os.path.expanduser("~/.fonts"),
     os.path.expanduser("~/.local/share/fonts"),
+    os.path.expanduser("~/Library/Fonts"),
 ]:
     _rp = os.path.realpath(_d)
     if _rp not in _SYSTEM_READ_DIRS:
@@ -92,8 +102,23 @@ for _d in [
 import tempfile as _tempfile
 _TEMP_DIR = os.path.realpath(_tempfile.gettempdir())
 
-# Redirect matplotlib config to temp so it doesn't need ~/.matplotlib/
-os.environ["MPLCONFIGDIR"] = os.path.join(_TEMP_DIR, "mpl_sandbox")
+# matplotlib 配置/缓存目录（沙盒内可写）。预先 mkdir 并设环境变量，
+# 否则 font_manager 第一次启动会去家目录写缓存被拦截。
+_MPL_CFG_DIR = os.path.join(_TEMP_DIR, "mpl_sandbox")
+try:
+    os.makedirs(_MPL_CFG_DIR, exist_ok=True)
+except OSError:
+    pass
+os.environ["MPLCONFIGDIR"] = _MPL_CFG_DIR
+# 强制无头后端，避免脚本里 plt.show() / 后端探测触发 Tk/Qt/Cocoa 调用。
+os.environ.setdefault("MPLBACKEND", "Agg")
+# 让 fontconfig / PIL 等也把缓存写到沙盒可写目录，减少越权读写。
+os.environ.setdefault("FONTCONFIG_PATH", "/etc/fonts")
+os.environ.setdefault("XDG_CACHE_HOME", os.path.join(_TEMP_DIR, "xdg_cache_sandbox"))
+try:
+    os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
+except OSError:
+    pass
 
 
 # ── Path checking ───────────────────────────────────────────────────
@@ -111,18 +136,66 @@ def _is_within(path: str, roots: list) -> bool:
     return False
 
 
+# 防递归 guard：os.path.realpath 内部会调 os.readlink；而我们 patch 过的
+# os.readlink 又会调 _check_read → _is_within → os.path.realpath …
+# 用 threading.local 标记「正在检查中」，递归进来直接放行（外层调用兜底）。
+import threading as _threading
+_check_guard = _threading.local()
+
+
+def _is_read_allowed(path) -> bool:
+    # 递归调用（来自 realpath → patched readlink → _check_read）：
+    # 直接放行，由最外层的检查统一兜底，避免无限递归。
+    if getattr(_check_guard, "busy", False):
+        return True
+    _check_guard.busy = True
+    try:
+        return _is_within(
+            path,
+            _ALLOWED_READ + _ALLOWED_WRITE + _PYTHON_READ_ROOTS + _SYSTEM_READ_DIRS,
+        )
+    finally:
+        _check_guard.busy = False
+
+
+def _safe_realpath(path) -> str:
+    """计算 realpath 但不触发 patched readlink 的递归检查；失败回退到原始 path。"""
+    if getattr(_check_guard, "busy", False):
+        return str(path)
+    _check_guard.busy = True
+    try:
+        return os.path.realpath(path)
+    except Exception:
+        return str(path)
+    finally:
+        _check_guard.busy = False
+
+
 def _check_read(path):
-    if not _is_within(path, _ALLOWED_READ + _ALLOWED_WRITE + _PYTHON_READ_ROOTS + _SYSTEM_READ_DIRS):
-        rp = os.path.realpath(path)
+    if not _is_read_allowed(path):
         raise PermissionError(
-            f"Sandbox: read access denied — {path} (resolved: {rp})"
+            f"Sandbox: read access denied — {path} (resolved: {_safe_realpath(path)})"
         )
 
 
+def _is_write_allowed(path) -> bool:
+    if getattr(_check_guard, "busy", False):
+        return True
+    _check_guard.busy = True
+    try:
+        return _is_within(path, _ALLOWED_WRITE + [_TEMP_DIR])
+    finally:
+        _check_guard.busy = False
+
+
 def _check_write(path):
-    if not _is_within(path, _ALLOWED_WRITE + [_TEMP_DIR]):
-        rp = os.path.realpath(path)
-        print(f"[Sandbox] DENIED write: path={path} realpath={rp} | cwd={os.getcwd()} | allowed={_ALLOWED_WRITE}", file=sys.stderr)
+    if not _is_write_allowed(path):
+        rp = _safe_realpath(path)
+        print(
+            f"[Sandbox] DENIED write: path={path} realpath={rp} | "
+            f"cwd={os.getcwd()} | allowed={_ALLOWED_WRITE}",
+            file=sys.stderr,
+        )
         raise PermissionError(
             f"Sandbox: write access denied — {path} (resolved: {rp})"
         )
@@ -153,28 +226,51 @@ io.open = _restricted_open
 
 _original_listdir = os.listdir
 _original_scandir = os.scandir
+_original_walk = os.walk
 
+
+# 关键设计：listdir / scandir / walk 是「扫描型」调用，第三方库
+# （matplotlib font_manager, PIL, locale 等）经常会主动遍历一堆系统
+# 目录。如果对越权路径直接抛 PermissionError，整个 import 链就挂了。
+# 折中策略：越权时静默返回空集，让库以为「目录是空的」从而跳过，而
+# 不影响真正要保护的「打开文件读内容」（_check_read 在 open/os.open
+# 等场景下仍然会硬抛错）。
 
 def _restricted_listdir(path="."):
-    _check_read(str(path))
+    if not _is_read_allowed(path):
+        return []
     return _original_listdir(path)
 
 
+class _EmptyScandir:
+    """模拟 os.scandir() 的上下文管理器，返回空迭代器。"""
+    def __iter__(self):
+        return iter(())
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def close(self):
+        return None
+
+
 def _restricted_scandir(path="."):
-    _check_read(str(path))
+    if not _is_read_allowed(path):
+        return _EmptyScandir()
     return _original_scandir(path)
+
+
+def _restricted_walk(top, **kw):
+    if not _is_read_allowed(top):
+        return iter(())
+    return _original_walk(top, **kw)
 
 
 os.listdir = _restricted_listdir
 os.scandir = _restricted_scandir
-
-
-def _restricted_walk(top, **kw):
-    _check_read(str(top))
-    return _original_walk(top, **kw)
-
-
-_original_walk = os.walk
 os.walk = _restricted_walk
 
 

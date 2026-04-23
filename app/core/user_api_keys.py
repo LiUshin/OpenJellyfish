@@ -24,6 +24,11 @@ _SECRET_FIELDS = {
     "video_api_key",
     "s2s_api_key",
     "stt_api_key",
+    # 第三方大模型/多模态厂商（Phase 1+ 接入）
+    "kimi_api_key",
+    "minimax_api_key",
+    "doubao_access_key",
+    "doubao_secret_key",
 }
 
 _URL_FIELDS = {
@@ -34,6 +39,10 @@ _URL_FIELDS = {
     "video_base_url",
     "s2s_base_url",
     "stt_base_url",
+    "kimi_base_url",
+    # MiniMax / 豆包除 key 外的辅助字段（非 URL 也走 plaintext 槽位）
+    "minimax_group_id",
+    "doubao_region",
 }
 
 ALL_FIELDS = _SECRET_FIELDS | _URL_FIELDS

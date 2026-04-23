@@ -137,7 +137,82 @@ def _create_consumer_read_tools(admin_id: str, allowed_docs: List[str]):
         except Exception as e:
             return f"读取失败: {e}"
 
-    return [ls, read_file]
+    @tool
+    def list_files_sorted(
+        path: str = "/",
+        order_by: str = "modified",
+        desc: bool = True,
+        limit: int = 50,
+    ) -> str:
+        """列出 docs/ 目录文件并按指定字段排序，返回带大小和修改时间的明细。
+
+        Args:
+            path: 目录路径，/ 为根目录
+            order_by: 排序字段，可选 "name" / "modified" / "size"，默认 "modified"
+            desc: 是否倒序（True=新→旧 / 大→小 / Z→A），默认 True
+            limit: 最多返回多少条，默认 50，上限 500
+        """
+        from app.services.tools import (
+            _SORT_KEYS, _format_size, _format_mtime_short,
+        )
+        from datetime import datetime as _dt
+
+        order_by = (order_by or "modified").lower().strip()
+        if order_by not in _SORT_KEYS:
+            return f"order_by 只能是 name / modified / size，收到: {order_by}"
+        limit = max(1, min(int(limit or 50), 500))
+
+        clean = path.lstrip("/").replace("\\", "/")
+        if clean.startswith("generated"):
+            return "generated/ 目录不可通过此工具浏览"
+        try:
+            target = safe_join(docs_dir, clean) if clean else docs_dir
+        except PermissionError:
+            return "路径超出允许范围"
+        if not os.path.isdir(target):
+            return f"目录不存在: {path}"
+
+        rows = []
+        for name in os.listdir(target):
+            full = os.path.join(target, name)
+            rel = os.path.join(clean, name).replace("\\", "/") if clean else name
+            if not _is_allowed(rel):
+                continue
+            try:
+                st = os.stat(full)
+                is_dir = os.path.isdir(full)
+                rows.append({
+                    "name": name,
+                    "is_dir": is_dir,
+                    "size": 0 if is_dir else st.st_size,
+                    "modified_at": _dt.fromtimestamp(st.st_mtime).isoformat(),
+                })
+            except OSError:
+                continue
+        if not rows:
+            return f"(空目录或全部被权限过滤: {path})"
+
+        key_map = {
+            "name": lambda r: r["name"].lower(),
+            "modified": lambda r: r["modified_at"],
+            "mtime": lambda r: r["modified_at"],
+            "size": lambda r: r["size"],
+        }
+        rows.sort(key=key_map[order_by], reverse=bool(desc))
+        truncated = len(rows) > limit
+        rows = rows[:limit]
+
+        lines = [f"{'类型':4} {'大小':>8}  {'修改时间':16}  名称"]
+        for r in rows:
+            kind = "DIR " if r["is_dir"] else "FILE"
+            size = "-" if r["is_dir"] else _format_size(r["size"])
+            mt = _format_mtime_short(r["modified_at"])
+            lines.append(f"{kind:4} {size:>8}  {mt:16}  {r['name']}{'/' if r['is_dir'] else ''}")
+        if truncated:
+            lines.append(f"... (仅显示前 {limit} 条)")
+        return "\n".join(lines)
+
+    return [ls, read_file, list_files_sorted]
 
 
 def _create_consumer_gen_tools(admin_id: str, service_id: str, conv_id: str, capabilities: List[str]):

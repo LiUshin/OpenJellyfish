@@ -382,6 +382,12 @@ async def _run_admin_agent_and_reply(
     thread_id = f"{user_id}-{conv_id}"
     config = {"configurable": {"thread_id": thread_id}}
 
+    # Bracket the entire streaming + post-stream send/save section inside a
+    # scheduled_inject.thread_active context so any L2 injections queued for
+    # this thread wait until we're fully done (exception-safe via try/finally
+    # inside the context manager).
+    from app.services import scheduled_inject
+
     full_response = ""
     sent_via_tool = False
     tool_records = []
@@ -391,102 +397,103 @@ async def _run_admin_agent_and_reply(
 
     _MAX_HITL_LOOPS = 10
 
-    for _loop_i in range(_MAX_HITL_LOOPS):
-        async for event in agent.astream(
-            input_payload,
-            config=config,
-            stream_mode="messages",
-            subgraphs=True,
-        ):
-            if not isinstance(event, tuple) or len(event) != 2:
-                continue
-            ns, chunk = event
-            if isinstance(chunk, tuple) and len(chunk) == 2:
-                msg, metadata = chunk
-            elif hasattr(ns, '__class__') and 'Message' in ns.__class__.__name__:
-                msg, metadata = ns, chunk
-                ns = ()
-            else:
-                continue
+    async with scheduled_inject.thread_active(thread_id):
+        for _loop_i in range(_MAX_HITL_LOOPS):
+            async for event in agent.astream(
+                input_payload,
+                config=config,
+                stream_mode="messages",
+                subgraphs=True,
+            ):
+                if not isinstance(event, tuple) or len(event) != 2:
+                    continue
+                ns, chunk = event
+                if isinstance(chunk, tuple) and len(chunk) == 2:
+                    msg, metadata = chunk
+                elif hasattr(ns, '__class__') and 'Message' in ns.__class__.__name__:
+                    msg, metadata = ns, chunk
+                    ns = ()
+                else:
+                    continue
 
-            msg_type = msg.__class__.__name__
+                msg_type = msg.__class__.__name__
 
-            if msg_type == "AIMessageChunk":
-                content = msg.content
-                if isinstance(content, str) and content:
-                    full_response += content
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            full_response += block.get("text", "")
+                if msg_type == "AIMessageChunk":
+                    content = msg.content
+                    if isinstance(content, str) and content:
+                        full_response += content
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                full_response += block.get("text", "")
 
-            elif msg_type == "ToolMessage":
-                tool_name = getattr(msg, "name", "tool")
-                content = msg.content if isinstance(msg.content, str) else str(msg.content)
-                tool_records.append({"name": tool_name, "result": content[:500]})
+                elif msg_type == "ToolMessage":
+                    tool_name = getattr(msg, "name", "tool")
+                    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    tool_records.append({"name": tool_name, "result": content[:500]})
 
-                if tool_name == "send_message":
-                    sent_via_tool = True
-                    try:
-                        from app.channels.wechat.delivery import extract_media_tags
-                        payload = json.loads(content)
-                        text = payload.get("text", "")
-                        media = payload.get("media")
+                    if tool_name == "send_message":
+                        sent_via_tool = True
+                        try:
+                            from app.channels.wechat.delivery import extract_media_tags
+                            payload = json.loads(content)
+                            text = payload.get("text", "")
+                            media = payload.get("media")
 
-                        # Agent 经常把生成的图片/音频以 <<FILE:...>> 标签嵌在 text 里
-                        # （system prompt 引导的 web 端渲染格式），投递层主动解析转为媒体消息
-                        cleaned_text, extra_media = extract_media_tags(text)
-                        media_paths = ([media] if media else []) + extra_media
+                            # Agent 经常把生成的图片/音频以 <<FILE:...>> 标签嵌在 text 里
+                            # （system prompt 引导的 web 端渲染格式），投递层主动解析转为媒体消息
+                            cleaned_text, extra_media = extract_media_tags(text)
+                            media_paths = ([media] if media else []) + extra_media
 
-                        for mp in media_paths:
-                            try:
-                                await _send_media(user_id, client, to_user, ctx_token, mp)
-                            except Exception:
-                                log.exception("Failed to send admin media %s", mp)
+                            for mp in media_paths:
+                                try:
+                                    await _send_media(user_id, client, to_user, ctx_token, mp)
+                                except Exception:
+                                    log.exception("Failed to send admin media %s", mp)
 
-                        if cleaned_text:
-                            await client.send_text(to_user, cleaned_text, ctx_token)
-                            log.info("Admin send_message: %s", cleaned_text[:50])
-                    except Exception:
-                        log.exception("Failed to send via iLink")
+                            if cleaned_text:
+                                await client.send_text(to_user, cleaned_text, ctx_token)
+                                log.info("Admin send_message: %s", cleaned_text[:50])
+                        except Exception:
+                            log.exception("Failed to send via iLink")
 
-        # Check for HITL interrupts and auto-approve
-        state = await agent.aget_state(config)
-        has_interrupt = False
-        if state and hasattr(state, "tasks") and state.tasks:
+            # Check for HITL interrupts and auto-approve
+            state = await agent.aget_state(config)
+            has_interrupt = False
+            if state and hasattr(state, "tasks") and state.tasks:
+                for task in state.tasks:
+                    if hasattr(task, "interrupts") and task.interrupts:
+                        has_interrupt = True
+                        break
+
+            if not has_interrupt:
+                break
+
+            decisions = []
             for task in state.tasks:
                 if hasattr(task, "interrupts") and task.interrupts:
-                    has_interrupt = True
-                    break
+                    for intr in task.interrupts:
+                        val = intr.value if hasattr(intr, "value") else {}
+                        if isinstance(val, dict) and "action_requests" in val:
+                            for ar in val["action_requests"]:
+                                # langchain HITL middleware expects {"type": "approve"} after upgrade
+                                decisions.append({"type": "approve"})
 
-        if not has_interrupt:
-            break
+            if not decisions:
+                break
 
-        decisions = []
-        for task in state.tasks:
-            if hasattr(task, "interrupts") and task.interrupts:
-                for intr in task.interrupts:
-                    val = intr.value if hasattr(intr, "value") else {}
-                    if isinstance(val, dict) and "action_requests" in val:
-                        for ar in val["action_requests"]:
-                            # langchain HITL middleware expects {"type": "approve"} after upgrade
-                            decisions.append({"type": "approve"})
+            log.info("WeChat admin bridge: auto-approving %d HITL actions (loop %d)",
+                     len(decisions), _loop_i + 1)
+            input_payload = Command(resume={"decisions": decisions})
 
-        if not decisions:
-            break
+        if not sent_via_tool and full_response.strip():
+            await client.send_text(to_user, full_response.strip(), ctx_token)
+            log.info("Admin direct response: %s", full_response[:50])
 
-        log.info("WeChat admin bridge: auto-approving %d HITL actions (loop %d)",
-                 len(decisions), _loop_i + 1)
-        input_payload = Command(resume={"decisions": decisions})
-
-    if not sent_via_tool and full_response.strip():
-        await client.send_text(to_user, full_response.strip(), ctx_token)
-        log.info("Admin direct response: %s", full_response[:50])
-
-    save_message(
-        user_id, conv_id, "assistant", full_response,
-        tool_calls=tool_records if tool_records else None,
-    )
+        save_message(
+            user_id, conv_id, "assistant", full_response,
+            tool_calls=tool_records if tool_records else None,
+        )
 
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
