@@ -48,6 +48,7 @@ from app.services.published import (
     get_consumer_generated_dir,
 )
 from app.services.consumer_agent import create_consumer_agent
+from app.services.usage_log import record_request
 
 router = APIRouter(prefix="/api/v1", tags=["consumer"])
 
@@ -62,10 +63,39 @@ def _sse(gen):
     )
 
 
+async def _record_stream(gen, *, admin_id: str, service_id: str, channel: str,
+                         key_id: str, conv_id: str, endpoint: str):
+    """Wrap an SSE generator: forwards events while recording total duration
+    + ok 状态。流被客户端中断（GeneratorExit）也算 ok，因为 LLM 已经
+    跑了；仅当生成器内部抛异常才标 ok=False。"""
+    start = time.time()
+    ok = True
+    status_code = 200
+    try:
+        async for ev in gen:
+            yield ev
+    except Exception:
+        ok = False
+        status_code = 500
+        raise
+    finally:
+        record_request(
+            admin_id, service_id,
+            channel=channel, key_id=key_id, conv_id=conv_id,
+            endpoint=endpoint, status_code=status_code,
+            latency_ms=int((time.time() - start) * 1000), ok=ok,
+        )
+
+
 async def _stream_consumer(agent, agent_input, config, ctx, conv_id):
     """Yield SSE events identical to the admin _stream_agent format."""
     admin_id = ctx["admin_id"]
     service_id = ctx["service_id"]
+    thread_id = (config or {}).get("configurable", {}).get("thread_id", "")
+    # Notify scheduled-task injection module that this thread is active so any
+    # pending L2 injections wait until our stream finishes.
+    from app.services import scheduled_inject
+    await scheduled_inject.mark_thread_active(thread_id)
     full_response = ""
     tool_records = []
     _cur_tool_name = None
@@ -210,12 +240,18 @@ async def _stream_consumer(agent, agent_input, config, ctx, conv_id):
                                   full_response + "\n\n⚠️ [连接中断 — 已保存已生成内容]",
                                   tool_calls=tool_records if tool_records else None,
                                   blocks=blocks if blocks else None)
+        # Release scheduled-injection guard; drainer picks up any L2 pairs queued
+        # during this stream once settle delay elapses.
+        await scheduled_inject.mark_thread_inactive(thread_id)
 
 
 async def _stream_openai_compat(agent, agent_input, config, ctx, conv_id, model_name):
     """Yield SSE in OpenAI chat.completions.chunk format."""
     admin_id = ctx["admin_id"]
     service_id = ctx["service_id"]
+    thread_id = (config or {}).get("configurable", {}).get("thread_id", "")
+    from app.services import scheduled_inject
+    await scheduled_inject.mark_thread_active(thread_id)
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:12]
     created = int(time.time())
     full_response = ""
@@ -277,6 +313,7 @@ async def _stream_openai_compat(agent, agent_input, config, ctx, conv_id, model_
         if not _saved and full_response:
             save_consumer_message(admin_id, service_id, conv_id, "assistant",
                                   full_response + "\n\n⚠️ [连接中断 — 已保存已生成内容]")
+        await scheduled_inject.mark_thread_inactive(thread_id)
 
 
 # ── routes ───────────────────────────────────────────────────────────
@@ -286,7 +323,18 @@ async def api_create_conversation(
     req: CreateConsumerConversationRequest,
     ctx=Depends(get_service_context),
 ):
-    conv = create_consumer_conversation(ctx["admin_id"], ctx["service_id"], req.title)
+    start = time.time()
+    conv = create_consumer_conversation(
+        ctx["admin_id"], ctx["service_id"], req.title, source="api",
+    )
+    record_request(
+        ctx["admin_id"], ctx["service_id"],
+        channel="api", key_id=ctx.get("key_id", ""),
+        conv_id=conv.get("id", ""),
+        endpoint="POST /api/v1/conversations",
+        status_code=200,
+        latency_ms=int((time.time() - start) * 1000), ok=True,
+    )
     return conv
 
 
@@ -306,7 +354,7 @@ async def api_consumer_chat(req: ConsumerChatRequest, ctx=Depends(get_service_co
 
     conv = get_consumer_conversation(admin_id, service_id, conv_id)
     if not conv:
-        conv = create_consumer_conversation(admin_id, service_id)
+        conv = create_consumer_conversation(admin_id, service_id, source="web")
         conv_id = conv["id"]
 
     save_text = _extract_text(req.message)
@@ -316,10 +364,16 @@ async def api_consumer_chat(req: ConsumerChatRequest, ctx=Depends(get_service_co
     config = {"configurable": {"thread_id": thread_id}}
 
     stamped = stamp_message(req.message, admin_id)
-    return _sse(_stream_consumer(
+    inner = _stream_consumer(
         agent,
         {"messages": [{"role": "user", "content": stamped}]},
         config, ctx, conv_id,
+    )
+    return _sse(_record_stream(
+        inner,
+        admin_id=admin_id, service_id=service_id,
+        channel="web", key_id=ctx.get("key_id", ""), conv_id=conv_id,
+        endpoint="POST /api/v1/chat",
     ))
 
 
@@ -332,12 +386,12 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
 
     conv_id = req.conversation_id
     if not conv_id:
-        conv = create_consumer_conversation(admin_id, service_id)
+        conv = create_consumer_conversation(admin_id, service_id, source="api")
         conv_id = conv["id"]
     else:
         conv = get_consumer_conversation(admin_id, service_id, conv_id)
         if not conv:
-            conv = create_consumer_conversation(admin_id, service_id)
+            conv = create_consumer_conversation(admin_id, service_id, source="api")
             conv_id = conv["id"]
 
     last_user_msg = ""
@@ -348,6 +402,12 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
                 break
 
     if not last_user_msg:
+        record_request(
+            admin_id, service_id,
+            channel="api", key_id=ctx.get("key_id", ""), conv_id=conv_id,
+            endpoint="POST /api/v1/chat/completions",
+            status_code=400, latency_ms=0, ok=False,
+        )
         raise HTTPException(status_code=400, detail="No user message found")
 
     save_consumer_message(admin_id, service_id, conv_id, "user", last_user_msg)
@@ -357,38 +417,61 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
 
     stamped = stamp_message(last_user_msg, admin_id)
     if req.stream:
-        return _sse(_stream_openai_compat(
+        inner = _stream_openai_compat(
             agent,
             {"messages": [{"role": "user", "content": stamped}]},
             config, ctx, conv_id, model_name,
+        )
+        return _sse(_record_stream(
+            inner,
+            admin_id=admin_id, service_id=service_id,
+            channel="api", key_id=ctx.get("key_id", ""), conv_id=conv_id,
+            endpoint="POST /api/v1/chat/completions",
         ))
 
     # Non-streaming: collect full response
+    from app.services import scheduled_inject
+    await scheduled_inject.mark_thread_active(thread_id)
     full_response = ""
-    async for event in agent.astream(
-        {"messages": [{"role": "user", "content": stamped}]},
-        config=config, stream_mode="messages", subgraphs=True,
-    ):
-        if not isinstance(event, tuple) or len(event) != 2:
-            continue
-        ns, chunk = event
-        if isinstance(chunk, tuple) and len(chunk) == 2:
-            msg, _ = chunk
-        elif hasattr(ns, '__class__') and 'Message' in ns.__class__.__name__:
-            msg = ns
-        else:
-            continue
-        if msg.__class__.__name__ == "AIMessageChunk":
-            content = msg.content
-            if isinstance(content, str):
-                full_response += content
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        full_response += block.get("text", "")
+    _ns_start = time.time()
+    _ns_ok = True
+    try:
+        async for event in agent.astream(
+            {"messages": [{"role": "user", "content": stamped}]},
+            config=config, stream_mode="messages", subgraphs=True,
+        ):
+            if not isinstance(event, tuple) or len(event) != 2:
+                continue
+            ns, chunk = event
+            if isinstance(chunk, tuple) and len(chunk) == 2:
+                msg, _ = chunk
+            elif hasattr(ns, '__class__') and 'Message' in ns.__class__.__name__:
+                msg = ns
+            else:
+                continue
+            if msg.__class__.__name__ == "AIMessageChunk":
+                content = msg.content
+                if isinstance(content, str):
+                    full_response += content
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            full_response += block.get("text", "")
 
-    if full_response:
-        save_consumer_message(admin_id, service_id, conv_id, "assistant", full_response)
+        if full_response:
+            save_consumer_message(admin_id, service_id, conv_id, "assistant", full_response)
+    except Exception:
+        _ns_ok = False
+        raise
+    finally:
+        await scheduled_inject.mark_thread_inactive(thread_id)
+        record_request(
+            admin_id, service_id,
+            channel="api", key_id=ctx.get("key_id", ""), conv_id=conv_id,
+            endpoint="POST /api/v1/chat/completions",
+            status_code=200 if _ns_ok else 500,
+            latency_ms=int((time.time() - _ns_start) * 1000), ok=_ns_ok,
+        )
 
     return {
         "id": "chatcmpl-" + uuid.uuid4().hex[:12],

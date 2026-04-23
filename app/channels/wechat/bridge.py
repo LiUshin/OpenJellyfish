@@ -19,6 +19,7 @@ from app.services.published import (
     save_consumer_attachment, get_consumer_attachment_dir,
 )
 from app.services.consumer_agent import create_consumer_agent
+from app.services.usage_log import record_request
 
 log = logging.getLogger("wechat.bridge")
 
@@ -83,14 +84,27 @@ async def handle_wechat_message(session: WeChatSession, raw_msg: dict):
         attachments=att_list,
     )
 
+    import time as _time
+    _start = _time.time()
+    _ok = True
     try:
         await _run_agent_and_reply(session, client, from_user, ctx_token, user_content)
     except Exception:
+        _ok = False
         log.exception("Agent processing failed (session=%s)", session.session_id)
         try:
             await client.send_text(from_user, "抱歉，处理消息时出错了，请稍后再试。", ctx_token)
         except Exception:
             pass
+    finally:
+        record_request(
+            session.admin_id, session.service_id,
+            channel="wechat", key_id="",
+            conv_id=session.conversation_id,
+            endpoint="wechat:on_message",
+            status_code=200 if _ok else 500,
+            latency_ms=int((_time.time() - _start) * 1000), ok=_ok,
+        )
 
 
 def _detect_image_format(data: bytes) -> str:
@@ -423,6 +437,10 @@ async def _run_agent_and_reply(
     thread_id = f"svc-{session.service_id}-{session.conversation_id}"
     config = {"configurable": {"thread_id": thread_id}}
 
+    # Bracket the entire streaming + post-stream send/save section so any L2
+    # scheduled-task injections queued for this thread wait until we finish.
+    from app.services import scheduled_inject
+
     full_response = ""
     sent_via_tool = False
     tool_records = []
@@ -433,96 +451,97 @@ async def _run_agent_and_reply(
 
     _MAX_HITL_LOOPS = 10
 
-    for _loop_i in range(_MAX_HITL_LOOPS):
-        async for event in agent.astream(
-            input_payload,
-            config=config,
-            stream_mode="messages",
-            subgraphs=True,
-        ):
-            if not isinstance(event, tuple) or len(event) != 2:
-                continue
-            ns, chunk = event
-            if isinstance(chunk, tuple) and len(chunk) == 2:
-                msg, metadata = chunk
-            elif hasattr(ns, '__class__') and 'Message' in ns.__class__.__name__:
-                msg, metadata = ns, chunk
-                ns = ()
-            else:
-                continue
+    async with scheduled_inject.thread_active(thread_id):
+        for _loop_i in range(_MAX_HITL_LOOPS):
+            async for event in agent.astream(
+                input_payload,
+                config=config,
+                stream_mode="messages",
+                subgraphs=True,
+            ):
+                if not isinstance(event, tuple) or len(event) != 2:
+                    continue
+                ns, chunk = event
+                if isinstance(chunk, tuple) and len(chunk) == 2:
+                    msg, metadata = chunk
+                elif hasattr(ns, '__class__') and 'Message' in ns.__class__.__name__:
+                    msg, metadata = ns, chunk
+                    ns = ()
+                else:
+                    continue
 
-            msg_type = msg.__class__.__name__
+                msg_type = msg.__class__.__name__
 
-            if msg_type == "AIMessageChunk":
-                tool_call_chunks = getattr(msg, "tool_call_chunks", None) or []
-                tool_calls = getattr(msg, "tool_calls", None) or []
-                for tc in (tool_call_chunks or tool_calls):
-                    name = tc.get("name", "")
-                    if name:
-                        cur_tool_name = name
+                if msg_type == "AIMessageChunk":
+                    tool_call_chunks = getattr(msg, "tool_call_chunks", None) or []
+                    tool_calls = getattr(msg, "tool_calls", None) or []
+                    for tc in (tool_call_chunks or tool_calls):
+                        name = tc.get("name", "")
+                        if name:
+                            cur_tool_name = name
 
-                content = msg.content
-                if isinstance(content, str) and content:
-                    full_response += content
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text = block.get("text", "")
-                            if text:
-                                full_response += text
+                    content = msg.content
+                    if isinstance(content, str) and content:
+                        full_response += content
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text = block.get("text", "")
+                                if text:
+                                    full_response += text
 
-            elif msg_type == "ToolMessage":
-                tool_name = getattr(msg, "name", "tool")
-                content = msg.content if isinstance(msg.content, str) else str(msg.content)
-                tool_records.append({"name": tool_name, "result": content[:500]})
+                elif msg_type == "ToolMessage":
+                    tool_name = getattr(msg, "name", "tool")
+                    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    tool_records.append({"name": tool_name, "result": content[:500]})
 
-                if tool_name == "send_message":
-                    from app.channels.wechat.delivery import deliver_tool_message
-                    try:
-                        if await deliver_tool_message(content, session, client):
-                            sent_via_tool = True
-                    except Exception:
-                        log.exception("Failed to send tool message via iLink")
+                    if tool_name == "send_message":
+                        from app.channels.wechat.delivery import deliver_tool_message
+                        try:
+                            if await deliver_tool_message(content, session, client):
+                                sent_via_tool = True
+                        except Exception:
+                            log.exception("Failed to send tool message via iLink")
 
-                cur_tool_name = None
+                    cur_tool_name = None
 
-        # Check for HITL interrupts and auto-approve
-        state = await agent.aget_state(config)
-        has_interrupt = False
-        if state and hasattr(state, "tasks") and state.tasks:
+            # Check for HITL interrupts and auto-approve
+            state = await agent.aget_state(config)
+            has_interrupt = False
+            if state and hasattr(state, "tasks") and state.tasks:
+                for task in state.tasks:
+                    if hasattr(task, "interrupts") and task.interrupts:
+                        has_interrupt = True
+                        break
+
+            if not has_interrupt:
+                break
+
+            decisions = []
             for task in state.tasks:
                 if hasattr(task, "interrupts") and task.interrupts:
-                    has_interrupt = True
-                    break
+                    for intr in task.interrupts:
+                        val = intr.value if hasattr(intr, "value") else {}
+                        if isinstance(val, dict) and "action_requests" in val:
+                            for ar in val["action_requests"]:
+                                # langchain HITL middleware expects {"type": "approve"} after upgrade
+                                decisions.append({"type": "approve"})
 
-        if not has_interrupt:
-            break
+            if not decisions:
+                break
 
-        decisions = []
-        for task in state.tasks:
-            if hasattr(task, "interrupts") and task.interrupts:
-                for intr in task.interrupts:
-                    val = intr.value if hasattr(intr, "value") else {}
-                    if isinstance(val, dict) and "action_requests" in val:
-                        for ar in val["action_requests"]:
-                            # langchain HITL middleware expects {"type": "approve"} after upgrade
-                            decisions.append({"type": "approve"})
+            log.info("WeChat consumer bridge: auto-approving %d HITL actions (loop %d)",
+                     len(decisions), _loop_i + 1)
+            input_payload = Command(resume={"decisions": decisions})
 
-        if not decisions:
-            break
+        if not sent_via_tool and full_response.strip():
+            await client.send_text(to_user, full_response.strip(), ctx_token)
+            log.info("Sent direct response: %s", full_response[:50])
 
-        log.info("WeChat consumer bridge: auto-approving %d HITL actions (loop %d)",
-                 len(decisions), _loop_i + 1)
-        input_payload = Command(resume={"decisions": decisions})
-
-    if not sent_via_tool and full_response.strip():
-        await client.send_text(to_user, full_response.strip(), ctx_token)
-        log.info("Sent direct response: %s", full_response[:50])
-
-    save_consumer_message(
-        session.admin_id, session.service_id,
-        session.conversation_id, "assistant", full_response,
-        tool_calls=tool_records if tool_records else None,
-    )
+        save_consumer_message(
+            session.admin_id, session.service_id,
+            session.conversation_id, "assistant", full_response,
+            tool_calls=tool_records if tool_records else None,
+        )
 
 

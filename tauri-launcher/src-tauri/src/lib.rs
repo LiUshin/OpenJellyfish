@@ -1,15 +1,19 @@
-use chrono::Utc;
+use chrono::{Local, Utc};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufWriter, Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{Manager, State};
+use tauri::{Manager, RunEvent, State, WindowEvent};
+use walkdir::WalkDir;
+use zip::write::SimpleFileOptions;
+use zip::ZipWriter;
 
 // ── State ────────────────────────────────────────────────────────
 
@@ -551,26 +555,60 @@ fn start_jellyfish(
     })
 }
 
-#[tauri::command]
-fn stop_jellyfish(state: State<'_, AppState>) -> Result<(), String> {
-    let mut proc_guard = state.jellyfish_process.lock().unwrap();
-    if let Some(ref mut child) = *proc_guard {
-        #[cfg(unix)]
-        {
+/// Terminate the launcher.py child **and its entire process tree**.
+///
+/// `launcher.py` itself spawns two grandchildren (uvicorn backend + express
+/// frontend). On Windows, `Child::kill()` only signals the immediate child,
+/// leaving the grandchildren as orphan processes that keep the ports busy
+/// and never shut down. We use `taskkill /T /F /PID <pid>` to recursively
+/// kill the whole tree. On Unix, `SIGTERM` followed by a short grace period
+/// then `SIGKILL` propagates to children that share the process group (the
+/// launcher's `cleanup` handler also forwards SIGTERM internally).
+fn kill_process_tree(child: &mut Child) {
+    let pid = child.id();
+    #[cfg(unix)]
+    {
+        unsafe {
+            // Kill the whole process group if launcher set one; otherwise
+            // SIGTERM the launcher itself which cleans up its children.
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        // Give launcher.py a moment to gracefully shut down children.
+        std::thread::sleep(Duration::from_millis(800));
+        if child.try_wait().ok().flatten().is_none() {
             unsafe {
-                libc::kill(child.id() as i32, libc::SIGTERM);
+                libc::kill(pid as i32, libc::SIGKILL);
             }
         }
-        #[cfg(windows)]
-        {
-            let _ = child.kill();
-        }
-        let _ = child.wait();
+    }
+    #[cfg(windows)]
+    {
+        // /T = also terminate child processes spawned by this PID
+        // /F = force termination
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .output();
+        // Fallback in case taskkill is unavailable for some reason.
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+/// Internal helper shared by the Tauri command and the window-close handler.
+fn shutdown_jellyfish(state: &AppState) -> Result<(), String> {
+    let mut proc_guard = state.jellyfish_process.lock().unwrap();
+    if let Some(ref mut child) = *proc_guard {
+        kill_process_tree(child);
         *proc_guard = None;
         Ok(())
     } else {
         Err("JellyfishBot 未运行".into())
     }
+}
+
+#[tauri::command]
+fn stop_jellyfish(state: State<'_, AppState>) -> Result<(), String> {
+    shutdown_jellyfish(&state)
 }
 
 #[tauri::command]
@@ -642,10 +680,11 @@ fn open_logs_dir(state: State<'_, AppState>) -> Result<(), String> {
 
 /// Open the GitHub releases page in the user's default browser.
 ///
-/// TODO: replace the placeholder URL with the real repo once published.
+/// Points to the public mirror at `LiUshin/JellyfishBot` (the private
+/// development repo `LiUshin/semi-deep-agent` is not exposed here).
 #[tauri::command]
 fn open_release_page() -> Result<(), String> {
-    const RELEASE_URL: &str = "https://github.com/jellyfishbot/jellyfishbot/releases/latest";
+    const RELEASE_URL: &str = "https://github.com/LiUshin/JellyfishBot/releases/latest";
     open::that(RELEASE_URL).map_err(|e| e.to_string())
 }
 
@@ -653,6 +692,177 @@ fn open_release_page() -> Result<(), String> {
 #[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+// ── Backup (one-click ZIP of config / data / logs / users) ──────
+
+#[derive(Serialize)]
+struct BackupResult {
+    ok: bool,
+    cancelled: bool,
+    path: String,
+    file_count: usize,
+    size_bytes: u64,
+    skipped_dirs: Vec<String>,
+    message: String,
+}
+
+/// Folders to recursively skip even if they appear inside the four target
+/// dirs — bytecode caches, virtualenvs, and node_modules are huge and never
+/// part of a useful backup.
+const BACKUP_SKIP_DIRS: &[&str] = &[
+    "__pycache__",
+    ".pytest_cache",
+    "node_modules",
+    "venv",
+    ".venv",
+    "target",
+    ".git",
+];
+
+fn should_skip_path(rel: &Path) -> bool {
+    rel.components().any(|c| {
+        let name = c.as_os_str().to_string_lossy();
+        BACKUP_SKIP_DIRS.iter().any(|s| *s == name)
+    })
+}
+
+/// Stream a single file into the open ZIP archive.
+fn zip_add_file<W: Write + std::io::Seek>(
+    zw: &mut ZipWriter<W>,
+    abs_path: &Path,
+    archive_name: &str,
+    options: SimpleFileOptions,
+) -> std::io::Result<u64> {
+    zw.start_file(archive_name, options)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let mut f = File::open(abs_path)?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        zw.write_all(&buf[..n])?;
+        total += n as u64;
+    }
+    Ok(total)
+}
+
+/// Pack `config/`, `data/`, `logs/`, `users/` of the current project into a
+/// ZIP file. The user picks the destination via a native save dialog.
+///
+/// `.env` is intentionally excluded (contains plaintext API keys; if the
+/// user wants to migrate keys they can re-enter them on the new machine).
+#[tauri::command]
+async fn pack_backup(state: State<'_, AppState>) -> Result<BackupResult, String> {
+    let project_dir = state.project_dir.lock().unwrap().clone();
+
+    // Ask the user where to save.
+    let default_name = format!(
+        "jellyfishbot-backup-{}.zip",
+        Local::now().format("%Y%m%d-%H%M%S")
+    );
+    let chosen = rfd::AsyncFileDialog::new()
+        .add_filter("ZIP archive", &["zip"])
+        .set_file_name(&default_name)
+        .set_title("保存 JellyfishBot 备份到…")
+        .save_file()
+        .await;
+
+    let Some(handle) = chosen else {
+        return Ok(BackupResult {
+            ok: false,
+            cancelled: true,
+            path: String::new(),
+            file_count: 0,
+            size_bytes: 0,
+            skipped_dirs: vec![],
+            message: "已取消".into(),
+        });
+    };
+
+    let out_path: PathBuf = handle.path().to_path_buf();
+    let out_path = strip_win_extended_prefix(&out_path);
+
+    // Open ZIP for writing.
+    let file = File::create(&out_path).map_err(|e| format!("无法创建 ZIP: {}", e))?;
+    let mut zw = ZipWriter::new(BufWriter::new(file));
+    let options = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(6))
+        .unix_permissions(0o644);
+
+    let targets = ["config", "data", "logs", "users"];
+    let mut file_count: usize = 0;
+    let mut total_bytes: u64 = 0;
+    let mut skipped: Vec<String> = Vec::new();
+
+    for target in targets {
+        let target_dir = project_dir.join(target);
+        if !target_dir.exists() {
+            skipped.push(format!("{} (不存在)", target));
+            continue;
+        }
+        for entry in WalkDir::new(&target_dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let abs = entry.path();
+            // Compute path relative to project_dir so the archive layout
+            // mirrors the on-disk tree.
+            let rel = match abs.strip_prefix(&project_dir) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if should_skip_path(rel) {
+                continue;
+            }
+            // Use forward slashes inside the ZIP (cross-platform convention).
+            let archive_name = rel.to_string_lossy().replace('\\', "/");
+            if entry.file_type().is_dir() {
+                // Empty dirs: store an explicit dir entry so structure round-trips.
+                if archive_name.is_empty() {
+                    continue;
+                }
+                let dir_entry = if archive_name.ends_with('/') {
+                    archive_name
+                } else {
+                    format!("{}/", archive_name)
+                };
+                let _ = zw.add_directory(&dir_entry, options);
+            } else if entry.file_type().is_file() {
+                match zip_add_file(&mut zw, abs, &archive_name, options) {
+                    Ok(n) => {
+                        file_count += 1;
+                        total_bytes += n;
+                    }
+                    Err(e) => {
+                        // Don't abort the whole backup for one unreadable file
+                        // (e.g. logs locked by uvicorn on Windows).
+                        skipped.push(format!("{} ({})", archive_name, e));
+                    }
+                }
+            }
+        }
+    }
+
+    zw.finish()
+        .map_err(|e| format!("ZIP 收尾失败: {}", e))?;
+
+    let final_size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(total_bytes);
+
+    Ok(BackupResult {
+        ok: true,
+        cancelled: false,
+        path: out_path.to_string_lossy().to_string(),
+        file_count,
+        size_bytes: final_size,
+        skipped_dirs: skipped,
+        message: format!("已备份 {} 个文件", file_count),
+    })
 }
 
 #[tauri::command]
@@ -974,6 +1184,16 @@ pub fn run() {
             backend_port: Mutex::new(8000),
             frontend_port: Mutex::new(3000),
         })
+        .on_window_event(|window, event| {
+            // 用户点 X 关闭窗口时，先把后台 launcher.py 及其孙子进程
+            // (uvicorn / express) 全部杀掉，避免端口残留 / 服务未停。
+            // 不 prevent close —— 杀完直接让窗口正常关闭。
+            if let WindowEvent::CloseRequested { .. } = event {
+                if let Some(state) = window.try_state::<AppState>() {
+                    let _ = shutdown_jellyfish(&state);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             detect_environment,
             load_env_config,
@@ -990,6 +1210,7 @@ pub fn run() {
             open_logs_dir,
             open_release_page,
             get_app_version,
+            pack_backup,
             list_registration_keys,
             generate_registration_keys,
             delete_registration_key,
@@ -998,6 +1219,15 @@ pub fn run() {
             delete_admin_user,
             get_admin_stats,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run JellyfishBot launcher");
+        .build(tauri::generate_context!())
+        .expect("failed to build JellyfishBot launcher")
+        .run(|app, event| {
+            // 双保险：即便 CloseRequested 没触发（比如系统强制 Exit），
+            // 在 RunEvent::Exit 阶段再清一次进程树。
+            if let RunEvent::Exit = event {
+                if let Some(state) = app.try_state::<AppState>() {
+                    let _ = shutdown_jellyfish(&state);
+                }
+            }
+        });
 }

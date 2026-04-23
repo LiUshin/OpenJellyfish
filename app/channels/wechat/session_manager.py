@@ -89,7 +89,7 @@ class WeChatSessionManager:
             log.info("Removing stale session %s (same user re-scanned)", sid)
             await self.remove_session(sid)
 
-        conv = create_consumer_conversation(admin_id, service_id, title="微信用户")
+        conv = create_consumer_conversation(admin_id, service_id, title="微信用户", source="wechat")
         conv_id = conv["id"]
 
         session = WeChatSession(

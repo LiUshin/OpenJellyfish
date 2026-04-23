@@ -23,6 +23,7 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None
     capabilities: Optional[list] = None
     plan_mode: Optional[bool] = None
+    yolo: Optional[bool] = None
 
 
 class ResumeRequest(BaseModel):
@@ -30,6 +31,7 @@ class ResumeRequest(BaseModel):
     decisions: list
     model: Optional[str] = None
     capabilities: Optional[list] = None
+    yolo: Optional[bool] = None
 
 
 class StopChatRequest(BaseModel):

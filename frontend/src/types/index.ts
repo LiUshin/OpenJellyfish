@@ -27,7 +27,8 @@ export type MessageBlock =
   | { type: 'thinking'; content: string }
   | { type: 'text'; content: string }
   | { type: 'tool'; name: string; args: string; result: string; done?: boolean }
-  | { type: 'subagent'; name: string; task: string; status: string; content: string; tools: { name: string; done: boolean }[]; timeline?: { kind: string; content?: string; toolName?: string; toolDone?: boolean }[]; done?: boolean; subagent_id?: number };
+  | { type: 'subagent'; name: string; task: string; status: string; content: string; tools: { name: string; done: boolean }[]; timeline?: { kind: string; content?: string; toolName?: string; toolDone?: boolean }[]; done?: boolean; subagent_id?: number }
+  | { type: 'auto_approve'; count: number; actions: { name: string; args: unknown }[] };
 
 export interface Message {
   role: 'user' | 'assistant' | 'system';
@@ -152,6 +153,7 @@ export interface SSECallbacks {
   onDone?: () => void;
   onError?: (msg: string) => void;
   onInterrupt?: (actions: unknown[], configs: unknown) => void;
+  onAutoApprove?: (count: number, actions: { name: string; args: unknown }[]) => void;
   onSubagentCall?: (name: string, task: string, subagentId?: number) => void;
   onSubagentCallChunk?: (argsDelta: string) => void;
   onSubagentStart?: (name: string, subagentId?: number) => void;
@@ -167,6 +169,7 @@ export interface ChatOptions {
   model?: string;
   capabilities?: string[];
   plan_mode?: boolean;
+  yolo?: boolean;
 }
 
 export interface SchedulerTask {

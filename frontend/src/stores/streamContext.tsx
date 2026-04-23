@@ -21,6 +21,11 @@ interface StreamContextType {
   streamBlocks: StreamBlock[];
   interruptData: InterruptPayload | null;
   planSteps: PlanStep[];
+  /**
+   * 当前浏览器会话内（一次刷新内）已发生过 YOLO 自动批准的会话 id 集合。
+   * 用于在输入区底部显示一个不显眼的 yolo 小 tag，无须中断或徽章。
+   */
+  yoloApprovedConvs: Set<string>;
   startStream: (
     convId: string,
     content: string | unknown[],
@@ -40,6 +45,7 @@ interface StreamOpts {
   model?: string;
   capabilities?: string[];
   plan_mode?: boolean;
+  yolo?: boolean;
   onDone?: (convId: string) => void;
   onError?: (convId: string, msg: string) => void;
   onInterrupt?: () => void;
@@ -54,6 +60,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
   const [streamBlocks, setStreamBlocks] = useState<StreamBlock[]>([]);
   const [interruptData, setInterruptData] = useState<InterruptPayload | null>(null);
   const [planSteps, setPlanSteps] = useState<PlanStep[]>([]);
+  const [yoloApprovedConvs, setYoloApprovedConvs] = useState<Set<string>>(() => new Set());
 
   const blocksRef = useRef<StreamBlock[]>([]);
   const rafRef = useRef<number>(0);
@@ -248,6 +255,20 @@ export function StreamProvider({ children }: { children: ReactNode }) {
           scheduleFlush();
         }
       },
+      onAutoApprove(_count: number, _actions: { name: string; args: unknown }[]) {
+        // YOLO 自动批准：不再向消息流插入显眼徽章，仅记录当前会话发生过自动批准，
+        // 由 Chat 页面在输入区底部显示一个不显眼的小 tag（直到刷新或切换会话失效）。
+        closeThinking();
+        const cid = convIdRef.current;
+        if (cid) {
+          setYoloApprovedConvs((prev) => {
+            if (prev.has(cid)) return prev;
+            const next = new Set(prev);
+            next.add(cid);
+            return next;
+          });
+        }
+      },
       onSubagentEnd(name: string, _result: string, subagentId?: number) {
         const sa = findSubagentById(subagentId);
         if (sa) {
@@ -307,6 +328,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
       model: opts.model,
       capabilities: opts.capabilities?.length ? opts.capabilities : undefined,
       plan_mode: opts.plan_mode,
+      yolo: opts.yolo,
     });
   }, []);
 
@@ -325,6 +347,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     api.resumeChat(convId, decisions, buildCallbacks(), {
       model: opts.model,
       capabilities: opts.capabilities?.length ? opts.capabilities : undefined,
+      yolo: opts.yolo,
     });
   }, []);
 
@@ -363,6 +386,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
   return (
     <StreamContext.Provider value={{
       streamingConvId, isStreaming, streamBlocks, interruptData, planSteps,
+      yoloApprovedConvs,
       startStream, resumeStream, stopStream, clearFinished, restoreInterrupt,
     }}>
       {children}

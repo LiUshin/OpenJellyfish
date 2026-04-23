@@ -3,8 +3,14 @@ import type { StreamBlock, ToolBlock } from '../types';
 import { renderMarkdown } from '../markdown';
 import ThinkingBlockCmp from './ThinkingBlock';
 import ToolIndicator from './ToolIndicator';
+import StreamingFilePreview from './StreamingFilePreview';
 import SubagentCard from './SubagentCard';
+import ScheduledTaskCard from './ScheduledTaskCard';
 import styles from '../chat.module.css';
+
+/** 这两类工具不走通用 ToolIndicator/toolRenderer，统一用 StreamingFilePreview 的
+ *  IDE 风格代码块 + 打字机渲染（admin / consumer 都一样）。 */
+const FILE_WRITE_TOOLS = new Set(['write_file', 'edit_file']);
 
 const JELLYFISH_AVATAR_SRC = '/media_resources/jellyfishlogo.png';
 
@@ -22,6 +28,9 @@ interface Props {
   hideSubagents?: boolean;
   /** 自定义头像 URL；不传用 jellyfish 默认 logo。 */
   avatarSrc?: string;
+  /** 定时任务卡片使用 friendly 变体（系统通知样式，隐藏 task_id/scope 等内部字段）。
+   *  service-chat 设为 true，admin 默认 false（显示完整元数据）。 */
+  scheduledTaskFriendlyMode?: boolean;
 }
 
 function AssistantAvatar({ src }: { src: string }) {
@@ -44,6 +53,7 @@ function StreamingMessage({
   toolRenderer,
   hideSubagents = false,
   avatarSrc = JELLYFISH_AVATAR_SRC,
+  scheduledTaskFriendlyMode = false,
 }: Props) {
   const ToolComp = toolRenderer ?? ToolIndicator;
 
@@ -84,10 +94,33 @@ function StreamingMessage({
                 />
               );
             case 'tool':
+              // 定时任务卡片：admin/service 都用同一个组件，service-chat 通过自定义
+              // toolRenderer 注入 friendlyMode；这里 admin 路径直接渲染默认变体。
+              if (block.name === 'scheduled_task') {
+                return (
+                  <ScheduledTaskCard
+                    key={`sched-${i}`}
+                    block={block}
+                    friendlyMode={scheduledTaskFriendlyMode}
+                  />
+                );
+              }
+              if (FILE_WRITE_TOOLS.has(block.name)) {
+                return (
+                  <StreamingFilePreview
+                    key={`tool-${i}`}
+                    block={block}
+                    isStreaming={isLast && isStreaming}
+                  />
+                );
+              }
               return <ToolComp key={`tool-${i}`} block={block} />;
             case 'subagent':
               if (hideSubagents) return null;
               return <SubagentCard key={`subagent-${i}`} block={block} />;
+            case 'auto_approve':
+              // YOLO 自动批准已改为输入区底部小 tag 提示，消息流内不再渲染显眼徽章。
+              return null;
             default:
               return null;
           }

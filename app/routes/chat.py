@@ -83,7 +83,13 @@ def _sse_response(generator):
     )
 
 
-async def _stream_agent(agent, agent_input, config, user_id, conv_id):
+async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool = False):
+    """Stream an agent run as SSE events.
+
+    yolo: when True, any HITL interrupt (write_file / edit_file / propose_plan)
+    is auto-approved and the agent loop continues without touching the frontend
+    ApprovalCard. Mirrors the WeChat admin_bridge auto-approve behaviour.
+    """
     thread_id = config["configurable"]["thread_id"]
     prior = _interrupt_state.pop(thread_id, None)
     full_response = prior["full_response"] if prior else ""
@@ -158,10 +164,20 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id):
     cancel_event = asyncio.Event()
     _cancel_flags[thread_id] = cancel_event
     _active_streams[thread_id] = {"user_id": user_id, "conv_id": conv_id}
+    # Notify scheduled-task injection module that this thread is active so any
+    # pending L2 injections wait until our stream finishes (drained in `finally`).
+    from app.services import scheduled_inject
+    await scheduled_inject.mark_thread_active(thread_id)
     _saved = False
+    _cancelled = False
 
-    try:
-        async for event in agent.astream(agent_input, config=config, stream_mode="messages", subgraphs=True):
+    # ── helper: 单轮 agent.astream，作为 SSE generator。被外层 while 循环
+    # 反复调用以支持 YOLO 自动批准（每次 interrupt 后 Command(resume=...) 再跑一轮）。
+    # 保持原 body 缩进不变（async for 与原 try 同处 8-space 起，body 12-space）。
+    async def _drain_one_pass(payload):
+        nonlocal full_response, _cur_tool_name, _cur_tool_args, _is_task_streaming
+        nonlocal _sa_id_counter, _cur_task_sid, _cur_task_args_buf, _cancelled, _saved
+        async for event in agent.astream(payload, config=config, stream_mode="messages", subgraphs=True):
             if cancel_event.is_set():
                 _log.info("Agent cancelled by user: %s", thread_id)
                 if full_response:
@@ -170,6 +186,7 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id):
                                  tool_calls=tool_records if tool_records else None,
                                  blocks=blocks if blocks else None)
                 _saved = True
+                _cancelled = True
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 return
             if not isinstance(event, tuple) or len(event) != 2:
@@ -381,47 +398,88 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id):
                     tool_records.append({"name": tool_name, "args": _cur_tool_args[:300], "result": content[:500]})
                 _cur_tool_name = None
                 _cur_tool_args = ""
+        # ── _drain_one_pass body 结束 ──
 
-        state = await agent.aget_state(config)
-        has_interrupt = False
-        interrupt_actions_payload: list = []
-        interrupt_configs_payload: list = []
-        if state and state.tasks:
-            for task in state.tasks:
-                if hasattr(task, "interrupts") and task.interrupts:
-                    for intr in task.interrupts:
-                        val = intr.value if hasattr(intr, "value") else {}
-                        if isinstance(val, dict) and "action_requests" in val:
-                            has_interrupt = True
-                            actions = []
-                            for ar in val["action_requests"]:
-                                actions.append({
-                                    "name": ar.get("action", {}).get("name", "") if isinstance(ar.get("action"), dict) else ar.get("name", ""),
-                                    "args": ar.get("action", {}).get("args", {}) if isinstance(ar.get("action"), dict) else ar.get("args", {}),
-                                })
-                            configs = val.get("review_configs", [])
-                            interrupt_actions_payload = actions
-                            interrupt_configs_payload = [{'action_name': c.get('action_name', ''), 'allowed_decisions': c.get('allowed_decisions', [])} for c in configs]
-                            yield f"data: {json.dumps({'type': 'interrupt', 'actions': interrupt_actions_payload, 'configs': interrupt_configs_payload}, ensure_ascii=False)}\n\n"
+    # YOLO 模式：不设硬上限。每达到 YOLO_WARN_EVERY 次循环打一条 warning 日志，
+    # 便于在日志里发现 LLM 死循环式不断触发 interrupt 的异常情况。
+    YOLO_WARN_EVERY = 50
 
-        if has_interrupt:
-            _interrupt_state[thread_id] = {
-                "full_response": full_response,
-                "blocks": list(blocks),
-                "tool_records": list(tool_records),
-                "interrupt_actions": interrupt_actions_payload,
-                "interrupt_configs": interrupt_configs_payload,
-            }
-            _saved = True
-        else:
-            _interrupt_state.pop(thread_id, None)
-            if full_response:
-                _blk_sanitize()
-                save_message(user_id, conv_id, "assistant", full_response,
-                             tool_calls=tool_records if tool_records else None,
-                             blocks=blocks if blocks else None)
-            _saved = True
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+    try:
+        input_payload = agent_input
+        yolo_loops = 0
+        while True:
+            # 1) 流式跑一轮 agent.astream
+            async for sse in _drain_one_pass(input_payload):
+                yield sse
+            if _cancelled:
+                _saved = True
+                return
+
+            # 2) 检查是否产生 HITL interrupt
+            state = await agent.aget_state(config)
+            has_interrupt = False
+            interrupt_actions_payload: list = []
+            interrupt_configs_payload: list = []
+            if state and state.tasks:
+                for task in state.tasks:
+                    if hasattr(task, "interrupts") and task.interrupts:
+                        for intr in task.interrupts:
+                            val = intr.value if hasattr(intr, "value") else {}
+                            if isinstance(val, dict) and "action_requests" in val:
+                                has_interrupt = True
+                                actions = []
+                                for ar in val["action_requests"]:
+                                    actions.append({
+                                        "name": ar.get("action", {}).get("name", "") if isinstance(ar.get("action"), dict) else ar.get("name", ""),
+                                        "args": ar.get("action", {}).get("args", {}) if isinstance(ar.get("action"), dict) else ar.get("args", {}),
+                                    })
+                                configs = val.get("review_configs", [])
+                                interrupt_actions_payload = actions
+                                interrupt_configs_payload = [{'action_name': c.get('action_name', ''), 'allowed_decisions': c.get('allowed_decisions', [])} for c in configs]
+
+            # 3) 没有 interrupt → 正常结束
+            if not has_interrupt:
+                break
+
+            # 4) 有 interrupt 且非 YOLO → 走原 ApprovalCard 流程
+            if not yolo:
+                yield f"data: {json.dumps({'type': 'interrupt', 'actions': interrupt_actions_payload, 'configs': interrupt_configs_payload}, ensure_ascii=False)}\n\n"
+                _interrupt_state[thread_id] = {
+                    "full_response": full_response,
+                    "blocks": list(blocks),
+                    "tool_records": list(tool_records),
+                    "interrupt_actions": interrupt_actions_payload,
+                    "interrupt_configs": interrupt_configs_payload,
+                }
+                _saved = True
+                return
+
+            # 5) YOLO 模式：自动批准并继续（无硬上限；定期打 warning 便于排查死循环）
+            yolo_loops += 1
+            if yolo_loops % YOLO_WARN_EVERY == 0:
+                _log.warning(
+                    "YOLO auto-approve has looped %d times for %s; check for runaway HITL loop",
+                    yolo_loops, thread_id,
+                )
+
+            decisions = [{"type": "approve"} for _ in interrupt_actions_payload]
+            actions_summary = [{"name": a.get("name", ""), "args": a.get("args", {})} for a in interrupt_actions_payload]
+            # 注意：不再向 blocks 追加 auto_approve（避免历史消息出现显眼徽章）；
+            # 仅通过 SSE 通知前端「本会话发生过 YOLO 自动批准」，由前端在输入区底部显示一个小 tag。
+            yield f"data: {json.dumps({'type': 'auto_approve', 'count': len(decisions), 'actions': actions_summary}, ensure_ascii=False)}\n\n"
+            _log.info("YOLO auto-approving %d HITL action(s) for %s (loop %d)", len(decisions), thread_id, yolo_loops)
+            input_payload = Command(resume={"decisions": decisions})
+            # while loop 继续
+
+        # while 正常退出（has_interrupt=False）→ 存盘 + done
+        _interrupt_state.pop(thread_id, None)
+        if full_response:
+            _blk_sanitize()
+            save_message(user_id, conv_id, "assistant", full_response,
+                         tool_calls=tool_records if tool_records else None,
+                         blocks=blocks if blocks else None)
+        _saved = True
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     except Exception as e:
         _log.exception("Agent error for %s: %s", thread_id, e)
@@ -443,6 +501,9 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id):
                          blocks=blocks if blocks else None)
         _cancel_flags.pop(thread_id, None)
         _active_streams.pop(thread_id, None)
+        # Release scheduled-injection guard; if any L2 pairs were queued during
+        # this stream, the drainer will pick them up now (subject to settle delay).
+        await scheduled_inject.mark_thread_inactive(thread_id)
         if is_langfuse_enabled():
             flush_langfuse()
 
@@ -471,7 +532,7 @@ async def api_chat(req: ChatRequest, user=Depends(get_current_user)):
         elif isinstance(user_content, list):
             user_content = [{"type": "text", "text": PLAN_MODE_PROMPT + "\n\n"}] + user_content
     user_content = stamp_message(user_content, user_id)
-    return _sse_response(_stream_agent(agent, {"messages": [{"role": "user", "content": user_content}]}, config, user_id, conv_id))
+    return _sse_response(_stream_agent(agent, {"messages": [{"role": "user", "content": user_content}]}, config, user_id, conv_id, yolo=bool(req.yolo)))
 
 
 @router.post("/api/chat/stop")
@@ -530,4 +591,4 @@ async def api_chat_resume(req: ResumeRequest, user=Depends(get_current_user)):
         "callbacks": get_langfuse_callbacks(),
         "metadata": get_langfuse_metadata(session_id=thread_id, user_id=username),
     }
-    return _sse_response(_stream_agent(agent, Command(resume={"decisions": req.decisions}), config, user_id, conv_id))
+    return _sse_response(_stream_agent(agent, Command(resume={"decisions": req.decisions}), config, user_id, conv_id, yolo=bool(req.yolo)))

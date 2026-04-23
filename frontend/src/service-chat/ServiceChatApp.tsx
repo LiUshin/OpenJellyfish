@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import StreamingMessage from '../pages/Chat/components/StreamingMessage';
-import { setMediaUrlBuilder } from '../pages/Chat/markdown';
+import { setMediaUrlBuilder, setFileRevealEnabled } from '../pages/Chat/markdown';
 import {
   AuthError,
   buildConsumerMediaUrl,
@@ -81,6 +81,9 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
     setMediaUrlBuilder((path) =>
       buildConsumerMediaUrl(apiKeyRef.current, convIdRef.current, path),
     );
+    // service-chat（消费者侧）没有 FilePanel，禁用「在文件浏览器中打开」点击 pill，
+    // 避免渲染出无效 UI；非媒体 <<FILE:>> 仍以 &lt;FILE:...&gt; 文本回退展示。
+    setFileRevealEnabled(false);
   }, []);
 
   // ── 创建/恢复会话 ─────────────────────────────────────────────────
@@ -363,6 +366,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
                 isStreaming={false}
                 toolRenderer={ServiceToolBadge}
                 hideSubagents
+                scheduledTaskFriendlyMode
               />
             ),
           )}
@@ -372,6 +376,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
               isStreaming
               toolRenderer={ServiceToolBadge}
               hideSubagents
+              scheduledTaskFriendlyMode
             />
           )}
           <div ref={messagesEndRef} />

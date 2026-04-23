@@ -47,7 +47,7 @@ CAPABILITY_PROMPTS = {
 """,
     "image": """
 ## AI 图片生成
-你拥有 `generate_image` 工具，可以根据文字描述生成图片（使用 gpt-image-1 模型）。
+你拥有 `generate_image` 工具，可以根据文字描述生成图片（使用 gpt-image-2 模型）。
 - 当用户要求画图、生成图片、设计图等时，调用此工具
 - prompt 要用英文，尽量详细描述画面内容、风格、色调、构图
 - 生成的图片保存在 /generated/images/ 目录
@@ -268,6 +268,91 @@ def propose_plan(steps: List[str], questions: Optional[List[str]] = None) -> str
     return json.dumps({"steps": steps, "status": "approved"}, ensure_ascii=False)
 
 
+def _format_size(n: int) -> str:
+    """Human-readable byte size (1.2K / 3.4M / 5.6G)."""
+    if n < 1024:
+        return f"{n}B"
+    for unit in ("K", "M", "G", "T"):
+        n /= 1024.0
+        if n < 1024:
+            return f"{n:.1f}{unit}"
+    return f"{n:.1f}P"
+
+
+def _format_mtime_short(iso: str) -> str:
+    """ISO timestamp → 'YYYY-MM-DD HH:MM' (drop seconds/microseconds/tz for compactness)."""
+    if not iso:
+        return ""
+    try:
+        from datetime import datetime as _dt
+        dt = _dt.fromisoformat(iso)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return iso[:16]
+
+
+_SORT_KEYS = {
+    "name": lambda e: e.name.lower(),
+    "modified": lambda e: e.modified_at or "",
+    "mtime": lambda e: e.modified_at or "",
+    "size": lambda e: e.size,
+}
+
+
+def create_list_files_sorted_tool(user_id: str):
+    """Create a list_files_sorted tool that returns sorted file metadata.
+
+    Unlike deepagents 内置的 ls（仅返回名字列表），该工具额外返回大小、修改时间，
+    且支持按字段排序。Agent 拿到时间戳后可以「找最新文件」「找最大文件」等。
+    """
+    from app.storage import get_storage_service
+
+    @tool
+    def list_files_sorted(
+        path: str = "/",
+        order_by: str = "modified",
+        desc: bool = True,
+        limit: int = 50,
+    ) -> str:
+        """列出目录文件并按指定字段排序，返回带大小和修改时间的明细。
+
+        Args:
+            path: 目录路径（如 "/", "/docs", "/generated/images"），默认根目录
+            order_by: 排序字段，可选 "name" / "modified" / "size"，默认 "modified"
+            desc: 是否倒序（True=新→旧 / 大→小 / Z→A），默认 True
+            limit: 最多返回多少条（避免大目录刷屏），默认 50，上限 500
+        """
+        order_by = (order_by or "modified").lower().strip()
+        if order_by not in _SORT_KEYS:
+            return f"order_by 只能是 name / modified / size，收到: {order_by}"
+        limit = max(1, min(int(limit or 50), 500))
+
+        storage = get_storage_service()
+        try:
+            entries = storage.list_dir(user_id, path)
+        except Exception as e:
+            return f"列目录失败: {e}"
+        if not entries:
+            return f"(空目录或不存在: {path})"
+
+        key_fn = _SORT_KEYS[order_by]
+        entries = sorted(entries, key=key_fn, reverse=bool(desc))
+        truncated = len(entries) > limit
+        entries = entries[:limit]
+
+        lines = [f"{'类型':4} {'大小':>8}  {'修改时间':16}  名称"]
+        for e in entries:
+            kind = "DIR " if e.is_dir else "FILE"
+            size = "-" if e.is_dir else _format_size(e.size)
+            mt = _format_mtime_short(e.modified_at)
+            lines.append(f"{kind:4} {size:>8}  {mt:16}  {e.name}{'/' if e.is_dir else ''}")
+        if truncated:
+            lines.append(f"... (仅显示前 {limit} 条，共 {len(entries)}+ 项)")
+        return "\n".join(lines)
+
+    return list_files_sorted
+
+
 def create_run_script_tool(user_id: str):
     """Create a run_script tool bound to the user's scripts/ directory."""
     from app.storage import get_storage_service
@@ -326,7 +411,7 @@ def create_ai_gen_tools(user_id: str):
         quality: str = "auto",
         filename: Optional[str] = None,
     ) -> str:
-        """使用 AI 生成图片（gpt-image-1）。
+        """使用 AI 生成图片（gpt-image-2）。
 
         Args:
             prompt: 图片描述，越详细越好

@@ -16,18 +16,20 @@ import {
 } from '@phosphor-icons/react';
 import * as api from '../../services/api';
 import type { Conversation, Message } from '../../types';
-import MessageBubble from './components/MessageBubble';
 import StreamingMessage from './components/StreamingMessage';
 import ApprovalCard from './components/ApprovalCard';
 import PlanTracker, { PlanCompactBar } from './components/PlanTracker';
 import ImageAttachment from './components/ImageAttachment';
 import type { ImageAttachmentHandle } from './components/ImageAttachment';
 import VoiceInput from './components/VoiceInput';
-import { useSmartScroll } from './useSmartScroll';
+import MessageList from './components/MessageList';
+import type { MessageListHandle } from './components/MessageList';
 import { useStream } from '../../stores/streamContext';
 import LogoLoading from '../../components/LogoLoading';
 import HeaderControls from '../../components/HeaderControls';
 import { useFileWorkspace } from '../../stores/fileWorkspaceContext';
+import { getYoloMode, YOLO_EVENT } from '../../utils/yoloMode';
+import { getLastSelectedModel, setLastSelectedModel } from '../../utils/lastSelectedModel';
 import styles from './chat.module.css';
 
 const { TextArea } = Input;
@@ -96,6 +98,7 @@ export default function ChatPage() {
   const stream = useStream();
   const {
     streamingConvId, isStreaming, streamBlocks, interruptData, planSteps,
+    yoloApprovedConvs,
     startStream, resumeStream, stopStream, clearFinished, restoreInterrupt,
   } = stream;
 
@@ -111,6 +114,13 @@ export default function ChatPage() {
   const [attachedImages, setAttachedImages] = useState<{ dataUrl: string; name: string }[]>([]);
   const [serverStreaming, setServerStreaming] = useState<string[]>([]);
   const [serverInterrupted, setServerInterrupted] = useState<string[]>([]);
+  const [yoloOn, setYoloOn] = useState(getYoloMode);
+
+  useEffect(() => {
+    const sync = () => setYoloOn(getYoloMode());
+    window.addEventListener(YOLO_EVENT, sync);
+    return () => window.removeEventListener(YOLO_EVENT, sync);
+  }, []);
 
   const imageAttachRef = useRef<ImageAttachmentHandle>(null);
   const currentConvIdRef = useRef(currentConvId);
@@ -119,9 +129,22 @@ export default function ChatPage() {
   const isViewingStream = currentConvId === streamingConvId;
   const showStreamBlocks = isViewingStream && (isStreaming || streamBlocks.length > 0);
 
-  const { containerRef, scrollToBottom, resetScroll, isScrolledUp } = useSmartScroll(
-    isViewingStream && isStreaming,
-  );
+  // ── 消息列表（虚拟化）相关引用 ─────────────────────────────────────
+  // scrollParentEl 通过 callback ref 拿到外层 .messagesContainer DOM，
+  // 用作 Virtuoso 的 customScrollParent；setState 触发 MessageList
+  // 在 scrollParent 就绪后挂载。
+  const [scrollParentEl, setScrollParentEl] = useState<HTMLDivElement | null>(null);
+  const messageListRef = useRef<MessageListHandle>(null);
+  // isAtBottom 必须是 state（不能用 ref），否则「回到底部」按钮的 className
+  // 不会随用户滚动而重算更新。MessageList 内部仍用 ref 做 follow-tail 判断，
+  // 不会因这个 state 频繁 re-render（只在跨阈值时变化）。
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const scrollToBottom = useCallback(() => {
+    messageListRef.current?.scrollToBottom();
+  }, []);
+  const resetScroll = useCallback(() => {
+    messageListRef.current?.resetScroll();
+  }, []);
 
   const checkServerStreaming = useCallback(async () => {
     try {
@@ -182,9 +205,19 @@ export default function ChatPage() {
     try {
       const data = await api.getModels();
       setModels(data.models);
-      setSelectedModel(data.default);
+      // 优先恢复用户上次手动选择的模型；不存在 / 已不可用时回退到后端默认。
+      // 这样切对话、新建对话、刷新页面后选择都不丢。
+      const last = getLastSelectedModel();
+      const lastIsAvailable = last && data.models.some((m) => m.id === last);
+      setSelectedModel(lastIsAvailable ? last : data.default);
     } catch { /* ignore */ }
   }
+
+  // 包一层 onChange：每次手动选模型都写入 localStorage。
+  const handleSelectModel = useCallback((modelId: string) => {
+    setSelectedModel(modelId);
+    setLastSelectedModel(modelId);
+  }, []);
 
   const loadMessagesRef = useRef(0);
   const splitRef = useRef(splitMode);
@@ -269,6 +302,7 @@ export default function ChatPage() {
     resumeStream(currentConvId, decisions, {
       model: selectedModel,
       capabilities,
+      yolo: getYoloMode(),
       onDone: handleStreamDone,
       onError: handleStreamError,
     });
@@ -384,6 +418,7 @@ export default function ChatPage() {
       model: selectedModel,
       capabilities,
       plan_mode: planMode || undefined,
+      yolo: getYoloMode(),
       onDone: handleStreamDone,
       onError: handleStreamError,
     });
@@ -495,7 +530,7 @@ export default function ChatPage() {
         </div>
 
         {/* Messages */}
-        <div className={styles.messagesContainer} ref={containerRef}>
+        <div className={styles.messagesContainer} ref={setScrollParentEl}>
           {loadingConv ? (
             <LogoLoading size={240} />
           ) : messages.length === 0 && !showStreamBlocks ? (
@@ -526,38 +561,40 @@ export default function ChatPage() {
               </div>
             </div>
           ) : (
-            <>
-              {messages.map((msg, idx) => (
-                <MessageBubble
-                  key={idx}
-                  role={msg.role}
-                  content={msg.content}
-                  toolCalls={msg.tool_calls}
-                  attachments={msg.attachments}
-                  conversationId={currentConvId || undefined}
-                  blocks={msg.blocks}
-                />
-              ))}
-              {showStreamBlocks && streamBlocks.length > 0 && (
-                <StreamingMessage blocks={streamBlocks} isStreaming={isStreaming} />
-              )}
-              {isViewingStream && planSteps.length > 0 && (
-                <PlanTracker steps={planSteps} />
-              )}
-              {isViewingStream && interruptData && currentConvId && (
-                <ApprovalCard
-                  actions={interruptData.actions as never[]}
-                  configs={(interruptData.configs ?? []) as never[]}
-                  conversationId={currentConvId}
-                  onResume={handleResume}
-                />
-              )}
-            </>
+            <MessageList
+              ref={messageListRef}
+              messages={messages}
+              conversationId={currentConvId}
+              scrollParent={scrollParentEl}
+              followStream={isViewingStream && isStreaming}
+              onAtBottomChange={setIsAtBottom}
+              footerSlot={
+                <>
+                  {showStreamBlocks && streamBlocks.length > 0 && (
+                    <StreamingMessage blocks={streamBlocks} isStreaming={isStreaming} />
+                  )}
+                  {isViewingStream && planSteps.length > 0 && (
+                    <PlanTracker steps={planSteps} />
+                  )}
+                  {isViewingStream && interruptData && currentConvId && (
+                    <ApprovalCard
+                      actions={interruptData.actions as never[]}
+                      configs={(interruptData.configs ?? []) as never[]}
+                      conversationId={currentConvId}
+                      onResume={handleResume}
+                    />
+                  )}
+                </>
+              }
+            />
           )}
 
-          {/* Scroll to bottom button */}
+          {/* Scroll to bottom button — 长会话上滑后随时可一键回到底部，
+              不再限定流式状态（旧版只在 streaming 时显示，UX 偏弱）。*/}
           <button
-            className={`${styles.scrollBottomBtn} ${isViewingStream && isStreaming && isScrolledUp() ? styles.visible : ''}`}
+            className={`${styles.scrollBottomBtn} ${
+              !isAtBottom && messages.length > 0 ? styles.visible : ''
+            }`}
             onClick={resetScroll}
           >
             <CaretDown size={14} /> 回到底部
@@ -678,7 +715,7 @@ export default function ChatPage() {
             <div style={{ flex: 1 }} />
             <Select
               value={selectedModel || undefined}
-              onChange={setSelectedModel}
+              onChange={handleSelectModel}
               style={{ width: 180 }}
               size="small"
               placeholder="选择模型"
@@ -719,6 +756,15 @@ export default function ChatPage() {
               />
             )}
           </div>
+          {yoloOn && currentConvId && yoloApprovedConvs.has(currentConvId) && (
+            <div
+              className={styles.yoloFooterTag}
+              title="YOLO 模式已自动批准本会话内的 HITL 操作"
+            >
+              <span className={styles.yoloFooterDot} />
+              yolo
+            </div>
+          )}
         </div>
       </div>
     </div>

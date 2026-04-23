@@ -12,6 +12,7 @@ import SchedulerPage from '../pages/Scheduler';
 import WeChatPage from '../pages/WeChat';
 import InboxPage from '../pages/Settings/InboxPage';
 import GeneralPage from '../pages/Settings/GeneralPage';
+import BackupPage from '../pages/Settings/BackupPage';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { Spin } from 'antd';
 
@@ -108,6 +109,7 @@ export default function AppRouter() {
             <Route path="wechat" element={<WeChatPage />} />
             <Route path="inbox" element={<InboxPage />} />
             <Route path="general" element={<GeneralPage />} />
+            <Route path="backup" element={<BackupPage />} />
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

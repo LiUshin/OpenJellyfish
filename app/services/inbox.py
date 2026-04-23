@@ -1,7 +1,19 @@
 """
 Admin inbox — receives notifications from service agents via contact_admin.
 
-Storage: {USERS_DIR}/{admin_id}/inbox/{msg_id}.json
+Storage:
+    {USERS_DIR}/{admin_id}/inbox/{msg_id}.json   - one message per file
+    {USERS_DIR}/{admin_id}/inbox/_index.json     - {msg_id: {summary fields}}
+                                                   maintained on every save;
+                                                   used by list_inbox /
+                                                   count_unread to skip
+                                                   reading every message file.
+
+The per-message file is the source of truth (status updates write to
+the file then refresh the index entry).  The index is rebuilt from disk
+on first access if missing or out-of-sync with the file count, so it's
+self-healing across crashes / manual file edits.
+
 Each message can optionally trigger a read-only admin agent to evaluate
 whether to forward the notification to the admin's WeChat.
 """
@@ -15,8 +27,18 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 from app.core.security import USERS_DIR
+from app.core.fileutil import atomic_json_save
+from app.core.jsonl_store import safe_load_json
 
 log = logging.getLogger("inbox")
+
+_INDEX_NAME = "_index.json"
+# Fields preserved in the sidecar summary index. Includes `agent_response`
+# because the existing /api/inbox listing endpoint and memory_tools.read_inbox
+# both display it directly from the listing without re-opening the file.
+_INDEX_FIELDS = ("id", "service_id", "service_name", "conversation_id",
+                 "wechat_session_id", "wechat_user_id", "message",
+                 "timestamp", "status", "handled_by", "agent_response")
 
 _main_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -36,6 +58,14 @@ def _msg_path(admin_id: str, msg_id: str) -> str:
     return os.path.join(_inbox_dir(admin_id), f"{msg_id}.json")
 
 
+def _index_path(admin_id: str) -> str:
+    return os.path.join(_inbox_dir(admin_id), _INDEX_NAME)
+
+
+def _summary_from_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: msg.get(k) for k in _INDEX_FIELDS if k in msg}
+
+
 def _load_msg(admin_id: str, msg_id: str) -> Optional[Dict[str, Any]]:
     path = _msg_path(admin_id, msg_id)
     if not os.path.isfile(path):
@@ -44,32 +74,85 @@ def _load_msg(admin_id: str, msg_id: str) -> Optional[Dict[str, Any]]:
         return json.load(f)
 
 
+# ── Sidecar index ────────────────────────────────────────────────────
+
+def _load_index(admin_id: str) -> Dict[str, Dict[str, Any]]:
+    return (safe_load_json(_index_path(admin_id)) or {}).get("messages", {}) or {}
+
+
+def _save_index(admin_id: str, index: Dict[str, Dict[str, Any]]) -> None:
+    d = _inbox_dir(admin_id)
+    os.makedirs(d, exist_ok=True)
+    payload = {"version": 1, "messages": index}
+    atomic_json_save(_index_path(admin_id), payload,
+                     ensure_ascii=False, indent=2)
+
+
+def _rebuild_index(admin_id: str) -> Dict[str, Dict[str, Any]]:
+    """Walk every {msg_id}.json and rebuild the summary index from scratch.
+
+    Self-healing call: used when the index file is missing, malformed,
+    or out-of-sync with the on-disk files.
+    """
+    d = _inbox_dir(admin_id)
+    index: Dict[str, Dict[str, Any]] = {}
+    if not os.path.isdir(d):
+        return index
+    for fname in os.listdir(d):
+        if not fname.endswith(".json") or fname == _INDEX_NAME:
+            continue
+        try:
+            with open(os.path.join(d, fname), "r", encoding="utf-8") as f:
+                msg = json.load(f)
+            mid = msg.get("id") or fname[:-5]
+            index[mid] = _summary_from_msg(msg)
+        except Exception:
+            continue
+    try:
+        _save_index(admin_id, index)
+    except OSError:
+        log.exception("Failed to persist rebuilt inbox index for %s", admin_id)
+    return index
+
+
+def _ensure_index(admin_id: str) -> Dict[str, Dict[str, Any]]:
+    """Return current index, rebuilding when it doesn't match on-disk files."""
+    d = _inbox_dir(admin_id)
+    if not os.path.isdir(d):
+        return {}
+    index = _load_index(admin_id)
+    on_disk = sum(1 for f in os.listdir(d)
+                  if f.endswith(".json") and f != _INDEX_NAME)
+    if len(index) != on_disk:
+        return _rebuild_index(admin_id)
+    return index
+
+
 def _save_msg(admin_id: str, msg: Dict[str, Any]):
     d = _inbox_dir(admin_id)
     os.makedirs(d, exist_ok=True)
-    from app.core.fileutil import atomic_json_save
-    atomic_json_save(_msg_path(admin_id, msg["id"]), msg, ensure_ascii=False, indent=2)
+    atomic_json_save(_msg_path(admin_id, msg["id"]), msg,
+                     ensure_ascii=False, indent=2)
+    # Refresh the sidecar entry for this message; failure is non-fatal
+    # because _ensure_index can always rebuild from disk.
+    try:
+        index = _load_index(admin_id)
+        index[msg["id"]] = _summary_from_msg(msg)
+        _save_index(admin_id, index)
+    except Exception:
+        log.exception("Failed to update inbox index for msg %s", msg.get("id"))
 
 
 # ===== CRUD =====
 
 def list_inbox(admin_id: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
-    d = _inbox_dir(admin_id)
-    if not os.path.isdir(d):
-        return []
-    msgs = []
-    for fname in os.listdir(d):
-        if not fname.endswith(".json"):
-            continue
-        path = os.path.join(d, fname)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                msg = json.load(f)
-            if status and msg.get("status") != status:
-                continue
-            msgs.append(msg)
-        except Exception:
-            continue
+    """List inbox message summaries (read from the sidecar index — does
+    NOT open every per-message JSON file).  Use ``get_inbox_message`` to
+    retrieve a full payload (including ``agent_response``)."""
+    index = _ensure_index(admin_id)
+    msgs = list(index.values())
+    if status:
+        msgs = [m for m in msgs if m.get("status") == status]
     msgs.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
     return msgs
 
@@ -91,28 +174,23 @@ def update_inbox_status(admin_id: str, msg_id: str, status: str) -> Optional[Dic
 
 def delete_inbox_message(admin_id: str, msg_id: str) -> bool:
     path = _msg_path(admin_id, msg_id)
+    removed = False
     if os.path.isfile(path):
         os.remove(path)
-        return True
-    return False
+        removed = True
+    try:
+        index = _load_index(admin_id)
+        if msg_id in index:
+            index.pop(msg_id, None)
+            _save_index(admin_id, index)
+    except Exception:
+        log.exception("Failed to update inbox index on delete %s", msg_id)
+    return removed
 
 
 def count_unread(admin_id: str) -> int:
-    d = _inbox_dir(admin_id)
-    if not os.path.isdir(d):
-        return 0
-    count = 0
-    for fname in os.listdir(d):
-        if not fname.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(d, fname), "r", encoding="utf-8") as f:
-                msg = json.load(f)
-            if msg.get("status") == "unread":
-                count += 1
-        except Exception:
-            continue
-    return count
+    index = _ensure_index(admin_id)
+    return sum(1 for m in index.values() if m.get("status") == "unread")
 
 
 # ===== Post + Agent trigger =====

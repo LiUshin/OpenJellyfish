@@ -124,7 +124,7 @@ export function abortStream(): void {
 function handleSSEStream(res: Response, callbacks: SSECallbacks): void {
   const {
     onToken, onThinking, onToolCall, onToolCallChunk, onToolResult,
-    onDone, onError, onInterrupt,
+    onDone, onError, onInterrupt, onAutoApprove,
     onSubagentCall, onSubagentCallChunk, onSubagentStart, onSubagentToken,
     onSubagentThinking, onSubagentToolCall, onSubagentToolChunk,
     onSubagentToolResult, onSubagentEnd,
@@ -155,6 +155,7 @@ function handleSSEStream(res: Response, callbacks: SSECallbacks): void {
               case 'token':              onToken?.(data.content); break;
               case 'thinking':           onThinking?.(data.content); break;
               case 'interrupt':          onInterrupt?.(data.actions, data.configs); _currentAbortController = null; return;
+              case 'auto_approve':       onAutoApprove?.(data.count, data.actions); break;
               case 'tool_call':          onToolCall?.(data.name, data.args); break;
               case 'tool_call_chunk':    onToolCallChunk?.(data.args_delta); break;
               case 'tool_result':        onToolResult?.(data.name, data.content); break;
@@ -206,6 +207,7 @@ export function streamChat(
   if (options.model) body.model = options.model;
   if (options.capabilities) body.capabilities = options.capabilities;
   if (options.plan_mode) body.plan_mode = true;
+  if (options.yolo) body.yolo = true;
 
   fetch(`${BASE}/chat`, {
     method: 'POST',
@@ -270,6 +272,7 @@ export function resumeChat(
   const body: Record<string, unknown> = { conversation_id: conversationId, decisions };
   if (options.model) body.model = options.model;
   if (options.capabilities) body.capabilities = options.capabilities;
+  if (options.yolo) body.yolo = true;
 
   fetch(`${BASE}/chat/resume`, {
     method: 'POST',
@@ -652,6 +655,70 @@ export async function deleteServiceKey(
   return request('DELETE', `/services/${serviceId}/keys/${keyId}`);
 }
 
+// 使用情况：consumer 会话历史 + API 调用记录
+
+export interface ServiceConvSummary {
+  id: string;
+  title: string;
+  source: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ServiceConvDetail extends ServiceConvSummary {
+  messages: Array<{
+    role: string;
+    content: string;
+    timestamp?: string;
+    tool_calls?: unknown;
+    attachments?: unknown;
+    blocks?: unknown;
+  }>;
+}
+
+export interface ServiceUsageRecord {
+  ts: string;
+  channel: 'web' | 'api' | 'wechat' | string;
+  key_id: string;
+  conv_id: string;
+  endpoint: string;
+  status_code: number;
+  latency_ms: number;
+  ok: boolean;
+}
+
+export async function listServiceConversations(
+  serviceId: string,
+): Promise<ServiceConvSummary[]> {
+  return request('GET', `/services/${serviceId}/conversations`);
+}
+
+export async function getServiceConversation(
+  serviceId: string,
+  convId: string,
+): Promise<ServiceConvDetail> {
+  return request('GET', `/services/${serviceId}/conversations/${convId}`);
+}
+
+export async function deleteServiceConversation(
+  serviceId: string,
+  convId: string,
+): Promise<void> {
+  return request('DELETE', `/services/${serviceId}/conversations/${convId}`);
+}
+
+export async function listServiceUsage(
+  serviceId: string,
+  opts?: { limit?: number; channel?: 'web' | 'api' | 'wechat' },
+): Promise<{ records: ServiceUsageRecord[]; limit: number; channel: string | null }> {
+  const params = new URLSearchParams();
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  if (opts?.channel) params.set('channel', opts.channel);
+  const qs = params.toString();
+  return request('GET', `/services/${serviceId}/usage${qs ? `?${qs}` : ''}`);
+}
+
 // ===== Inbox =====
 
 export interface InboxMessage {
@@ -745,4 +812,105 @@ export async function updatePreferences(data: Partial<UserPreferences>): Promise
 
 export async function getServerTime(): Promise<{ server_time: string }> {
   return request('GET', '/server-time');
+}
+
+// ===== Backup & Restore (per-user) =====
+
+export interface BackupModule {
+  id: string;
+  label: string;
+}
+
+export interface BackupModulesResp {
+  modules: BackupModule[];
+  default_selected: string[];
+}
+
+export interface BackupPreviewResp {
+  modules: Record<string, { file_count: number; total_bytes: number }>;
+  total_file_count: number;
+  total_uncompressed_bytes: number;
+  selection: string[];
+}
+
+export interface BackupImportResp {
+  ok: boolean;
+  mode: 'merge' | 'overwrite';
+  files_written: number;
+  files_skipped: number;
+  api_keys_imported: number;
+  snapshot_path: string | null;
+  warnings: string[];
+}
+
+export async function listBackupModules(): Promise<BackupModulesResp> {
+  return request('GET', '/backup/modules');
+}
+
+export async function previewBackup(opts: {
+  modules: string[];
+  includeMedia: boolean;
+  includeApiKeys: boolean;
+}): Promise<BackupPreviewResp> {
+  const fd = new FormData();
+  fd.append('modules', opts.modules.join(','));
+  fd.append('include_media', String(opts.includeMedia));
+  fd.append('include_api_keys', String(opts.includeApiKeys));
+  return request('POST', '/backup/preview', fd);
+}
+
+/**
+ * Trigger a streaming download of the user backup ZIP.
+ * Returns the suggested filename + size in bytes.
+ */
+export async function downloadBackup(opts: {
+  modules: string[];
+  includeMedia: boolean;
+  includeApiKeys: boolean;
+}): Promise<{ filename: string; sizeBytes: number; fileCount: number }> {
+  const fd = new FormData();
+  fd.append('modules', opts.modules.join(','));
+  fd.append('include_media', String(opts.includeMedia));
+  fd.append('include_api_keys', String(opts.includeApiKeys));
+
+  const res = await fetch(`${BASE}/backup/export`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body: fd,
+  });
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try { const j = await res.json(); detail = j.detail || detail; } catch { /* noop */ }
+    throw new Error(detail);
+  }
+  const blob = await res.blob();
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename="([^"]+)"/.exec(cd);
+  const filename = m ? m[1] : `jellyfishbot-backup-${Date.now()}.zip`;
+  const fileCount = parseInt(res.headers.get('X-Backup-File-Count') || '0', 10);
+
+  // Trigger browser save dialog.
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return { filename, sizeBytes: blob.size, fileCount };
+}
+
+export async function importBackup(opts: {
+  file: File;
+  mode: 'merge' | 'overwrite';
+  password?: string;
+  modules?: string[];
+}): Promise<BackupImportResp> {
+  const fd = new FormData();
+  fd.append('file', opts.file);
+  fd.append('mode', opts.mode);
+  if (opts.password) fd.append('password', opts.password);
+  if (opts.modules && opts.modules.length) fd.append('modules', opts.modules.join(','));
+  return request('POST', '/backup/import', fd);
 }

@@ -378,6 +378,42 @@ async def api_test_api_keys(req: dict, user=Depends(get_current_user)):
         else:
             results["tavily"] = {"ok": False, "error": "未配置 API Key"}
 
+    if provider in ("kimi", "all"):
+        # Kimi（Moonshot）OpenAI-compat：用 GET /models 探活
+        api_key = keys.get("kimi_api_key", "") or os.getenv("KIMI_API_KEY", "") or os.getenv("MOONSHOT_API_KEY", "")
+        base_url = (keys.get("kimi_base_url", "")
+                    or os.getenv("KIMI_BASE_URL", "")
+                    or os.getenv("MOONSHOT_BASE_URL", "")
+                    or "https://api.moonshot.cn/v1").rstrip("/")
+        if api_key:
+            try:
+                async with _httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        f"{base_url}/models",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+                results["kimi"] = {"ok": resp.status_code == 200, "status": resp.status_code}
+            except Exception as e:
+                results["kimi"] = {"ok": False, "error": str(e)[:200]}
+        else:
+            results["kimi"] = {"ok": False, "error": "未配置 API Key"}
+
+    if provider in ("minimax", "all"):
+        # MiniMax 仅探 API Key 是否能用 OpenAI-compat models 端点；不要求 Group ID（仅 TTS/Video 才需要）。
+        api_key = keys.get("minimax_api_key", "") or os.getenv("MINIMAX_API_KEY", "")
+        if api_key:
+            try:
+                async with _httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        "https://api.minimax.io/v1/models",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+                results["minimax"] = {"ok": resp.status_code == 200, "status": resp.status_code}
+            except Exception as e:
+                results["minimax"] = {"ok": False, "error": str(e)[:200]}
+        else:
+            results["minimax"] = {"ok": False, "error": "未配置 API Key"}
+
     return {"results": results}
 
 
@@ -386,11 +422,22 @@ async def api_keys_status(user=Depends(get_current_user)):
     """Quick check: does the user have at least one LLM provider configured?"""
     from app.core.api_config import has_provider
     user_id = user["user_id"]
-    has_any_llm = has_provider("openai", user_id=user_id) or has_provider("anthropic", user_id=user_id)
+    from app.core.api_config import has_provider_credentials
+    minimax_llm_ok = has_provider_credentials("minimax", user_id=user_id, capability="llm")
+    has_any_llm = (
+        has_provider("openai", user_id=user_id)
+        or has_provider("anthropic", user_id=user_id)
+        or has_provider("kimi", user_id=user_id)
+        or minimax_llm_ok
+    )
     return {
         "has_llm": has_any_llm,
         "has_openai": has_provider("openai", user_id=user_id),
         "has_anthropic": has_provider("anthropic", user_id=user_id),
+        "has_kimi": has_provider("kimi", user_id=user_id),
+        # MiniMax LLM 仅需 api_key；TTS/Video 才需要 group_id（has_provider("minimax") 严格版）
+        "has_minimax_llm": minimax_llm_ok,
+        "has_minimax_full": has_provider("minimax", user_id=user_id),
     }
 
 

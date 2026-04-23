@@ -1,13 +1,17 @@
 """Admin routes for managing published services and their API keys."""
 
-from fastapi import APIRouter, HTTPException, Depends
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Depends, Query
 
 from app.deps import get_current_user
 from app.schemas.service import CreateServiceRequest, UpdateServiceRequest, CreateKeyRequest
 from app.services.published import (
     create_service, list_services, get_service, update_service, delete_service,
     create_service_key, list_service_keys, delete_service_key,
+    list_consumer_conversations, get_consumer_conversation, delete_consumer_conversation,
 )
+from app.services.usage_log import list_records as list_usage_records
 
 router = APIRouter(prefix="/api/services", tags=["services"])
 
@@ -84,3 +88,51 @@ async def api_delete_key(service_id: str, key_id: str, user=Depends(get_current_
     if not delete_service_key(user["user_id"], service_id, key_id):
         raise HTTPException(status_code=404, detail="Key 不存在")
     return {"success": True}
+
+
+# ── 使用情况：会话列表 / 单会话详情 / 删除 / 调用记录 ─────────────
+# 这些路由让 admin 在后台看 "我的服务被怎么用"。conversations/* 复用
+# published.py 里 consumer-side 的存储，usage 走 usage_log.py 的 JSONL。
+
+@router.get("/{service_id}/conversations")
+async def api_list_service_conversations(service_id: str, user=Depends(get_current_user)):
+    if not get_service(user["user_id"], service_id):
+        raise HTTPException(status_code=404, detail="Service 不存在")
+    return list_consumer_conversations(user["user_id"], service_id)
+
+
+@router.get("/{service_id}/conversations/{conv_id}")
+async def api_get_service_conversation(service_id: str, conv_id: str,
+                                       user=Depends(get_current_user)):
+    if not get_service(user["user_id"], service_id):
+        raise HTTPException(status_code=404, detail="Service 不存在")
+    conv = get_consumer_conversation(user["user_id"], service_id, conv_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return conv
+
+
+@router.delete("/{service_id}/conversations/{conv_id}")
+async def api_delete_service_conversation(service_id: str, conv_id: str,
+                                          user=Depends(get_current_user)):
+    if not get_service(user["user_id"], service_id):
+        raise HTTPException(status_code=404, detail="Service 不存在")
+    if not delete_consumer_conversation(user["user_id"], service_id, conv_id):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"success": True}
+
+
+@router.get("/{service_id}/usage")
+async def api_list_service_usage(
+    service_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    channel: Optional[str] = Query(None, regex="^(web|api|wechat)$"),
+    user=Depends(get_current_user),
+):
+    if not get_service(user["user_id"], service_id):
+        raise HTTPException(status_code=404, detail="Service 不存在")
+    records = list_usage_records(
+        user["user_id"], service_id,
+        limit=limit, channel=channel,
+    )
+    return {"records": records, "limit": limit, "channel": channel}
