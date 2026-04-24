@@ -27,7 +27,10 @@ import MessageBubble from './MessageBubble';
  */
 
 export interface MessageListHandle {
+  /** 流式 chunk 高频触发：只做 scrollTop=scrollHeight 一步贴底，不重测 LAST item，
+   *  避免「先跳到 data 底，再跳到 footer 底」的双跳闪烁。 */
   scrollToBottom: (force?: boolean) => void;
+  /** 切换对话 / 首次挂载用：双步走（先 Virtuoso 把 LAST 测进来，再外层 scrollTop 把 footer 带进来）。 */
   resetScroll: () => void;
   isScrolledUp: () => boolean;
 }
@@ -70,35 +73,42 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
   const onAtBottomChangeRef = useRef(onAtBottomChange);
   onAtBottomChangeRef.current = onAtBottomChange;
 
-  // 真正的「滚到底部」=「Virtuoso 把最后一条 data item 测量并滚入视野」+「外层
+  // 「轻量贴底」——只把外层容器 scrollTop 拉到 scrollHeight。适用于流式 chunk 高频
+  // 触发场景：messages 数组在 streaming 期间不变，只有 footer（StreamingMessage）的
+  // 高度在长，根本不需要 Virtuoso 重测 LAST item。这一步不会引发「先跳 data 底 / 再
+  // 跳 footer 底」的双跳闪烁。
+  const scrollFooterIntoView = useCallback(() => {
+    const el = scrollParentRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  // 「双步定位」=「Virtuoso 把最后一条 data item 测量并滚入视野」+「外层
   // scrollTop=scrollHeight 把 footer（StreamingMessage / PlanTracker / ApprovalCard）
-  // 也带进视野」。两步缺一不可：
-  //   - 单用 scrollTop=scrollHeight：切换对话刚 mount 时，Virtuoso 还没测量到最后一条，
-  //     scrollHeight 反映的只是已渲染的头部 → 落在中间。
-  //   - 单用 scrollToIndex({ index: 'LAST' })：footer 在 data items 下方，
-  //     最后一条 item 底边对齐视口底意味着 footer 仍然在视口外 → 看到流式消息只露顶。
+  // 也带进视野」。仅用于切换对话 / 首次挂载，那时 Virtuoso 还没测量过最后一条 item，
+  // 单纯 scrollTop=scrollHeight 反映的只是已渲染头部高度 → 会落在中间，必须先调
+  // scrollToIndex 让 Virtuoso 把 LAST item 测好、挂上 DOM，再用 scrollTop 一次性贴底。
   const scrollToAbsoluteBottom = useCallback(() => {
     virtuosoRef.current?.scrollToIndex({
       index: 'LAST',
       behavior: 'auto',
       align: 'end',
     });
-    // 等 Virtuoso 测量+ commit + footer 高度更新（两次 rAF 比较稳）。
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const el = scrollParentRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
+        scrollFooterIntoView();
       });
     });
-  }, []);
+  }, [scrollFooterIntoView]);
 
   useImperativeHandle(
     ref,
     () => ({
+      // streaming 高频路径：永远走轻量贴底，避免双跳闪烁。
       scrollToBottom: (force = false) => {
         if (!atBottomRef.current && !force) return;
-        scrollToAbsoluteBottom();
+        scrollFooterIntoView();
       },
+      // 切对话 / 重置：走双步定位。
       resetScroll: () => {
         atBottomRef.current = true;
         onAtBottomChangeRef.current?.(true);
@@ -106,7 +116,7 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
       },
       isScrolledUp: () => !atBottomRef.current,
     }),
-    [scrollToAbsoluteBottom],
+    [scrollFooterIntoView, scrollToAbsoluteBottom],
   );
 
   const handleAtBottom = useCallback((atBottom: boolean) => {

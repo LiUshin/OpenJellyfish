@@ -160,6 +160,29 @@ def _attach_run_steps(steps_dir: str, runs: List[Dict[str, Any]]
 
 # ── Scheduled-task tool-block builder ─────────────────────────────────────
 
+def _compose_clean_task_output(delivered_parts: List[str],
+                               output_parts: List[str]) -> str:
+    """Build the user-facing `result` text for a scheduled_task block.
+
+    Priority:
+      1. Concatenate everything actually delivered via `send_message`
+         (text + media placeholders) — this is what the user really saw.
+      2. Fallback to the raw AI monologue (`output_parts`) ONLY when the agent
+         never called `send_message` (e.g. failed to follow instructions); in
+         that case the raw text is the best signal we have for diagnosis.
+      3. Last resort: a fixed placeholder.
+
+    Keeps scheduled_task cards / agent recall (L1 + L2) clean and prevents
+    ReAct-style internal monologue ("我需要搜索…", "任务完成，已发送给用户")
+    from leaking into chat history.
+    """
+    if delivered_parts:
+        return "\n\n".join(p for p in delivered_parts if p)
+    if output_parts:
+        return "\n".join(output_parts)
+    return "（Agent 未返回输出）"
+
+
 def _build_scheduled_task_block(task_meta: Optional[Dict[str, Any]],
                                 output: str,
                                 success: bool = True,
@@ -783,8 +806,16 @@ async def _send_media_for_task(user_id: str, client, to_user: str, ctx_token: st
 
 async def _handle_send_message_tool(content: str, client, to_user: str, ctx_token: str,
                                     user_id: str, steps: List[dict], *,
-                                    service_context=None):
-    """Intercept send_message ToolMessage and send to WeChat."""
+                                    service_context=None,
+                                    delivered_parts: Optional[List[str]] = None):
+    """Intercept send_message ToolMessage and send to WeChat.
+
+    `delivered_parts`: when provided, append a user-visible representation of
+    what was actually delivered (clean text or `[图片]`/`[语音]`/… placeholder
+    for media). Used by `_run_agent_task` / `_run_service_agent_task` to build
+    the scheduled_task block's `result` from real outbound content instead of
+    the agent's raw ReAct monologue.
+    """
     if not to_user:
         log.warning("Cannot send WeChat message: to_user (from_user_id) is empty — "
                     "no user has sent a message to this session yet")
@@ -808,9 +839,16 @@ async def _handle_send_message_tool(content: str, client, to_user: str, ctx_toke
                 service_context=service_context,
             )
             steps.append(_step("wechat_send", f"已发送媒体: {media}"))
+            if delivered_parts is not None:
+                # Record a friendly placeholder so the persisted result
+                # reflects that media was delivered, even when no text.
+                media_label = media if isinstance(media, str) else "媒体"
+                delivered_parts.append(f"[已推送媒体: {media_label}]")
         if text:
             await client.send_text(to_user, text, ctx_token)
             steps.append(_step("wechat_send", f"已发送消息: {text[:100]}"))
+            if delivered_parts is not None:
+                delivered_parts.append(text)
             log.info("Scheduled task sent message: %s", text[:50])
     except Exception:
         log.exception("Failed to send scheduled task message via WeChat")
@@ -821,8 +859,14 @@ async def _run_agent_loop(agent, input_payload, agent_config, steps: List[dict],
                           output_parts: List[str], *,
                           wechat_client=None, wechat_to_user: str = "",
                           wechat_ctx_token: str = "", user_id: str = "",
-                          service_context=None):
-    """Shared astream loop with send_message interception for both admin & service tasks."""
+                          service_context=None,
+                          delivered_parts: Optional[List[str]] = None):
+    """Shared astream loop with send_message interception for both admin & service tasks.
+
+    `delivered_parts`: optional list collecting user-visible content actually
+    pushed via send_message (text + media placeholders). Callers use it to
+    build a clean scheduled_task `result` instead of the raw AI monologue.
+    """
     from langgraph.types import Command
     max_loops = 20
 
@@ -871,6 +915,7 @@ async def _run_agent_loop(agent, input_payload, agent_config, steps: List[dict],
                                 tool_content, wechat_client, wechat_to_user,
                                 wechat_ctx_token, user_id, steps,
                                 service_context=service_context,
+                                delivered_parts=delivered_parts,
                             )
 
                         if len(tool_content) > 800:
@@ -994,7 +1039,8 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
     agent = create_user_agent(user_id, model=model, capabilities=capabilities)
     thread_id = f"scheduled-{uuid.uuid4().hex[:8]}"
     agent_config = {"configurable": {"thread_id": thread_id}}
-    output_parts = []
+    output_parts: List[str] = []
+    delivered_parts: List[str] = []
 
     wechat_client, wechat_to_user, wechat_ctx_token = _resolve_wechat_client(reply_to)
     if wechat_client:
@@ -1012,6 +1058,7 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
             agent, input_payload, agent_config, steps, output_parts,
             wechat_client=wechat_client, wechat_to_user=wechat_to_user or "",
             wechat_ctx_token=wechat_ctx_token or "", user_id=user_id,
+            delivered_parts=delivered_parts,
         )
         steps.append(_step("finish", "Agent 执行完成"))
     except asyncio.TimeoutError:
@@ -1022,7 +1069,18 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
         steps.append(_step("error", f"Agent 执行失败: {e}"))
         await _safe_persist_admin_failure(user_id, conv_id, task_meta, str(e))
         return {"output": f"Agent 执行失败: {e}", "success": False, "steps": steps}
-    text = "\n".join(output_parts) or "（Agent 未返回输出）"
+
+    text = _compose_clean_task_output(delivered_parts, output_parts)
+    # Stash the raw ReAct monologue in steps for debugging, but keep it OUT of
+    # the persisted scheduled_task block / L2 injection — see
+    # _compose_clean_task_output for rationale.
+    if delivered_parts and output_parts:
+        raw_combined = "\n".join(output_parts)
+        steps.append(_step(
+            "raw_trace",
+            f"Agent 原始输出（{len(output_parts)} 段，已折叠；用户实际收到的是 send_message 内容）",
+            raw_text=raw_combined[:4000],
+        ))
 
     # Persist task output to conversation history as a scheduled_task tool block,
     # so the frontend renders it via ScheduledTaskCard (admin) / friendly variant
@@ -1119,7 +1177,8 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
                                   channel="scheduler")
     thread_id = f"svc-scheduled-{uuid.uuid4().hex[:8]}"
     agent_config = {"configurable": {"thread_id": thread_id}}
-    output_parts = []
+    output_parts: List[str] = []
+    delivered_parts: List[str] = []
 
     wechat_client, wechat_to_user, wechat_ctx_token = _resolve_wechat_client(reply_to)
     if wechat_client:
@@ -1140,6 +1199,7 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
             wechat_client=wechat_client, wechat_to_user=wechat_to_user or "",
             wechat_ctx_token=wechat_ctx_token or "", user_id=admin_id,
             service_context=service_context,
+            delivered_parts=delivered_parts,
         )
         steps.append(_step("finish", "Service Agent 执行完成"))
     except asyncio.TimeoutError:
@@ -1153,7 +1213,14 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
                                             task_meta, str(e))
         return {"output": f"Service Agent 执行失败: {e}", "success": False, "steps": steps}
 
-    text = "\n".join(output_parts) or "（Agent 未返回输出）"
+    text = _compose_clean_task_output(delivered_parts, output_parts)
+    if delivered_parts and output_parts:
+        raw_combined = "\n".join(output_parts)
+        steps.append(_step(
+            "raw_trace",
+            f"Agent 原始输出（{len(output_parts)} 段，已折叠；用户实际收到的是 send_message 内容）",
+            raw_text=raw_combined[:4000],
+        ))
 
     # Persist task output to consumer conversation history as a scheduled_task tool
     # block. Service-chat renders this via the friendly ScheduledTaskCard variant
