@@ -360,6 +360,43 @@ def get_resolved_capability_prompt(user_id: str, key: str, defaults: Dict[str, s
     return defaults.get(key, "")
 
 
+# ==================== File-mention expansion ====================
+
+# Used by the chat input @-mention picker. Frontend serializes a chip into
+# `[[FILE:/abs/path]]` (deliberately distinct from the agent-output `<<FILE:>>`
+# so accidental nesting / round-tripping never collides). Backend rewrites
+# them to `<<FILE:>>` before they enter the LLM message so:
+#   - the agent sees the same notation it itself emits (symmetry),
+#   - the frontend renders the user bubble via the existing markdown.ts
+#     `<<FILE:>>` pipeline (media inline preview / non-media file pill).
+import re as _re_filemention
+_FILE_MENTION_RE = _re_filemention.compile(r"\[\[FILE:(/[^\[\]]+?)\]\]")
+
+
+def expand_file_mentions(content):
+    """Rewrite `[[FILE:/path]]` markers to `<<FILE:/path>>` in-place.
+
+    Accepts the same str / multimodal-list shapes as `stamp_message`.
+    Safe to call multiple times (idempotent — second pass finds no matches).
+    """
+    if isinstance(content, str):
+        return _FILE_MENTION_RE.sub(r"<<FILE:\1>>", content)
+    if isinstance(content, list):
+        out = []
+        changed = False
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                txt = block.get("text", "")
+                new_txt = _FILE_MENTION_RE.sub(r"<<FILE:\1>>", txt)
+                if new_txt is not txt:
+                    changed = True
+                out.append({**block, "text": new_txt})
+            else:
+                out.append(block)
+        return out if changed else content
+    return content
+
+
 # ==================== Message Timestamp Injection ====================
 
 def stamp_message(content, user_id: str):

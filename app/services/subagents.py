@@ -8,7 +8,7 @@ from app.core.security import get_user_dir
 SUBAGENTS_FILE = "subagents.json"
 
 SHARED_TOOL_NAMES = {
-    "run_script",
+    "run_script", "move_file",
     "web_search", "web_fetch",
     "generate_image", "generate_speech", "generate_video",
     "schedule_task", "manage_scheduled_tasks",
@@ -141,7 +141,7 @@ def build_subagent_tools(user_id: str, tool_names: List[str]) -> list:
         create_run_script_tool, create_ai_gen_tools, create_web_tools,
         create_schedule_tool, create_manage_scheduled_tasks_tool,
         create_publish_service_task_tool,
-        create_send_message_tool,
+        create_send_message_tool, create_move_file_tool,
     )
 
     tool_map: Dict[str, Any] = {}
@@ -149,6 +149,9 @@ def build_subagent_tools(user_id: str, tool_names: List[str]) -> list:
 
     if "run_script" in needed:
         tool_map["run_script"] = create_run_script_tool(user_id)
+
+    if "move_file" in needed:
+        tool_map["move_file"] = create_move_file_tool(user_id)
 
     if needed & {"web_search", "web_fetch"}:
         for t in create_web_tools(user_id=user_id):

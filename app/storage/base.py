@@ -65,6 +65,30 @@ class StorageService(ABC):
     def move(self, user_id: str, source: str, destination: str) -> str:
         ...
 
+    @abstractmethod
+    def copy(self, user_id: str, source: str, destination: str) -> str:
+        """Recursively copy a file or directory from source to destination.
+
+        - If destination resolves to an existing directory, the basename of
+          source is appended (mimicking shutil/cp -r semantics).
+        - If destination already exists (after the directory expansion),
+          raises FileExistsError (caller should rename and retry).
+        - Returns the resulting absolute (storage-relative) path of the copy.
+        """
+        ...
+
+    @abstractmethod
+    def walk_files(
+        self, user_id: str, path: str,
+    ) -> Generator[tuple[str, bytes], None, None]:
+        """Yield (rel_path_under_path, bytes_content) for every file under
+        `path` (recursive). For a single file, yields one tuple where rel_path
+        is the basename. Used by zip streaming.
+
+        rel_path uses '/' separators and never starts with '/'.
+        """
+        ...
+
     # ── queries ──
 
     @abstractmethod

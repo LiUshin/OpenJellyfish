@@ -1,6 +1,6 @@
 {
   "name": "jellyfishbot-launcher",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "private": true,
   "description": "JellyfishBot Desktop Launcher",
   "scripts": {

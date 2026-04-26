@@ -11,6 +11,7 @@ import { App } from 'antd';
 import * as api from '../services/api';
 import type { SplitMode } from '../components/SplitToggle';
 import { getFileKind, shouldLoadText } from '../utils/fileKind';
+import { pushRecentFile } from '../utils/recentFiles';
 
 interface FileWorkspaceState {
   fileBrowserOpen: boolean;
@@ -32,8 +33,16 @@ interface FileWorkspaceState {
 
   /** 在 UI 内同时「打开文件 + 跳转浏览器到所在目录 + 打开文件浏览器面板」。
    *  用于聊天里 <<FILE:/abs/path>> tag 的点击响应：一次点击让用户既能编辑/预览文件，
-   *  也能在右侧文件浏览器看到它在文件系统里的位置（高亮所选文件）。 */
-  revealInBrowser: (path: string) => Promise<void>;
+   *  也能在右侧文件浏览器看到它在文件系统里的位置（高亮所选文件）。
+   *  anchor: 可选锚点。markdown 文件 → heading 文本/id；PDF → "page=N" / "zoom=..."。
+   *  preview 组件读 pendingAnchor + consumePendingAnchor 实现 one-shot scroll. */
+  revealInBrowser: (path: string, anchor?: string, isDir?: boolean) => Promise<void>;
+
+  /** 当前待消费的深链锚点（与 editingFile 配套）。一次性：
+   *  preview 组件 mount / file 切换后处理一次锚点滚动，然后调
+   *  consumePendingAnchor() 清空。重复点同一个 <<FILE:>> 锚点会重新 set. */
+  pendingAnchor: string | null;
+  consumePendingAnchor: () => void;
 
   splitMode: SplitMode;
   setSplitMode: (m: SplitMode) => void;
@@ -68,6 +77,7 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
   const [editContent, setEditContentRaw] = useState('');
   const [editDirty, setEditDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
 
   const [splitMode, setSplitModeRaw] = useState<SplitMode>(readSplitMode);
   const [splitRatio, setSplitRatioRaw] = useState(readSplitRatio);
@@ -110,6 +120,7 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
       setEditContentRaw('');
       setEditDirty(false);
       enterSplit();
+      pushRecentFile(path);
       return;
     }
 
@@ -119,6 +130,7 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
       setEditContentRaw(data.content);
       setEditDirty(false);
       enterSplit();
+      pushRecentFile(path);
     } catch {
       message.error('打开文件失败');
     }
@@ -147,11 +159,51 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     return trimmed.slice(0, idx);
   }
 
-  const revealInBrowser = useCallback(async (path: string) => {
+  function basename(path: string): string {
+    const trimmed = path.replace(/\/+$/, '');
+    return trimmed.slice(trimmed.lastIndexOf('/') + 1);
+  }
+
+  const revealInBrowser = useCallback(async (path: string, anchor?: string, isDir?: boolean) => {
     if (!path) return;
     const normalized = path.startsWith('/') ? path : '/' + path;
+
+    // Directory detection:
+    // 1. explicit flag (from @-mention chips),
+    // 2. trailing slash,
+    // 3. runtime metadata probe via parent directory listing for rendered chat
+    //    links such as <<FILE:/docs>> where markdown has no file metadata.
+    // When it's a folder, just navigate the FilePanel there — don't try to
+    // open it as a file (which would call api.readFile and show an error toast).
+    const looksLikeDir = isDir === true || normalized.endsWith('/');
+    if (looksLikeDir) {
+      const dirPath = normalized.replace(/\/+$/, '') || '/';
+      setBrowserPath(dirPath);
+      setFileBrowserOpen(true);
+      return;
+    }
+
+    const dir = parentDir(normalized);
+    const name = basename(normalized);
+    try {
+      const siblings = await api.listFiles(dir);
+      const item = siblings.find((it) => it.name === name || it.path === normalized);
+      if (item?.is_dir) {
+        setBrowserPath(normalized);
+        setFileBrowserOpen(true);
+        setPendingAnchor(null);
+        return;
+      }
+      // If parent metadata says this is a file, skip directory probing and open it.
+    } catch {
+      // Parent listing may fail for stale/inaccessible paths; fall through to openFile.
+    }
+
     setBrowserPath(parentDir(normalized));
     setFileBrowserOpen(true);
+    // Set anchor BEFORE openFile so MarkdownPreview's mount effect can pick it up
+    // synchronously when content is already cached.
+    setPendingAnchor(anchor || null);
     try {
       await openFile(normalized);
     } catch {
@@ -159,8 +211,13 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [openFile]);
 
+  const consumePendingAnchor = useCallback(() => {
+    setPendingAnchor(null);
+  }, []);
+
   // 全局点击委托：聊天/文档里渲染的 [data-jf-file] 元素点击后，
   // 让 markdown 渲染层（无 React 上下文）也能触发 revealInBrowser。
+  // 同时读取 [data-jf-anchor] 实现深链跳转（标题/PDF 页码）。
   useEffect(() => {
     const handler = (e: globalThis.MouseEvent) => {
       const target = e.target as HTMLElement | null;
@@ -169,9 +226,11 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
       if (!el) return;
       const path = el.getAttribute('data-jf-file');
       if (!path) return;
+      const anchor = el.getAttribute('data-jf-anchor') || undefined;
+      const isDir = el.getAttribute('data-jf-is-dir') === 'true' || path.endsWith('/');
       e.preventDefault();
       e.stopPropagation();
-      void revealInBrowser(path);
+      void revealInBrowser(path, anchor, isDir);
     };
     document.addEventListener('click', handler);
     return () => document.removeEventListener('click', handler);
@@ -209,6 +268,8 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     closeFile,
     setEditContent,
     revealInBrowser,
+    pendingAnchor,
+    consumePendingAnchor,
     splitMode,
     setSplitMode,
     splitRatio,

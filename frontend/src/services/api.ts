@@ -304,6 +304,28 @@ export async function listFiles(path = '/'): Promise<FileItem[]> {
   return request('GET', `/files?path=${encodeURIComponent(path)}`);
 }
 
+export interface FileIndexEntry {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  size: number;
+  modified_at: string;
+}
+
+export interface FileIndexResponse {
+  entries: FileIndexEntry[];
+  truncated: boolean;
+  root: string;
+}
+
+/** Flat recursive listing of the user filesystem, used by the chat input
+ *  @-mention picker for in-memory fuzzy matching. Cached client-side so
+ *  successive @ presses don't re-fetch. */
+export async function listFileIndex(root = '/', includeDirs = true): Promise<FileIndexResponse> {
+  const qs = `root=${encodeURIComponent(root)}&include_dirs=${includeDirs}`;
+  return request('GET', `/files/index?${qs}`);
+}
+
 export async function readFile(path: string): Promise<{ content: string }> {
   return request('GET', `/files/read?path=${encodeURIComponent(path)}`);
 }
@@ -324,6 +346,19 @@ export async function moveFile(source: string, destination: string): Promise<voi
   return request('POST', '/files/move', { source, destination });
 }
 
+export async function copyFile(source: string, destination: string): Promise<void> {
+  return request('POST', '/files/copy', { source, destination });
+}
+
+/** Build a download URL for one or more files/folders zipped on the server.
+ *  Uses the token-in-query variant so a plain `<a>` click triggers download.
+ *  For multi-select downloads (`paths.length > 1`) the server names the
+ *  archive `files.zip`; single-path downloads inherit the basename. */
+export function zipDownloadUrl(paths: string[]): string {
+  const pathsJson = JSON.stringify(paths);
+  return `${BASE}/files/zip-token?paths=${encodeURIComponent(pathsJson)}&token=${encodeURIComponent(getToken())}`;
+}
+
 export async function uploadFiles(path: string, files: File[], keepStructure = false): Promise<void> {
   const formData = new FormData();
   for (const file of files) {
@@ -331,6 +366,137 @@ export async function uploadFiles(path: string, files: File[], keepStructure = f
   }
   const qs = `path=${encodeURIComponent(path)}${keepStructure ? '&keep_structure=true' : ''}`;
   return request('POST', `/files/upload?${qs}`, formData);
+}
+
+/** Upload progress event payload — used by uploadFilesWithProgress.
+ *  - loaded / total: bytes uploaded vs total in the **current batch** (chunk-aware)
+ *  - batchIndex / batchCount: which chunk of the multi-batch upload (1-indexed)
+ *  - cumulativeLoaded / cumulativeTotal: bytes across the entire multi-file
+ *    upload (sum of finished batches + current batch progress)
+ *  - currentFileName: heuristic — the first file's name in the current batch */
+export interface UploadProgressEvent {
+  loaded: number;
+  total: number;
+  batchIndex: number;
+  batchCount: number;
+  cumulativeLoaded: number;
+  cumulativeTotal: number;
+  currentFileName: string;
+  fileCount: number;
+}
+
+/** Upload files with byte-level progress tracking (XMLHttpRequest under the hood
+ *  since fetch doesn't expose upload.progress without ReadableStream support).
+ *
+ *  Large uploads are auto-chunked into batches of MAX_BATCH_BYTES / MAX_BATCH_FILES
+ *  to avoid backend body-size limits and to give incremental progress feedback
+ *  even when the user uploads e.g. 500 small files at once.
+ *
+ *  onProgress is called: once per progress tick during XHR upload (frequent),
+ *  plus once at the start/end of each batch. Caller should throttle UI updates. */
+export async function uploadFilesWithProgress(
+  path: string,
+  files: File[],
+  keepStructure: boolean,
+  onProgress?: (e: UploadProgressEvent) => void,
+): Promise<void> {
+  if (files.length === 0) return;
+
+  const MAX_BATCH_BYTES = 50 * 1024 * 1024;  // 50 MB per batch
+  const MAX_BATCH_FILES = 50;                 // hard cap per batch
+
+  // Group files into batches honouring both byte and count caps. Files larger
+  // than MAX_BATCH_BYTES go alone in their own batch (no point splitting one).
+  const batches: File[][] = [];
+  let cur: File[] = [];
+  let curBytes = 0;
+  for (const f of files) {
+    const sz = f.size || 0;
+    if (
+      cur.length > 0 &&
+      (cur.length >= MAX_BATCH_FILES || curBytes + sz > MAX_BATCH_BYTES)
+    ) {
+      batches.push(cur);
+      cur = [];
+      curBytes = 0;
+    }
+    cur.push(f);
+    curBytes += sz;
+  }
+  if (cur.length > 0) batches.push(cur);
+
+  const cumulativeTotal = files.reduce((s, f) => s + (f.size || 0), 0);
+  let cumulativeLoaded = 0;
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    const batchTotal = batch.reduce((s, f) => s + (f.size || 0), 0);
+    const batchStartCumulative = cumulativeLoaded;
+
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      for (const file of batch) {
+        formData.append('files', file);
+      }
+      const qs = `path=${encodeURIComponent(path)}${keepStructure ? '&keep_structure=true' : ''}`;
+
+      xhr.open('POST', `${BASE}/files/upload?${qs}`);
+      xhr.setRequestHeader('Authorization', `Bearer ${getToken()}`);
+
+      xhr.upload.onprogress = (evt) => {
+        if (!onProgress) return;
+        const loaded = evt.lengthComputable ? evt.loaded : 0;
+        const total = evt.lengthComputable ? evt.total : batchTotal;
+        onProgress({
+          loaded,
+          total,
+          batchIndex: i + 1,
+          batchCount: batches.length,
+          cumulativeLoaded: batchStartCumulative + loaded,
+          cumulativeTotal,
+          currentFileName: batch[0]?.name || '',
+          fileCount: files.length,
+        });
+      };
+
+      xhr.onload = () => {
+        if (xhr.status === 401) {
+          if (getToken()) { clearToken(); window.location.reload(); }
+          reject(new Error('认证失败，请重新登录'));
+          return;
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          let detail = '上传失败';
+          try {
+            const j = JSON.parse(xhr.responseText);
+            detail = j?.detail || detail;
+          } catch { /* not json */ }
+          reject(new Error(detail));
+        }
+      };
+      xhr.onerror = () => reject(new Error('网络错误，上传失败'));
+      xhr.onabort = () => reject(new Error('上传已取消'));
+
+      xhr.send(formData);
+    });
+
+    cumulativeLoaded = batchStartCumulative + batchTotal;
+    // Emit a final tick at batch boundary so the bar visibly advances even
+    // when a batch finishes faster than the next progress event.
+    onProgress?.({
+      loaded: batchTotal,
+      total: batchTotal,
+      batchIndex: i + 1,
+      batchCount: batches.length,
+      cumulativeLoaded,
+      cumulativeTotal,
+      currentFileName: batch[0]?.name || '',
+      fileCount: files.length,
+    });
+  }
 }
 
 export async function downloadFile(path: string): Promise<Response> {

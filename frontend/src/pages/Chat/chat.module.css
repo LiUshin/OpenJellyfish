@@ -25,7 +25,6 @@
 
 .sidebarHeader {
   padding: 12px 12px;
-  border-top: 1px solid var(--jf-border);
   flex-shrink: 0;
 }
 
@@ -254,10 +253,17 @@
   background: var(--jf-bg-deep);
 }
 
+/* 间距用 padding-bottom 而非 margin-bottom：react-virtuoso v4 用 offsetHeight 测量
+ * 每条 item（不含 margin），用 margin 时会让 Virtuoso 内部测出的总高度漏算
+ * 24px·N，外层 .messagesContainer 的 scrollHeight 与 Virtuoso 内部记账不一致，
+ * 兄弟节点（StreamingMessage / PlanTracker / ApprovalCard）会从亏空的位置开始
+ * 渲染，叠在用户最后一条 query 的最后一行上。padding 是 offsetHeight 的一部分，
+ * 既保留视觉间距，又让 Virtuoso 测对真实高度。两个 wrapper 都没有 bg/border，
+ * padding 视觉上与 margin 完全等价。 */
 .messageBubble {
   display: flex;
   gap: 12px;
-  margin-bottom: 24px;
+  padding-bottom: 24px;
   animation: messageIn 0.35s var(--jf-ease) both;
   align-items: flex-start;
 }
@@ -265,7 +271,7 @@
 .messageBubbleUser {
   display: flex;
   gap: 12px;
-  margin-bottom: 24px;
+  padding-bottom: 24px;
   animation: messageIn 0.35s var(--jf-ease) both;
   align-items: flex-start;
   justify-content: flex-end;
@@ -2042,6 +2048,59 @@
   max-width: 320px;
 }
 
+/* Inline-path variant: nudges the icon down a hair so it lines up with
+   text baseline when embedded in a paragraph; the original .jf-file-link
+   was tuned for standalone <<FILE:>> tags that sit in their own line. */
+:global(.jf-file-link-inline) {
+  vertical-align: text-bottom;
+  padding: 0 7px 0 5px;
+  font-size: 0.88em;
+}
+
+/* Anchor suffix on file-link pills (e.g. <<FILE:/x.md#标题>> → "x.md #标题"):
+   shown right after .jf-file-link-name with a subtle accent color so user
+   knows clicking will land on a specific section, not the file top. */
+:global(.jf-file-link-anchor) {
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 0.85em;
+  color: var(--jf-accent);
+  background: rgba(var(--jf-accent-rgb, 95, 201, 230), 0.1);
+  border-radius: 3px;
+  font-family: var(--jf-mono, ui-monospace, SFMono-Regular, monospace);
+}
+
+/* ── Heading anchors（jf-heading + jf-heading-anchor）──────────────
+   marked renderer 给每个 h1-h6 注入 id + 末尾追加一个隐形 <a>。
+   悬停标题时 # 出现，点击后浏览器 location.hash = #id（可复制链接）。
+   FilePreview 的 TOC 用相同的 id 做 scrollIntoView 导航。 */
+:global(.jf-heading) {
+  position: relative;
+  scroll-margin-top: 16px;  /* avoid clipping under any sticky toolbar */
+}
+
+:global(.jf-heading-anchor) {
+  position: absolute;
+  left: -0.85em;
+  top: 0;
+  padding: 0 4px;
+  color: var(--jf-text-dim);
+  text-decoration: none;
+  opacity: 0;
+  font-weight: 400;
+  transition: opacity var(--jf-duration) var(--jf-ease),
+              color var(--jf-duration) var(--jf-ease);
+}
+
+:global(.jf-heading:hover .jf-heading-anchor),
+:global(.jf-heading-anchor:focus-visible) {
+  opacity: 1;
+}
+
+:global(.jf-heading-anchor:hover) {
+  color: var(--jf-primary);
+}
+
 /* ── 媒体 caption 里的「📁 在文件浏览器打开」小按钮（jf-file-reveal）─ */
 :global(.jf-file-reveal) {
   margin-left: 6px;
@@ -2589,4 +2648,239 @@
 .scheduledTaskContent pre {
   margin: 8px 0;
   font-size: 12px;
+}
+
+/* ========== @ Mention Picker ==========
+ * Dropdown shown above the chat input when the user types `@<query>`.
+ * Renders a list of fuzzy-matched files / folders. Positioned absolutely
+ * inside the inputWrapper (which is `position: relative`).
+ * MentionPicker.tsx is the consumer.
+ */
+
+.mentionPicker {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  background: var(--jf-bg-raised);
+  border: 1px solid var(--jf-border);
+  border-radius: var(--jf-radius-md);
+  box-shadow: var(--jf-shadow-float);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  z-index: 50;
+  animation: mentionFadeIn 0.12s var(--jf-ease) both;
+}
+
+@keyframes mentionFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.mentionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--jf-border);
+  font-size: 11px;
+  color: var(--jf-text-muted);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.mentionHint {
+  color: var(--jf-text-dim);
+  font-size: 10px;
+  font-family: var(--jf-font-code);
+}
+
+.mentionList {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.mentionList::-webkit-scrollbar {
+  width: 6px;
+}
+
+.mentionList::-webkit-scrollbar-thumb {
+  background: var(--jf-border-strong);
+  border-radius: 3px;
+}
+
+.mentionItem {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: var(--jf-radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--jf-text);
+  transition: background var(--jf-duration) var(--jf-ease);
+}
+
+.mentionItemActive {
+  background: rgba(var(--jf-primary-rgb), 0.14);
+}
+
+.mentionItem:hover {
+  background: rgba(var(--jf-primary-rgb), 0.08);
+}
+
+.mentionIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--jf-text-dim);
+}
+
+.mentionItemActive .mentionIcon {
+  color: var(--jf-primary);
+}
+
+.mentionName {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--jf-font-code);
+}
+
+.mentionNameMatch {
+  color: var(--jf-primary);
+  font-weight: 600;
+}
+
+.mentionDir {
+  font-size: 11px;
+  color: var(--jf-text-dim);
+  font-family: var(--jf-font-code);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+  text-align: right;
+}
+
+.mentionEmpty {
+  padding: 16px;
+  text-align: center;
+  color: var(--jf-text-dim);
+  font-size: 12px;
+}
+
+/* ── FileTokenInput — contenteditable chat input ──────────────────────────── */
+
+.fileTokenInput {
+  flex: 1;
+  min-height: 22px;
+  max-height: 144px; /* 6 lines × 24px */
+  overflow-y: auto;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  color: var(--jf-text);
+  font-size: 14px;
+  line-height: 1.57; /* matches antd TextArea default */
+  padding: 2px 0;
+  align-self: center;
+  caret-color: var(--jf-primary);
+  /* Scrollbar same style as rest of app */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--jf-primary-rgb), 0.25) transparent;
+}
+
+/* Placeholder via CSS attr trick — only shown when element is empty */
+.fileTokenInput:empty::before {
+  content: attr(data-placeholder);
+  color: var(--jf-text-dim);
+  pointer-events: none;
+  position: relative;
+}
+
+/* ── Inline file-chip cards (jf-token-chip) ─────────────────────────────────
+   Rendered as `contenteditable="false"` spans inside the FileTokenInput.
+   The browser treats them as single atomic characters for cursor movement and
+   Backspace deletion.
+   Layout: [×][icon][name]  ← × is hidden by default, shown on .jf-token-chip:hover
+*/
+:global(.jf-token-chip) {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 7px 0 3px;
+  margin: 0 1px;
+  background: rgba(var(--jf-primary-rgb), 0.12);
+  border: 1px solid rgba(var(--jf-primary-rgb), 0.35);
+  border-radius: 4px;
+  color: var(--jf-text);
+  font-size: 0.88em;
+  line-height: 1.6;
+  vertical-align: middle;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  position: relative;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+:global(.jf-token-chip:hover) {
+  background: rgba(var(--jf-primary-rgb), 0.22);
+  border-color: rgba(var(--jf-primary-rgb), 0.6);
+}
+
+/* × delete button — hidden by default, slides in from left on hover */
+:global(.jf-token-chip-x) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 0;
+  height: 16px;
+  overflow: hidden;
+  padding: 0;
+  margin-right: 0;
+  background: none;
+  border: none;
+  color: var(--jf-text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 2px;
+  transition:
+    width 0.15s ease,
+    color 0.15s ease,
+    background 0.1s ease;
+  flex-shrink: 0;
+}
+:global(.jf-token-chip:hover .jf-token-chip-x) {
+  width: 16px;
+  margin-right: 2px;
+}
+:global(.jf-token-chip-x:hover) {
+  color: var(--jf-error, #ff6b9d);
+  background: rgba(255, 107, 157, 0.12);
+}
+
+:global(.jf-token-chip-icon) {
+  font-size: 0.9em;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+:global(.jf-token-chip-name) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+  font-family: var(--jf-font-code, ui-monospace, monospace);
+  font-size: 0.85em;
 }

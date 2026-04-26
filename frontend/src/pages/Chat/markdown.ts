@@ -1,4 +1,4 @@
-import { marked } from 'marked';
+import { marked, type Tokens } from 'marked';
 import hljs from 'highlight.js/lib/core';
 import DOMPurify from 'dompurify';
 import { mediaUrl as adminMediaUrl } from '../../services/api';
@@ -84,10 +84,57 @@ function highlightCode(this: unknown, { text, lang }: { text: string; lang?: str
   return '<pre><code class="' + cls + '">' + out + '</code></pre>';
 }
 
+// ── Heading anchor support ──────────────────────────────────────────
+//
+// We attach a deterministic, URL-friendly id to every <h1>-<h6> so the
+// MarkdownPreview's TOC can scrollIntoView() and so users can copy
+// `#fragment` links to specific sections. The slugifier:
+//   - lowercases ASCII (CJK is preserved as-is — readable and unique)
+//   - collapses runs of whitespace + punctuation into a single hyphen
+//   - dedupes per render via the `_headingIdSeen` set so duplicate
+//     titles don't all collide on the same id
+// A small ⛓ link-chain glyph is appended; the global click handler in
+// global.css (via a:before) handles hover affordance.
+const _headingIdSeen = new Set<string>();
+function _resetHeadingIds(): void { _headingIdSeen.clear(); }
+/** Exported so MarkdownPreview can resolve `<<FILE:/x.md#标题>>` anchors:
+ *  agents may write either the raw heading text (`#我的章节`) or the
+ *  already-slugified id (`#wo-de-zhang-jie`); we match both when scrolling. */
+export function slugifyHeading(raw: string): string {
+  let base = raw
+    .replace(/<[^>]+>/g, '')   // strip any inline html marked produced
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\u3000]+/g, '-')
+    .replace(/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  if (!base) base = 'section';
+  let candidate = base;
+  let i = 2;
+  while (_headingIdSeen.has(candidate)) {
+    candidate = `${base}-${i++}`;
+  }
+  _headingIdSeen.add(candidate);
+  return candidate;
+}
+
+function headingRenderer(
+  this: { parser: { parseInline: (tokens: Tokens.Heading['tokens']) => string } },
+  { tokens, depth, text }: Tokens.Heading,
+): string {
+  // marked v15 binds `this` to the parser context; parseInline preserves
+  // nested em/strong/code/link formatting in headings.
+  const inner = this.parser.parseInline(tokens);
+  const id = slugifyHeading(text);
+  const anchor = `<a class="jf-heading-anchor" href="#${id}" aria-label="permalink" title="复制链接">#</a>`;
+  return `<h${depth} id="${id}" class="jf-heading">${inner}${anchor}</h${depth}>`;
+}
+
 marked.use({
   breaks: true,
   gfm: true,
-  renderer: { code: highlightCode },
+  renderer: { code: highlightCode, heading: headingRenderer },
 });
 
 // ── Media file embedding (<<FILE:path>> tags) ──────────────────────
@@ -113,43 +160,52 @@ function getMediaType(filePath: string): string | null {
 /** 生成 caption 里「📁 在文件浏览器打开」的小按钮 HTML（可作为 a 标签文本添加，
  *  父元素 .jf-media-caption 已是 flex；此处用 margin-left:auto 把它推到右边）。
  *  仅在 _fileRevealEnabled = true 时返回内容；否则返回空串。
- *  data-jf-file 由 fileWorkspaceContext 的全局点击委托捕获并触发 revealInBrowser。 */
-function buildRevealAction(filePath: string): string {
+ *  data-jf-file 由 fileWorkspaceContext 的全局点击委托捕获并触发 revealInBrowser。
+ *  anchor: 可选的章节锚点（markdown heading 文本/id 或 PDF 的 page=N），通过
+ *  data-jf-anchor 透传给 revealInBrowser 处理深链跳转。 */
+function buildRevealAction(filePath: string, anchor?: string): string {
   if (!_fileRevealEnabled) return '';
   const safe = escapeHtml(filePath);
-  return ` <button type="button" class="jf-file-reveal" data-jf-file="${safe}" title="在文件浏览器中定位">📁</button>`;
+  const anchorAttr = anchor ? ` data-jf-anchor="${escapeHtml(anchor)}"` : '';
+  return ` <button type="button" class="jf-file-reveal" data-jf-file="${safe}"${anchorAttr} title="在文件浏览器中定位">📁</button>`;
 }
 
-function filePathToHtml(filePath: string): string | null {
+function filePathToHtml(filePath: string, anchor?: string): string | null {
   const type = getMediaType(filePath);
   if (!type) return null;
-  const url = mediaUrl(filePath);
+  // PDF: append #page=N (or whatever the agent wrote) directly to the
+  // iframe src — browser native PDF viewer (Chrome/Edge/Firefox) honours
+  // #page=N / #zoom= / #search= per Adobe's Open Parameters spec without
+  // any JS plumbing. For non-PDF media types, anchor is ignored at the
+  // URL level (audio/video/image have no semantic anchor anyway).
+  const baseUrl = mediaUrl(filePath);
+  const pdfUrl = anchor && type === 'pdf' ? `${baseUrl}#${encodeURI(anchor)}` : baseUrl;
   const name = escapeHtml(filePath.split('/').pop() || filePath);
-  const reveal = buildRevealAction(filePath);
+  const reveal = buildRevealAction(filePath, anchor);
 
   switch (type) {
     case 'image':
       return `<div class="jf-media jf-media-image">
-        <img src="${url}" alt="${name}" loading="lazy"
+        <img src="${baseUrl}" alt="${name}" loading="lazy"
              onclick="window.open(this.src,'_blank')" title="点击查看大图" />
         <div class="jf-media-caption">${name}${reveal}</div>
       </div>`;
     case 'audio':
       return `<div class="jf-media jf-media-audio">
         <div class="jf-media-caption">🎵 ${name}${reveal}</div>
-        <audio controls preload="metadata" src="${url}">浏览器不支持音频播放</audio>
+        <audio controls preload="metadata" src="${baseUrl}">浏览器不支持音频播放</audio>
       </div>`;
     case 'video':
       return `<div class="jf-media jf-media-video">
-        <video controls preload="metadata" src="${url}">浏览器不支持视频播放</video>
+        <video controls preload="metadata" src="${baseUrl}">浏览器不支持视频播放</video>
         <div class="jf-media-caption">${name}${reveal}</div>
       </div>`;
     case 'pdf':
       return `<div class="jf-media jf-media-pdf">
         <div class="jf-media-caption">📄 ${name}${reveal}
-          <a href="${url}" target="_blank" rel="noopener" style="margin-left:8px;color:var(--jf-accent)">新窗口打开</a>
+          <a href="${pdfUrl}" target="_blank" rel="noopener" style="margin-left:8px;color:var(--jf-accent)">新窗口打开</a>
         </div>
-        <iframe src="${url}" style="width:100%;height:400px;border:none;border-radius:8px"></iframe>
+        <iframe src="${pdfUrl}" style="width:100%;height:400px;border:none;border-radius:8px"></iframe>
       </div>`;
     case 'html': {
       const hid = 'html-' + Math.random().toString(36).slice(2, 10);
@@ -158,11 +214,11 @@ function filePathToHtml(filePath: string): string | null {
           <span style="margin-left:auto;display:flex;gap:4px">
             <button onclick="document.getElementById('${hid}').classList.toggle('jf-media-expanded')"
                     style="background:none;border:none;color:var(--jf-text-muted);cursor:pointer;font-size:14px" title="展开/收起">⛶</button>
-            <a href="${url}" target="_blank" rel="noopener"
+            <a href="${baseUrl}" target="_blank" rel="noopener"
                style="color:var(--jf-text-muted);font-size:14px;text-decoration:none" title="新窗口打开">↗</a>
           </span>
         </div>
-        <iframe src="${url}" sandbox="allow-scripts allow-same-origin allow-popups"
+        <iframe src="${baseUrl}" sandbox="allow-scripts allow-same-origin allow-popups"
                 loading="lazy" style="width:100%;height:360px;border:none;border-radius:8px"></iframe>
       </div>`;
     }
@@ -173,25 +229,43 @@ function filePathToHtml(filePath: string): string | null {
 
 /** 非媒体文件（.txt / .json / .py / 任意未知扩展）的 <<FILE:>> 渲染：
  *  改为可点击的内联 pill。点击后由 fileWorkspaceContext 的全局委托
- *  捕获 [data-jf-file] 并调用 revealInBrowser → 同时打开文件 + 跳转浏览器目录。 */
-function nonMediaFileToHtml(filePath: string): string {
+ *  捕获 [data-jf-file] / [data-jf-anchor] 并调用 revealInBrowser →
+ *  同时打开文件 + 跳转浏览器目录 + 滚到锚点。 */
+function nonMediaFileToHtml(filePath: string, anchor?: string): string {
   const safePath = escapeHtml(filePath);
   const name = escapeHtml(filePath.split('/').pop() || filePath);
   if (!_fileRevealEnabled) {
-    return `&lt;FILE:${safePath}&gt;`;
+    return anchor ? `&lt;FILE:${safePath}#${escapeHtml(anchor)}&gt;` : `&lt;FILE:${safePath}&gt;`;
   }
-  return `<button type="button" class="jf-file-link" data-jf-file="${safePath}" title="${safePath} · 点击在文件浏览器中打开"><span class="jf-file-link-icon">📄</span><span class="jf-file-link-name">${name}</span></button>`;
+  const anchorAttr = anchor ? ` data-jf-anchor="${escapeHtml(anchor)}"` : '';
+  const titleSuffix = anchor ? ` · 跳转到 #${escapeHtml(anchor)}` : '';
+  // Display anchor inline so user can see "→ 我的章节" instead of just the file name.
+  const displaySuffix = anchor ? ` <span class="jf-file-link-anchor">#${escapeHtml(anchor)}</span>` : '';
+  return `<button type="button" class="jf-file-link" data-jf-file="${safePath}"${anchorAttr} title="${safePath}${titleSuffix} · 点击在文件浏览器中打开"><span class="jf-file-link-icon">📄</span><span class="jf-file-link-name">${name}</span>${displaySuffix}</button>`;
 }
 
+// Match <<FILE:/path>> or <FILE:/path> (forgiving to single-bracket variant).
+// Path body captures everything up to the closing > and gets split on '#' below
+// so that `<<FILE:/x.md#标题>>` and `<<FILE:/x.pdf#page=3>>` both work.
 const FILE_TAG_RE = /<?<FILE:(\/[^>]+?)>>?/gi;
 
+/** Split "/path/to/file.md#anchor" into [path, anchor?]. Anchor is the substring
+ *  after the FIRST `#` only; downstream consumers may further parse it (e.g.
+ *  `page=3` for PDFs). Returns the original path unchanged when no `#` exists. */
+function splitPathAndAnchor(raw: string): [string, string | undefined] {
+  const idx = raw.indexOf('#');
+  if (idx < 0) return [raw, undefined];
+  const p = raw.slice(0, idx);
+  const a = raw.slice(idx + 1);
+  return [p, a || undefined];
+}
+
 function preProcessMediaTags(text: string): string {
-  return text.replace(FILE_TAG_RE, (_match, filePath: string) => {
-    const trimmed = filePath.trim();
-    const html = filePathToHtml(trimmed);
+  return text.replace(FILE_TAG_RE, (_match, body: string) => {
+    const [filePath, anchor] = splitPathAndAnchor(body.trim());
+    const html = filePathToHtml(filePath, anchor);
     if (html) return `\n\n${html}\n\n`;
-    // 非媒体文件：渲染成内联可点击 pill（不换行，便于嵌在句子中）。
-    return nonMediaFileToHtml(trimmed);
+    return nonMediaFileToHtml(filePath, anchor);
   });
 }
 
@@ -211,6 +285,41 @@ function postProcessMediaSrc(html: string): string {
   });
 }
 
+// ── Clickable inline file paths ─────────────────────────────────────
+//
+// Detect inline-code spans whose body looks like a workspace path, e.g.:
+//   `notes/abc.md`,  `/scripts/foo.py`,  `data/raw/2025-04-21.csv`
+// Convert them to a `<button data-jf-file>` so the global click delegate
+// in fileWorkspaceContext fires `revealInBrowser` (opens the file AND
+// jumps the FilePanel to its parent dir). Conservative matching avoids
+// false positives:
+//   - must NOT carry a class attribute (we only target marked's *inline*
+//     <code>; hljs-emitted block code has class="hljs language-X")
+//   - must contain a '/' (single-token names like `index.tsx` are too
+//     ambiguous — could be variable names, mentions, etc.)
+//   - must end with a 1-8 char ascii extension
+//   - must not contain whitespace, angle brackets, quotes
+// The leading slash is optional so plain "docs/abc.md" also works,
+// while "https://x.com/img.png" is filtered (the colon after "https"
+// fails the inner [^\s<>"':] character class).
+// Allow optional `#anchor` segment after extension. Anchor segment also
+// excludes whitespace/quotes/angles to keep the conservative bias.
+const INLINE_PATH_RE =
+  /<code>([^\s<>"':\\]*\/[^\s<>"':\\]+\.[a-zA-Z0-9]{1,8}(?:#[^\s<>"'\\]+)?)<\/code>/g;
+
+function postProcessInlinePaths(html: string): string {
+  if (!_fileRevealEnabled) return html;
+  return html.replace(INLINE_PATH_RE, (_match, raw: string) => {
+    const [bare, anchor] = splitPathAndAnchor(raw);
+    const abs = bare.startsWith('/') ? bare : '/' + bare;
+    const safe = escapeHtml(abs);
+    const display = escapeHtml(raw);
+    const anchorAttr = anchor ? ` data-jf-anchor="${escapeHtml(anchor)}"` : '';
+    const titleSuffix = anchor ? ` · 跳转到 #${escapeHtml(anchor)}` : '';
+    return `<button type="button" class="jf-file-link jf-file-link-inline" data-jf-file="${safe}"${anchorAttr} title="${safe}${titleSuffix} · 点击在文件浏览器打开"><span class="jf-file-link-icon">📄</span><span class="jf-file-link-name">${display}</span></button>`;
+  });
+}
+
 // ── Markdown render pipeline ────────────────────────────────────────
 
 const SANITIZE_OPTS = {
@@ -218,6 +327,8 @@ const SANITIZE_OPTS = {
   ADD_ATTR: [
     'target', 'sandbox', 'loading', 'frameborder', 'allowfullscreen',
     'controls', 'preload', 'src', 'autoplay', 'onclick', 'title',
+    // data-* attrs DOMPurify keeps by default; listing here for clarity.
+    'data-jf-file', 'data-jf-anchor',
   ],
   ADD_DATA_URI_TAGS: ['img'],
 };
@@ -257,9 +368,13 @@ export function renderMarkdown(text: string): string {
   }
   let result: string;
   try {
+    // Reset heading-id dedup PER call so dedup is scoped to one document
+    // (otherwise long sessions accumulate "title-2", "title-3" suffixes
+    // across unrelated messages, breaking copyable fragment links).
+    _resetHeadingIds();
     const preprocessed = preProcessMediaTags(text);
     const html = String(marked.parse(preprocessed));
-    const postProcessed = postProcessMediaSrc(html);
+    const postProcessed = postProcessInlinePaths(postProcessMediaSrc(html));
     result = DOMPurify.sanitize(postProcessed, SANITIZE_OPTS) as string;
   } catch {
     result = DOMPurify.sanitize(text.replace(/\n/g, '<br>')) as string;

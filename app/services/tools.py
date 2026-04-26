@@ -254,6 +254,41 @@ Agent 会读取文档内容，按照其中描述的步骤逐步执行。
 - 使用结构化格式（Markdown/JSON），方便后续检索
 - 定期整理和更新，保持信息新鲜
 """,
+    "documents": """
+## 文档读取工具
+你拥有两个原生文档读取工具，可以**直接**读取 PDF / Word / Excel / 图片，
+无需写脚本（但脚本依然可用于复杂处理）。
+
+### `read_document(path)` — 结构化文本提取（首选）
+适用：`.pdf` / `.docx` / `.xlsx`
+- PDF：返回全文文本，每页前标 `[Page N]`
+- Word：保留标题层级（# / ## / ###）+ 表格
+- Excel：每个 sheet 转 markdown 表
+- 输出超 200KB 自动截断，会提示如何精读
+
+**纯文本格式（.md / .txt / .csv / .json / .py 等）请用 `read_file`**，
+不要用 read_document（它会拒绝并提示）。
+
+### `view_pdf_page_or_image(path, page=1)` — 多模态视觉读取（弥补）
+适用：`.pdf`（按页）/ `.png` / `.jpg` / `.webp` / `.gif` / `.bmp`
+**这是视觉弥补工具，不是常规读取工具**。仅在以下情况使用：
+1. PDF 是扫描件，read_document 提取出空文本
+2. 需要查看图表 / 插图 / 公式 / 手写笔记的视觉细节
+3. 单张图片的 OCR / 物体识别 / 内容理解
+
+**重要约束**：
+- 一次只看 **一页**（PDF 必须传 page 参数，1-based）
+- **同一文件单次对话最多调用 5 次**，超出会被拒绝
+- 想读整本 PDF 文本？请用 `read_document` 一次拿全文
+- 想精确处理大量页？请用 `run_script` 写 pypdfium2 脚本
+
+### 选择策略
+1. 默认先尝试 `read_document` —— 一次拿完，最省 token
+2. 文本提取失败 / 看到 `[扫描件]` 提示 → 改用 `view_pdf_page_or_image`
+3. 用户明确想"看图"（如分析图表/截图）→ 直接用 view_pdf_page_or_image
+4. 引用文档某段时用 `<<FILE:/path/to/doc.md#标题>>` 让用户跳转到对应位置；
+   PDF 用 `<<FILE:/path/to/doc.pdf#page=N>>` 跳到指定页
+""",
 }
 
 
@@ -351,6 +386,49 @@ def create_list_files_sorted_tool(user_id: str):
         return "\n".join(lines)
 
     return list_files_sorted
+
+
+def create_move_file_tool(user_id: str):
+    """Create a move_file tool that moves/renames a file or directory.
+
+    Wraps StorageService.move — supports both local and S3 backends.
+    Only operates within the user's filesystem root; path traversal is
+    blocked by safe_join inside the storage layer.
+    """
+    from app.storage import get_storage_service
+
+    @tool
+    def move_file(source: str, destination: str) -> str:
+        """移动（或重命名）文件 / 目录。可跨目录移动，也可原地重命名。
+
+        - source 和 destination 都是相对用户文件系统根目录的路径，以 "/" 开头
+        - 如果 destination 是已存在的目录，文件会移动进该目录（与 mv 行为一致）
+        - 如果 destination 路径的父目录不存在，会自动创建
+        - 不能覆盖已存在的文件（如需覆盖请先删除目标）
+
+        Args:
+            source: 源路径，如 "/docs/old_name.md" 或 "/old_folder"
+            destination: 目标路径，如 "/docs/new_name.md" 或 "/archive/old_folder"
+
+        Returns:
+            成功时返回新路径；失败时返回错误信息。
+        """
+        storage = get_storage_service()
+        try:
+            new_path = storage.move(user_id, source, destination)
+            return f"已移动: {source} → {new_path}"
+        except FileNotFoundError:
+            return f"[错误] 源文件/目录不存在: {source}"
+        except FileExistsError:
+            return f"[错误] 目标路径已存在: {destination}（如需覆盖请先删除目标）"
+        except ValueError as e:
+            return f"[错误] {e}"
+        except PermissionError as e:
+            return f"[错误] 权限不足: {e}"
+        except Exception as e:
+            return f"[错误] 移动失败: {e}"
+
+    return move_file
 
 
 def create_run_script_tool(user_id: str):

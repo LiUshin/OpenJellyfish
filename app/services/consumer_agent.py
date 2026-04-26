@@ -212,7 +212,115 @@ def _create_consumer_read_tools(admin_id: str, allowed_docs: List[str]):
             lines.append(f"... (仅显示前 {limit} 条)")
         return "\n".join(lines)
 
-    return [ls, read_file, list_files_sorted]
+    # ── 文档读取工具（read_document + view_pdf_page_or_image）──────────
+    # Consumer 视角下 path 是相对 docs_dir（与 read_file 一致）；权限走
+    # _is_allowed 过滤，不允许越界到 generated/ 等目录。复用 document_tools
+    # 的纯提取函数，避免代码重复。
+    from app.services.document_tools import (
+        _extract_pdf_text,
+        _extract_docx_text,
+        _extract_xlsx_text,
+        _render_pdf_page_to_png_b64,
+        _read_image_to_b64,
+        _bump_and_check_view_count,
+        _PLAIN_TEXT_EXTS,
+        _IMAGE_EXTS,
+    )
+
+    @tool
+    def read_document(path: str) -> str:
+        """读取结构化文档（PDF / Word / Excel）并返回纯文本内容。
+
+        支持 .pdf / .docx / .xlsx；纯文本格式（.md / .txt / .csv 等）请用 read_file。
+        超过 200KB 自动截断。
+
+        Args:
+            path: 文件路径，如 /report.pdf
+        """
+        clean = path.lstrip("/").replace("\\", "/")
+        if not _is_allowed(clean):
+            return "无权限访问该文件"
+        if clean.startswith("generated"):
+            return "generated/ 目录不可访问"
+        try:
+            full = safe_join(docs_dir, clean)
+        except PermissionError:
+            return "路径超出允许范围"
+        if not os.path.isfile(full):
+            return f"文件不存在: {path}"
+
+        ext = os.path.splitext(full)[1].lower()
+        if ext in _PLAIN_TEXT_EXTS:
+            return f"{path} 是纯文本格式，请改用 read_file。"
+        if ext in _IMAGE_EXTS:
+            return f"{path} 是图片，请改用 view_pdf_page_or_image。"
+        if ext == ".pdf":
+            return _extract_pdf_text(full)
+        if ext == ".docx":
+            return _extract_docx_text(full)
+        if ext == ".xlsx":
+            return _extract_xlsx_text(full)
+        if ext in {".doc", ".xls"}:
+            return f"[错误] 旧版 Office 格式 {ext} 暂不支持，请另存为 {ext}x。"
+        if ext == ".pptx":
+            return "[错误] .pptx 暂不支持。"
+        return f"[错误] 不支持的文件类型: {ext}。支持: .pdf / .docx / .xlsx"
+
+    @tool
+    def view_pdf_page_or_image(path: str, page: int = 1):
+        """**多模态视觉读取** — 把单页 PDF 或图片转成多模态消息让你"看到"。
+
+        仅作为弥补：(a) 扫描件 PDF 文本提取失败、(b) 需要看图表/插图细节、
+        (c) 图片内容理解。**单页粒度**，同一文件单次对话最多 5 次。
+        想读全文请用 read_document。
+
+        Args:
+            path: 文件路径（PDF / png / jpg / jpeg / webp / gif / bmp）
+            page: PDF 时为 1-based 页码，默认 1（图片忽略）
+        """
+        clean = path.lstrip("/").replace("\\", "/")
+        if not _is_allowed(clean):
+            return "无权限访问该文件"
+        if clean.startswith("generated"):
+            return "generated/ 目录不可访问"
+        try:
+            full = safe_join(docs_dir, clean)
+        except PermissionError:
+            return "路径超出允许范围"
+        if not os.path.isfile(full):
+            return f"文件不存在: {path}"
+
+        block_msg = _bump_and_check_view_count(path)
+        if block_msg:
+            return block_msg
+
+        ext = os.path.splitext(full)[1].lower()
+        if ext in _IMAGE_EXTS:
+            b64, mime, err = _read_image_to_b64(full)
+            if err:
+                return err
+            assert b64 and mime
+            return [
+                {"type": "text", "text": f"图片 {path}（{mime}）的内容如下："},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ]
+        if ext == ".pdf":
+            page_idx = max(1, int(page or 1)) - 1
+            b64, err = _render_pdf_page_to_png_b64(full, page_idx)
+            if err:
+                return err
+            assert b64
+            return [
+                {"type": "text", "text": f"PDF {path} 第 {page_idx + 1} 页内容如下："},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            ]
+        if ext in _PLAIN_TEXT_EXTS:
+            return f"{path} 是文本文件，请用 read_file。"
+        if ext in {".docx", ".xlsx"}:
+            return f"{path} 是 Word/Excel，请用 read_document。"
+        return f"[错误] 不支持的文件类型: {ext}。支持: .pdf / .png / .jpg / .jpeg / .webp / .gif / .bmp"
+
+    return [ls, read_file, list_files_sorted, read_document, view_pdf_page_or_image]
 
 
 def _create_consumer_gen_tools(admin_id: str, service_id: str, conv_id: str, capabilities: List[str]):
@@ -439,6 +547,12 @@ def create_consumer_agent(
     tools.extend(_create_consumer_read_tools(admin_id, allowed_docs))
     tools.extend(_create_consumer_gen_tools(admin_id, service_id, conv_id, capabilities))
     tools.extend(_create_consumer_script_tools(admin_id, service_id, conv_id, allowed_scripts))
+
+    # documents capability prompt — read_document / view_pdf_page_or_image are
+    # always injected via _create_consumer_read_tools above (no flag needed),
+    # so unconditionally append the usage prompt.
+    from app.services.tools import CAPABILITY_PROMPTS as _CP_DOC
+    system_prompt += "\n" + _CP_DOC["documents"]
 
     if research_tools or "web" in capabilities:
         from app.services.tools import create_web_tools, CAPABILITY_PROMPTS as _CP

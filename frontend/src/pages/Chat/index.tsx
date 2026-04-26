@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Button, Input, Select, Tooltip, App } from 'antd';
+import { Button, Select, Tooltip, App } from 'antd';
 import {
   Plus,
   PaperPlaneRight,
@@ -24,15 +24,19 @@ import type { ImageAttachmentHandle } from './components/ImageAttachment';
 import VoiceInput from './components/VoiceInput';
 import MessageList from './components/MessageList';
 import type { MessageListHandle } from './components/MessageList';
+import MentionPicker, { MAX_CANDIDATES as MENTION_MAX } from './components/MentionPicker';
+import FileTokenInput from './components/FileTokenInput';
+import type { FileTokenInputHandle } from './components/FileTokenInput';
 import { useStream } from '../../stores/streamContext';
 import LogoLoading from '../../components/LogoLoading';
 import HeaderControls from '../../components/HeaderControls';
 import { useFileWorkspace } from '../../stores/fileWorkspaceContext';
 import { getYoloMode, YOLO_EVENT } from '../../utils/yoloMode';
 import { getLastSelectedModel, setLastSelectedModel } from '../../utils/lastSelectedModel';
+import { getRecentFiles } from '../../utils/recentFiles';
+import { fuzzyMatch } from '../../utils/fuzzyMatch';
+import type { FileIndexEntry } from '../../services/api';
 import styles from './chat.module.css';
-
-const { TextArea } = Input;
 
 const IMG_CACHE_DB = 'jellyfish-img-cache';
 const IMG_CACHE_STORE = 'images';
@@ -125,6 +129,33 @@ export default function ChatPage() {
   const imageAttachRef = useRef<ImageAttachmentHandle>(null);
   const currentConvIdRef = useRef(currentConvId);
   currentConvIdRef.current = currentConvId;
+  const fileTokenInputRef = useRef<FileTokenInputHandle | null>(null);
+
+  // ── @ 文件提及（仅 admin /chat） ──────────────────────────────────
+  // 文件索引 lazy-load：第一次 @ 触发时拉一次，之后缓存到这里。
+  // 整个文件树通常只有几百到几千条；前端做 in-memory fuzzy。
+  const [fileIndex, setFileIndex] = useState<FileIndexEntry[]>([]);
+  const fileIndexLoadedRef = useRef(false);
+  const fileIndexLoadingRef = useRef(false);
+  const [mention, setMention] = useState<{
+    active: boolean;
+    /** Cursor index of the `@` itself (so we can splice later). */
+    triggerStart: number;
+    query: string;
+    activeIndex: number;
+  }>({ active: false, triggerStart: -1, query: '', activeIndex: 0 });
+  const recentPathsRef = useRef<string[]>([]);
+
+  const ensureFileIndex = useCallback(async () => {
+    if (fileIndexLoadedRef.current || fileIndexLoadingRef.current) return;
+    fileIndexLoadingRef.current = true;
+    try {
+      const data = await api.listFileIndex('/');
+      setFileIndex(data.entries);
+      fileIndexLoadedRef.current = true;
+    } catch { /* silent — picker will just show empty */ }
+    finally { fileIndexLoadingRef.current = false; }
+  }, []);
 
   const isViewingStream = currentConvId === streamingConvId;
   const showStreamBlocks = isViewingStream && (isStreaming || streamBlocks.length > 0);
@@ -139,12 +170,22 @@ export default function ChatPage() {
   // 不会随用户滚动而重算更新。MessageList 内部仍用 ref 做 follow-tail 判断，
   // 不会因这个 state 频繁 re-render（只在跨阈值时变化）。
   const [isAtBottom, setIsAtBottom] = useState(true);
+  // 流式追尾：优先用 MessageList 内部的 scrollFooterIntoView（messages.length>0 时），
+  // messages 还为空时（新会话、首条消息流式中）MessageList 没挂，直接拉外层容器贴底。
   const scrollToBottom = useCallback(() => {
-    messageListRef.current?.scrollToBottom();
-  }, []);
+    if (messageListRef.current) {
+      messageListRef.current.scrollToBottom();
+    } else if (scrollParentEl) {
+      scrollParentEl.scrollTop = scrollParentEl.scrollHeight;
+    }
+  }, [scrollParentEl]);
   const resetScroll = useCallback(() => {
-    messageListRef.current?.resetScroll();
-  }, []);
+    if (messageListRef.current) {
+      messageListRef.current.resetScroll();
+    } else if (scrollParentEl) {
+      scrollParentEl.scrollTop = scrollParentEl.scrollHeight;
+    }
+  }, [scrollParentEl]);
 
   const checkServerStreaming = useCallback(async () => {
     try {
@@ -350,6 +391,77 @@ export default function ChatPage() {
     if (streamingConvId) loadMessages(streamingConvId);
   }
 
+  // ── @ 文件提及 helpers ──────────────────────────────────────────
+  // 检测光标前是否有「行首/空白后跟着的 @」，并解析 @ 之后到光标之间的 query。
+  // 返回 null 表示当前光标不在 @ 上下文里。
+  function detectMentionTrigger(value: string, cursor: number): { triggerStart: number; query: string } | null {
+    if (cursor <= 0) return null;
+    // 从光标向前扫，直到遇到空白/换行/字符串首
+    let i = cursor - 1;
+    while (i >= 0) {
+      const ch = value[i];
+      if (ch === '@') {
+        // 必须是行首或前面是空白
+        const before = i === 0 ? '' : value[i - 1];
+        if (i === 0 || before === ' ' || before === '\n' || before === '\t') {
+          const query = value.slice(i + 1, cursor);
+          // query 不能含空格/换行（一旦输入空格/换行就关闭 picker）
+          if (/[\s\n\r]/.test(query)) return null;
+          return { triggerStart: i, query };
+        }
+        return null;
+      }
+      // 任何空白字符都视为词边界 → 没有有效 @ trigger
+      if (ch === ' ' || ch === '\n' || ch === '\t') return null;
+      i--;
+    }
+    return null;
+  }
+
+  function handleInputChange(value: string) {
+    setInputValue(value);
+  }
+
+  /** Called by FileTokenInput's internal mention detector on every keystroke. */
+  function handleMentionTrigger(trig: { triggerStart: number; query: string } | null) {
+    if (trig) {
+      if (!mention.active) {
+        recentPathsRef.current = getRecentFiles();
+        ensureFileIndex();
+      }
+      setMention({
+        active: true,
+        triggerStart: trig.triggerStart,
+        query: trig.query,
+        activeIndex: 0,
+      });
+    } else if (mention.active) {
+      setMention((m) => ({ ...m, active: false }));
+    }
+  }
+
+  function insertMention(item: FileIndexEntry) {
+    if (!mention.active) return;
+    const before = inputValue.slice(0, mention.triggerStart);
+    const queryEnd = mention.triggerStart + 1 + mention.query.length;
+    const after = inputValue.slice(queryEnd);
+    // Chip token — no trailing space; the chip itself acts as an atom and
+    // the user can continue typing right after it.
+    const token = `[[FILE:${item.path}]]`;
+    const next = before + token + after;
+    setInputValue(next);
+    setMention({ active: false, triggerStart: -1, query: '', activeIndex: 0 });
+    // After FileTokenInput re-hydrates the DOM from the new value, move the
+    // caret to just after the inserted chip.
+    requestAnimationFrame(() => {
+      const fti = fileTokenInputRef.current;
+      if (fti) {
+        fti.focus();
+        fti.setCaretPosition(before.length + token.length);
+      }
+    });
+  }
+
   async function handleSend(text?: string) {
     const msg = text ?? inputValue.trim();
     const hasImages = attachedImages.length > 0;
@@ -397,6 +509,8 @@ export default function ChatPage() {
     const userMessage: Message = { role: 'user', content: displayContent };
     setMessages((prev) => [...prev, userMessage]);
     setInputValue('');
+    fileTokenInputRef.current?.clear();
+    setMention({ active: false, triggerStart: -1, query: '', activeIndex: 0 });
     resetScroll();
 
     let messageContent: string | unknown[] = msg;
@@ -424,38 +538,48 @@ export default function ChatPage() {
     });
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  // Keyboard callbacks forwarded from FileTokenInput's internal keydown handler.
+  // The FileTokenInput fires these when mentionPickerActive=true.
+  function handleMentionNavDown() {
+    const candidates = fuzzyMatch(fileIndex, mention.query, recentPathsRef.current, MENTION_MAX);
+    if (candidates.length > 0) {
+      setMention((m) => ({ ...m, activeIndex: (m.activeIndex + 1) % candidates.length }));
     }
   }
-
-  function handlePaste(e: React.ClipboardEvent) {
-    if (isStreaming) return;
-    const items = Array.from(e.clipboardData.items);
-    const imageFiles = items
-      .filter((item) => item.type.startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter(Boolean) as File[];
-    if (imageFiles.length > 0) {
-      e.preventDefault();
-      const MAX_IMAGES = 5;
-      const remaining = MAX_IMAGES - attachedImages.length;
-      if (remaining <= 0) return;
-      const toProcess = imageFiles.slice(0, remaining);
-      Promise.all(
-        toProcess.map(async (f) => {
-          const reader = new FileReader();
-          return new Promise<{ dataUrl: string; name: string }>((resolve) => {
-            reader.onload = () => resolve({ dataUrl: reader.result as string, name: f.name || 'pasted-image' });
-            reader.readAsDataURL(f);
-          });
-        }),
-      ).then((newItems) => {
-        setAttachedImages((prev) => [...prev, ...newItems]);
-      });
+  function handleMentionNavUp() {
+    const candidates = fuzzyMatch(fileIndex, mention.query, recentPathsRef.current, MENTION_MAX);
+    if (candidates.length > 0) {
+      setMention((m) => ({ ...m, activeIndex: (m.activeIndex - 1 + candidates.length) % candidates.length }));
     }
+  }
+  function handleMentionConfirm() {
+    const candidates = fuzzyMatch(fileIndex, mention.query, recentPathsRef.current, MENTION_MAX);
+    if (candidates.length > 0) {
+      insertMention(candidates[mention.activeIndex]?.item ?? candidates[0].item);
+    }
+  }
+  function handleMentionDismiss() {
+    setMention((m) => ({ ...m, active: false }));
+  }
+
+  /** Called by FileTokenInput when user pastes image files. */
+  function handleImagePaste(imageFiles: File[]) {
+    if (isStreaming) return;
+    const MAX_IMAGES = 5;
+    const remaining = MAX_IMAGES - attachedImages.length;
+    if (remaining <= 0) return;
+    const toProcess = imageFiles.slice(0, remaining);
+    Promise.all(
+      toProcess.map(async (f) => {
+        const reader = new FileReader();
+        return new Promise<{ dataUrl: string; name: string }>((resolve) => {
+          reader.onload = () => resolve({ dataUrl: reader.result as string, name: f.name || 'pasted-image' });
+          reader.readAsDataURL(f);
+        });
+      }),
+    ).then((newItems) => {
+      setAttachedImages((prev) => [...prev, ...newItems]);
+    });
   }
 
   const currentTitle = currentConvId
@@ -561,32 +685,42 @@ export default function ChatPage() {
               </div>
             </div>
           ) : (
-            <MessageList
-              ref={messageListRef}
-              messages={messages}
-              conversationId={currentConvId}
-              scrollParent={scrollParentEl}
-              followStream={isViewingStream && isStreaming}
-              onAtBottomChange={setIsAtBottom}
-              footerSlot={
-                <>
-                  {showStreamBlocks && streamBlocks.length > 0 && (
-                    <StreamingMessage blocks={streamBlocks} isStreaming={isStreaming} />
-                  )}
-                  {isViewingStream && planSteps.length > 0 && (
-                    <PlanTracker steps={planSteps} />
-                  )}
-                  {isViewingStream && interruptData && currentConvId && (
-                    <ApprovalCard
-                      actions={interruptData.actions as never[]}
-                      configs={(interruptData.configs ?? []) as never[]}
-                      conversationId={currentConvId}
-                      onResume={handleResume}
-                    />
-                  )}
-                </>
-              }
-            />
+            <>
+              {messages.length > 0 && (
+                <MessageList
+                  ref={messageListRef}
+                  messages={messages}
+                  conversationId={currentConvId}
+                  scrollParent={scrollParentEl}
+                  followStream={isViewingStream && isStreaming}
+                  onAtBottomChange={setIsAtBottom}
+                />
+              )}
+              {/*
+                ⚠️ 不要把这些「实时」节点塞进 Virtuoso 的 Footer。
+                react-virtuoso v4 的 Footer 走 useEmitterValue/useSyncExternalStore，
+                高频 context 推送（流式 args_delta 每秒几十次 setStreamBlocks）会被
+                内部 batching 吞掉，导致 write_file/edit_file 打字机停在「等待内容…」
+                直到流结束才一次性刷新。把它们作为 MessageList 的兄弟节点直接挂到
+                messagesContainer 下，所有 setState 都直接触发 React 重渲染，无中间层。
+                由于使用 customScrollParent，scrollHeight 仍然包含这些节点，
+                scrollFooterIntoView 行为完全不变。
+              */}
+              {showStreamBlocks && streamBlocks.length > 0 && (
+                <StreamingMessage blocks={streamBlocks} isStreaming={isStreaming} />
+              )}
+              {isViewingStream && planSteps.length > 0 && (
+                <PlanTracker steps={planSteps} />
+              )}
+              {isViewingStream && interruptData && currentConvId && (
+                <ApprovalCard
+                  actions={interruptData.actions as never[]}
+                  configs={(interruptData.configs ?? []) as never[]}
+                  conversationId={currentConvId}
+                  onResume={handleResume}
+                />
+              )}
+            </>
           )}
 
           {/* Scroll to bottom button — 长会话上滑后随时可一键回到底部，
@@ -723,21 +857,37 @@ export default function ChatPage() {
               popupMatchSelectWidth={false}
             />
           </div>
-          <div className={styles.inputWrapper} onPaste={handlePaste}>
+          <div className={styles.inputWrapper} style={{ position: 'relative' }}>
             <VoiceInput
               onTranscript={(text) => handleSend(text)}
               disabled={isStreaming}
             />
-            <TextArea
+            <FileTokenInput
+              ref={fileTokenInputRef}
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
-              autoSize={{ minRows: 1, maxRows: 6 }}
-              variant="borderless"
+              onChange={handleInputChange}
+              onSend={() => handleSend()}
+              onMentionTrigger={handleMentionTrigger}
+              mentionPickerActive={mention.active}
+              onMentionNavDown={handleMentionNavDown}
+              onMentionNavUp={handleMentionNavUp}
+              onMentionConfirm={handleMentionConfirm}
+              onMentionDismiss={handleMentionDismiss}
+              placeholder="输入消息... (Enter 发送, Shift+Enter 换行, @ 引用文件)"
               disabled={isStreaming}
-              style={{ color: 'var(--jf-text)', fontSize: 14, resize: 'none' }}
+              onImagePaste={handleImagePaste}
             />
+            {mention.active && (
+              <MentionPicker
+                visible
+                query={mention.query}
+                items={fileIndex}
+                recentPaths={recentPathsRef.current}
+                activeIndex={mention.activeIndex}
+                onActiveIndexChange={(idx) => setMention((m) => ({ ...m, activeIndex: idx }))}
+                onSelect={insertMention}
+              />
+            )}
             {isStreaming && isViewingStream ? (
               <Button
                 danger

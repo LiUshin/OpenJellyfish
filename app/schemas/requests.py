@@ -54,6 +54,11 @@ class MoveFileRequest(BaseModel):
     destination: str
 
 
+class CopyFileRequest(BaseModel):
+    source: str
+    destination: str
+
+
 class RunScriptRequest(BaseModel):
     script_path: str
     args: Optional[list] = None

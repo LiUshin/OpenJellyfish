@@ -184,8 +184,10 @@ def create_user_agent(
         create_run_script_tool, create_ai_gen_tools, create_send_message_tool,
         create_web_tools, create_schedule_tool, create_manage_scheduled_tasks_tool,
         create_publish_service_task_tool, create_list_files_sorted_tool,
+        create_move_file_tool,
         propose_plan, CAPABILITY_PROMPTS, PLAN_MODE_PROMPT,
     )
+    from app.services.document_tools import create_document_tools
     from app.services.prompt import (
         get_user_system_prompt, build_user_profile_prompt,
         get_resolved_capability_prompt,
@@ -237,7 +239,12 @@ def create_user_agent(
     tools = [
         create_run_script_tool(user_id),
         create_list_files_sorted_tool(user_id),
+        create_move_file_tool(user_id),
     ]
+    # Document parsing tools (read_document + view_pdf_page_or_image) — always
+    # injected. They are read-only and operate inside fs_dir; the docs capability
+    # prompt is unconditionally appended below so the agent knows when to use them.
+    tools.extend(create_document_tools(user_id))
     if capabilities:
         ai_tools = create_ai_gen_tools(user_id)
         tool_map = {"image": ai_tools[0], "speech": ai_tools[1], "video": ai_tools[2]}
@@ -255,6 +262,10 @@ def create_user_agent(
         system_prompt += "\n" + _cap("web")
     system_prompt += "\n" + _cap("scheduler")
     system_prompt += "\n" + _cap("service_broadcast")
+    # documents tool is always injected (read_document + view_pdf_page_or_image),
+    # so unconditionally append its prompt; user can still override via
+    # capability_prompts.json if they want to customise wording.
+    system_prompt += "\n" + _cap("documents")
 
     from app.services.memory_tools import get_soul_config
     soul_config = get_soul_config(user_id)
@@ -304,6 +315,7 @@ def create_batch_agent(
     from app.services.tools import (
         create_run_script_tool, create_ai_gen_tools, create_web_tools,
     )
+    from app.services.document_tools import create_read_document_tool
     from app.storage import get_storage_service
 
     if capabilities is None:
@@ -317,6 +329,12 @@ def create_batch_agent(
     resolved_model = _resolve_model(model, user_id=user_id)
 
     tools = [create_run_script_tool(user_id)]
+
+    # read_document only (no view_pdf_page_or_image): batch agent processes
+    # row-by-row data and shouldn't be making per-row vision calls — too slow
+    # and too expensive. If a single batch row truly needs vision the user
+    # can fall back to run_script + pypdfium2.
+    tools.append(create_read_document_tool(user_id))
 
     tools.extend(create_web_tools(user_id=user_id))
 

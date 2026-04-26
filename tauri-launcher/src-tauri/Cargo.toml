@@ -1,6 +1,6 @@
 [package]
 name = "jellyfishbot-launcher"
-version = "1.0.1"
+version = "1.0.4"
 edition = "2021"
 description = "JellyfishBot Desktop Launcher"
 

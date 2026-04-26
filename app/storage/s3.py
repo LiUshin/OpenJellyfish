@@ -144,20 +144,100 @@ class S3StorageService(StorageService):
     # ── move ──
 
     def move(self, user_id: str, source: str, destination: str) -> str:
+        result = self._copy_or_move(user_id, source, destination, delete_source=True)
+        return result
+
+    def copy(self, user_id: str, source: str, destination: str) -> str:
+        return self._copy_or_move(user_id, source, destination, delete_source=False)
+
+    def _copy_or_move(
+        self, user_id: str, source: str, destination: str, *, delete_source: bool,
+    ) -> str:
         client = _get_client()
         src_key = self._key(user_id, source)
         dst_key = self._key(user_id, destination)
-        if dst_key.endswith("/"):
-            dst_key += posixpath.basename(source.rstrip("/"))
+        user_prefix = "/".join([p for p in [self._prefix, user_id, "fs"] if p]) + "/"
+
+        is_dir = self.is_dir(user_id, source)
+        if is_dir:
+            src_prefix = src_key.rstrip("/") + "/"
+            # Resolve destination: if it points at an existing dir (or ends with /),
+            # nest the source basename inside it.
+            if dst_key.endswith("/") or self.is_dir(user_id, destination):
+                base = posixpath.basename(source.rstrip("/")) or "copy"
+                dst_prefix = dst_key.rstrip("/") + "/" + base + "/"
+            else:
+                dst_prefix = dst_key.rstrip("/") + "/"
+            if not delete_source and (
+                dst_prefix == src_prefix or dst_prefix.startswith(src_prefix)
+            ):
+                raise ValueError("不能把文件夹复制/移动到它自己里面")
+            # Block overwrite.
+            existing = client.list_objects_v2(
+                Bucket=self._bucket, Prefix=dst_prefix, MaxKeys=1,
+            )
+            if existing.get("KeyCount", 0) > 0:
+                raise FileExistsError("目标路径已存在")
+            paginator = client.get_paginator("list_objects_v2")
+            keys_to_delete: list[dict] = []
+            for page in paginator.paginate(Bucket=self._bucket, Prefix=src_prefix):
+                for obj in page.get("Contents", []):
+                    src_obj_key = obj["Key"]
+                    rel = src_obj_key[len(src_prefix):]
+                    new_key = dst_prefix + rel
+                    client.copy_object(
+                        Bucket=self._bucket,
+                        CopySource={"Bucket": self._bucket, "Key": src_obj_key},
+                        Key=new_key,
+                    )
+                    if delete_source:
+                        keys_to_delete.append({"Key": src_obj_key})
+            if delete_source and keys_to_delete:
+                for i in range(0, len(keys_to_delete), 1000):
+                    batch = keys_to_delete[i:i + 1000]
+                    client.delete_objects(
+                        Bucket=self._bucket, Delete={"Objects": batch},
+                    )
+            clean = dst_prefix.rstrip("/")
+            if clean.startswith(user_prefix):
+                clean = clean[len(user_prefix):]
+            return "/" + clean
+        # Single file.
+        if dst_key.endswith("/") or self.is_dir(user_id, destination):
+            dst_key = dst_key.rstrip("/") + "/" + posixpath.basename(source.rstrip("/"))
+        if self.is_file(user_id, "/" + dst_key[len(user_prefix):]) if dst_key.startswith(user_prefix) else False:
+            raise FileExistsError("目标路径已存在")
         client.copy_object(
             Bucket=self._bucket,
             CopySource={"Bucket": self._bucket, "Key": src_key},
             Key=dst_key,
         )
-        client.delete_object(Bucket=self._bucket, Key=src_key)
-        user_prefix = "/".join([p for p in [self._prefix, user_id, "fs"] if p]) + "/"
+        if delete_source:
+            client.delete_object(Bucket=self._bucket, Key=src_key)
         clean = dst_key[len(user_prefix):] if dst_key.startswith(user_prefix) else dst_key
         return "/" + clean
+
+    def walk_files(
+        self, user_id: str, path: str,
+    ) -> Generator[tuple[str, bytes], None, None]:
+        client = _get_client()
+        if self.is_file(user_id, path):
+            yield posixpath.basename(path.rstrip("/")), self.read_bytes(user_id, path)
+            return
+        prefix = self._key(user_id, path).rstrip("/") + "/"
+        paginator = client.get_paginator("list_objects_v2")
+        found = False
+        for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                found = True
+                key = obj["Key"]
+                rel = key[len(prefix):]
+                if not rel:
+                    continue
+                resp = client.get_object(Bucket=self._bucket, Key=key)
+                yield rel, resp["Body"].read()
+        if not found:
+            raise FileNotFoundError(path)
 
     # ── queries ──
 

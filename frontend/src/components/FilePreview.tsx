@@ -1,10 +1,11 @@
-import { type KeyboardEvent, useMemo, useState, useEffect } from 'react';
+import { type KeyboardEvent, useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { Button, Tooltip, Segmented, Table, Empty, App } from 'antd';
 import {
   SaveOutlined,
   CloseOutlined,
   DownloadOutlined,
   FileUnknownOutlined,
+  UnorderedListOutlined,
 } from '@ant-design/icons';
 import hljs from 'highlight.js/lib/core';
 import { useFileWorkspace } from '../stores/fileWorkspaceContext';
@@ -18,7 +19,7 @@ import {
   type FileKind,
 } from '../utils/fileKind';
 import { parseCsv } from '../utils/csvParse';
-import { renderMarkdown } from '../pages/Chat/markdown';
+import { renderMarkdown, slugifyHeading } from '../pages/Chat/markdown';
 
 const C = {
   bg: 'var(--jf-bg-panel)',
@@ -35,8 +36,24 @@ type ViewMode = 'preview' | 'source';
 // ────────────────────────────── 子视图 ──────────────────────────────
 
 function MediaView({ path, kind }: { path: string; kind: FileKind }) {
-  const url = api.mediaUrl(path);
+  const { pendingAnchor, consumePendingAnchor } = useFileWorkspace();
+  // PDF #page=N / #zoom= deep-link: appended to iframe src ONLY for kind=pdf.
+  // Browser-native PDF viewers (Chrome/Edge/Firefox) honour fragments per
+  // Adobe Open Parameters spec — no JS plumbing needed. Other media kinds
+  // (image/audio/video) ignore anchor (no semantic anchor to honour).
+  const baseUrl = api.mediaUrl(path);
+  const url = kind === 'pdf' && pendingAnchor
+    ? `${baseUrl}#${encodeURI(pendingAnchor)}`
+    : baseUrl;
   const name = path.split('/').pop() || path;
+  // One-shot consume: anchor is meant to drive the initial scroll; clearing
+  // here means re-opening the same file later without a new reveal won't
+  // surprise the user with a stale page jump.
+  useEffect(() => {
+    if (pendingAnchor && kind === 'pdf') {
+      consumePendingAnchor();
+    }
+  }, [pendingAnchor, kind, consumePendingAnchor]);
 
   if (kind === 'image') {
     return (
@@ -92,22 +109,240 @@ const mediaWrapStyle: React.CSSProperties = {
   overflow: 'auto',
 };
 
+interface TocEntry {
+  id: string;
+  level: number;
+  text: string;
+}
+
+/** Parse h1-h3 ids out of the rendered HTML so we can power a TOC overlay
+ *  without re-parsing markdown. We use DOMParser on the cached HTML output
+ *  (one pass per content change) — cheaper than running marked twice and
+ *  doesn't drift from the actual ids that markdown.ts injected. h4-h6 are
+ *  intentionally excluded: a 6-level TOC overwhelms the side rail and is
+ *  rarely how authors structure docs anyway. */
+function extractToc(html: string): TocEntry[] {
+  if (typeof DOMParser === 'undefined') return [];
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const entries: TocEntry[] = [];
+    doc.querySelectorAll('h1, h2, h3').forEach((el) => {
+      const id = el.getAttribute('id');
+      if (!id) return;
+      const text = (el.textContent || '').replace(/#$/, '').trim();
+      if (!text) return;
+      entries.push({ id, level: parseInt(el.tagName.slice(1), 10), text });
+    });
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
 function MarkdownPreview({ content }: { content: string }) {
+  const { pendingAnchor, consumePendingAnchor } = useFileWorkspace();
   const html = useMemo(() => renderMarkdown(content), [content]);
+  const toc = useMemo(() => extractToc(html), [html]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  // TOC starts collapsed on small/medium previews to avoid covering content;
+  // user can pin it open via the toggle button.
+  const [tocOpen, setTocOpen] = useState(true);
+
+  // Deep-link via <<FILE:/x.md#标题>>: when MarkdownPreview mounts (or html
+  // changes) and a pendingAnchor is present, try multiple resolution strategies
+  // to find the matching heading and scroll to it. Agents may write either:
+  //   - the raw heading text (`#我的章节`)
+  //   - the already-slugified id (`#wo-de-zhang-jie`)
+  //   - a substring that uniquely identifies a heading (best-effort)
+  // Silently no-op if nothing matches — never surface an error toast for this.
+  useEffect(() => {
+    if (!pendingAnchor || !containerRef.current) return;
+    const root = containerRef.current;
+    // Wait one frame for innerHTML / TOC IntersectionObserver to settle, then
+    // resolve the anchor and scroll. requestAnimationFrame is enough — no need
+    // for setTimeout(0) which is racier under React 18 strict-mode double-mount.
+    const raf = requestAnimationFrame(() => {
+      const escapeId = (id: string) => {
+        try { return CSS.escape(id); } catch { return id; }
+      };
+      // 1. Direct id match (agent wrote the slug or CJK plain text already passes through).
+      let target = root.querySelector(`#${escapeId(pendingAnchor)}`) as HTMLElement | null;
+      // 2. Slugify and try again (agent wrote the raw heading text).
+      if (!target) {
+        const slug = slugifyHeading(pendingAnchor);
+        if (slug) target = root.querySelector(`#${escapeId(slug)}`) as HTMLElement | null;
+      }
+      // 3. Fallback: case-insensitive substring match on heading text.
+      if (!target) {
+        const needle = pendingAnchor.trim().toLowerCase();
+        const candidates = root.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6');
+        for (const h of candidates) {
+          const txt = (h.textContent || '').replace(/#$/, '').trim().toLowerCase();
+          if (txt === needle || txt.includes(needle)) {
+            target = h;
+            break;
+          }
+        }
+      }
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setActiveId(target.id || null);
+      }
+      // Always consume — if anchor doesn't resolve, silently open the file
+      // at its top (per design choice in user's task spec).
+      consumePendingAnchor();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [pendingAnchor, html, consumePendingAnchor]);
+
+  // Track which heading is currently in view (Reading-Progress style).
+  // We use IntersectionObserver scoped to the scroll container to keep the
+  // TOC's "current" highlight in sync with the user's reading position.
+  useEffect(() => {
+    if (toc.length === 0 || !containerRef.current) return;
+    const root = containerRef.current;
+    const headings = toc
+      .map((t) => root.querySelector(`#${CSS.escape(t.id)}`))
+      .filter((el): el is HTMLElement => el !== null);
+    if (headings.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Pick the topmost heading currently intersecting; fallback to the
+        // last-seen id if nothing intersects (long sections between titles).
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length > 0) {
+          setActiveId((visible[0].target as HTMLElement).id);
+        }
+      },
+      { root, rootMargin: '-10% 0px -75% 0px', threshold: [0, 1] },
+    );
+    headings.forEach((h) => observer.observe(h));
+    return () => observer.disconnect();
+  }, [toc, html]);
+
+  const scrollToHeading = useCallback((id: string) => {
+    const el = containerRef.current?.querySelector(`#${CSS.escape(id)}`);
+    if (el) {
+      (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setActiveId(id);
+    }
+  }, []);
+
+  const showToc = toc.length >= 2;
+
   return (
-    <div
-      className="jf-markdown jf-file-md-preview"
-      style={{
-        flex: 1,
-        overflow: 'auto',
-        padding: '20px 24px',
-        background: C.bg,
-        color: C.text,
-        fontSize: 14,
-        lineHeight: 1.7,
-      }}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div style={{ flex: 1, position: 'relative', display: 'flex', minHeight: 0 }}>
+      <div
+        ref={containerRef}
+        className="jf-markdown jf-file-md-preview"
+        style={{
+          flex: 1,
+          overflow: 'auto',
+          padding: '20px 24px',
+          background: C.bg,
+          color: C.text,
+          fontSize: 14,
+          lineHeight: 1.7,
+          minWidth: 0,
+        }}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+      {showToc && tocOpen && (
+        <aside
+          style={{
+            width: 220,
+            flexShrink: 0,
+            background: C.bgDark,
+            borderLeft: `1px solid ${C.border}`,
+            overflowY: 'auto',
+            padding: '14px 6px 14px 12px',
+            fontSize: 12,
+            color: C.textSec,
+            position: 'relative',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              paddingBottom: 8,
+              marginBottom: 6,
+              borderBottom: `1px solid ${C.border}`,
+              fontWeight: 500,
+              color: C.text,
+            }}
+          >
+            <span>目录</span>
+            <Button
+              type="text"
+              size="small"
+              icon={<CloseOutlined style={{ fontSize: 11 }} />}
+              onClick={() => setTocOpen(false)}
+              style={{ color: C.textDim, width: 22, height: 22, minWidth: 22 }}
+              title="收起目录"
+            />
+          </div>
+          {toc.map((entry) => (
+            <button
+              key={entry.id}
+              onClick={() => scrollToHeading(entry.id)}
+              style={{
+                display: 'block',
+                width: '100%',
+                textAlign: 'left',
+                padding: '4px 8px',
+                paddingLeft: 8 + (entry.level - 1) * 12,
+                marginBottom: 1,
+                background: activeId === entry.id ? 'rgba(var(--jf-primary-rgb), 0.18)' : 'transparent',
+                color: activeId === entry.id ? C.text : C.textSec,
+                border: 'none',
+                borderLeft: activeId === entry.id ? '2px solid var(--jf-primary)' : '2px solid transparent',
+                cursor: 'pointer',
+                fontSize: entry.level === 1 ? 12.5 : entry.level === 2 ? 12 : 11.5,
+                fontWeight: entry.level === 1 ? 500 : 400,
+                borderRadius: 'var(--jf-radius-sm)',
+                transition: 'background 0.15s',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+              onMouseEnter={(e) => {
+                if (activeId !== entry.id) e.currentTarget.style.background = 'rgba(108, 92, 231, 0.06)';
+              }}
+              onMouseLeave={(e) => {
+                if (activeId !== entry.id) e.currentTarget.style.background = 'transparent';
+              }}
+              title={entry.text}
+            >
+              {entry.text}
+            </button>
+          ))}
+        </aside>
+      )}
+      {showToc && !tocOpen && (
+        <Button
+          type="text"
+          size="small"
+          icon={<UnorderedListOutlined />}
+          onClick={() => setTocOpen(true)}
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 12,
+            color: C.textSec,
+            background: C.bgDark,
+            border: `1px solid ${C.border}`,
+            borderRadius: 'var(--jf-radius-sm)',
+            zIndex: 5,
+          }}
+          title={`目录（${toc.length} 项）`}
+        />
+      )}
+    </div>
   );
 }
 

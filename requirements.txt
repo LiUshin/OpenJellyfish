@@ -44,6 +44,12 @@ plotly>=5.18.0
 # Excel
 openpyxl>=3.1.0
 
+# Document parsing (read_document tool: pdf/docx/xlsx/image multimodal reading)
+# pypdfium2 — Apache-2.0, pure-wheel PDF text + page rendering (no system deps)
+pypdfium2>=4.30.0
+python-docx>=1.1.0
+pillow>=10.0.0
+
 # Table formatting
 tabulate>=0.9.0
 

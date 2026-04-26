@@ -12,7 +12,7 @@ from app.schemas.requests import ChatRequest, ResumeRequest, StopChatRequest
 from app.services.agent import create_user_agent
 from app.services.conversations import save_message, save_attachment
 from app.services.tools import PLAN_MODE_PROMPT
-from app.services.prompt import stamp_message
+from app.services.prompt import stamp_message, expand_file_mentions
 from app.core.observability import get_langfuse_callbacks, get_langfuse_metadata, flush_langfuse, is_langfuse_enabled
 from app.deps import get_current_user
 
@@ -514,8 +514,16 @@ async def api_chat(req: ChatRequest, user=Depends(get_current_user)):
     username = user.get("username", user_id)
     conv_id = req.conversation_id
 
-    save_text = _extract_text(req.message)
-    attachments = _extract_and_save_images(user_id, conv_id, req.message)
+    # Expand `[[FILE:/path]]` chips inserted by the @-mention picker into the
+    # agent-facing `<<FILE:/path>>` notation BEFORE persistence and stamping,
+    # so the conversation log, the agent input, and any future re-render of
+    # historical user bubbles all see the same canonical form (which the
+    # markdown.ts pipeline already knows how to render as a clickable file
+    # pill or inline media preview).
+    canonical_message = expand_file_mentions(req.message)
+
+    save_text = _extract_text(canonical_message)
+    attachments = _extract_and_save_images(user_id, conv_id, canonical_message)
     save_message(user_id, conv_id, "user", save_text, attachments=attachments)
 
     agent = create_user_agent(user_id, model=req.model, capabilities=req.capabilities, username=username)
@@ -525,7 +533,7 @@ async def api_chat(req: ChatRequest, user=Depends(get_current_user)):
         "callbacks": get_langfuse_callbacks(),
         "metadata": get_langfuse_metadata(session_id=thread_id, user_id=username),
     }
-    user_content = req.message
+    user_content = canonical_message
     if req.plan_mode:
         if isinstance(user_content, str):
             user_content = PLAN_MODE_PROMPT + "\n\n" + user_content

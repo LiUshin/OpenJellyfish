@@ -143,6 +143,46 @@ class LocalStorageService(StorageService):
                             time.sleep(0.2)
         return "/" + os.path.relpath(dst, root).replace("\\", "/")
 
+    def copy(self, user_id: str, source: str, destination: str) -> str:
+        root = _fs_root(user_id)
+        src = _resolve(root, source)
+        dst = _resolve(root, destination)
+        if not os.path.exists(src):
+            raise FileNotFoundError(source)
+        if os.path.isdir(dst):
+            dst = os.path.join(dst, os.path.basename(src.rstrip(os.sep)))
+        if os.path.exists(dst):
+            raise FileExistsError("目标路径已存在")
+        # Block copying a dir into itself or any descendant.
+        if os.path.isdir(src):
+            src_canon = os.path.realpath(src)
+            dst_canon = os.path.realpath(os.path.dirname(dst) or root)
+            if dst_canon == src_canon or dst_canon.startswith(src_canon + os.sep):
+                raise ValueError("不能把文件夹复制到它自己里面")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+        return "/" + os.path.relpath(dst, root).replace("\\", "/")
+
+    def walk_files(
+        self, user_id: str, path: str,
+    ) -> Generator[tuple[str, bytes], None, None]:
+        full = _resolve(_fs_root(user_id), path)
+        if not os.path.exists(full):
+            raise FileNotFoundError(path)
+        if os.path.isfile(full):
+            with open(full, "rb") as f:
+                yield os.path.basename(full), f.read()
+            return
+        for root_dir, _dirs, filenames in os.walk(full):
+            for fn in filenames:
+                file_full = os.path.join(root_dir, fn)
+                rel = os.path.relpath(file_full, full).replace("\\", "/")
+                with open(file_full, "rb") as f:
+                    yield rel, f.read()
+
     # ── queries ──
 
     def exists(self, user_id: str, path: str) -> bool:
