@@ -8,6 +8,7 @@ import {
   Question, FileZip, Info, Warning,
 } from '@phosphor-icons/react';
 import * as api from '../../services/api';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const C = {
   bg2: 'var(--jf-bg-raised)',
@@ -38,6 +39,7 @@ const HELP_TEXTS: Record<string, string> = {
 };
 
 export default function BackupPage() {
+  const isMobile = useIsMobile();
   const [modules, setModules] = useState<api.BackupModule[]>([]);
   const [defaultSelected, setDefaultSelected] = useState<string[]>([]);
   const [selectedExport, setSelectedExport] = useState<string[]>([]);
@@ -157,16 +159,20 @@ export default function BackupPage() {
     setImporting(false);
   };
 
-  const cardStyle = {
+  const cardStyle: React.CSSProperties = {
     background: C.bg2,
     borderRadius: 'var(--jf-radius-lg)',
     border: `1px solid ${C.border}`,
-    padding: '20px 24px',
+    padding: isMobile ? '16px 14px' : '20px 24px',
     marginBottom: 16,
-  } as const;
+  };
 
   return (
-    <div style={{ padding: '24px 32px', maxWidth: 960, margin: '0 auto', width: '100%' }}>
+    <div style={{
+      padding: isMobile ? '16px 12px 24px' : '24px 32px',
+      paddingLeft: isMobile ? 52 : undefined,
+      maxWidth: 960, margin: '0 auto', width: '100%',
+    }}>
       <Typography.Text style={{ color: C.text, fontSize: 18, fontWeight: 600, display: 'block', marginBottom: 8 }}>
         数据备份与恢复
       </Typography.Text>
@@ -263,11 +269,11 @@ export default function BackupPage() {
         </div>
 
         {preview && (
-          <div style={{ marginTop: 14, padding: 12, background: 'var(--jf-bg-deep)', borderRadius: 8, border: `1px solid ${C.border}` }}>
+          <div style={{ marginTop: 14, padding: 12, background: 'var(--jf-bg-deep)', borderRadius: 8, border: `1px solid ${C.border}`, overflowX: 'auto' }}>
             <Typography.Text style={{ color: C.muted, fontSize: 11, display: 'block', marginBottom: 6 }}>
               预估（未压缩）：
             </Typography.Text>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '4px 12px', fontSize: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '4px 12px', fontSize: 12, minWidth: isMobile ? 320 : 'unset' }}>
               {Object.entries(preview.modules).map(([mod, info]) => (
                 <Fragment key={mod}>
                   <Typography.Text style={{ color: C.text }}>{mod}</Typography.Text>

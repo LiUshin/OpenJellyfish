@@ -1,6 +1,17 @@
 /* service-chat 专属样式：复用 admin design token，但页面布局更精简（消费者面向） */
 
 .page {
+  --jf-bg-deep: #0a0a0f;
+  --jf-bg-raised: #1c1c24;
+  --jf-surface: #141419;
+  --jf-surface-hover: #1c1c24;
+  --jf-border: #2a2a35;
+  --jf-text: #e8e8ed;
+  --jf-text-muted: #8a8a9a;
+  --jf-accent: #6366f1;
+  --jf-accent-hover: #818cf8;
+  --jf-primary: #818cf8;
+
   --bg: var(--jf-bg-deep, #0a0a0f);
   --surface: var(--jf-surface, #141419);
   --surface-hover: var(--jf-surface-hover, #1c1c24);
@@ -410,3 +421,100 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* ============================================================
+   service-chat 移动端适配 (≤ 767px)
+   ============================================================ */
+
+@media (max-width: 767px) {
+  .header {
+    padding: calc(10px + env(safe-area-inset-top, 0px))
+      calc(14px + env(safe-area-inset-right, 0px)) 10px
+      calc(14px + env(safe-area-inset-left, 0px));
+    gap: 8px;
+  }
+  .headerLogo {
+    width: 28px;
+    height: 28px;
+    font-size: 13px;
+  }
+  .headerTitle {
+    font-size: 14px;
+  }
+  .headerDesc {
+    display: none;
+  }
+
+  .authBox {
+    width: 100%;
+    max-width: calc(100vw - 32px);
+    padding: 24px 20px;
+    border-radius: 12px;
+  }
+
+  .messages {
+    padding: 14px 12px 18px;
+    gap: 12px;
+  }
+
+  .userMsg {
+    max-width: 90%;
+    padding: 10px 12px;
+    font-size: 14px;
+    border-radius: 14px;
+  }
+
+  .welcomeScreen {
+    padding: 24px 16px;
+    gap: 18px;
+  }
+  .welcomeTitle {
+    font-size: 22px;
+  }
+  .welcomeMessage {
+    font-size: 13.5px;
+    max-width: 100%;
+  }
+  .quickChip {
+    max-width: 100%;
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+
+  .inputArea {
+    padding: 8px calc(10px + env(safe-area-inset-right, 0px))
+      calc(10px + env(safe-area-inset-bottom, 0px))
+      calc(10px + env(safe-area-inset-left, 0px));
+  }
+
+  .inputForm {
+    gap: 6px;
+  }
+
+  .inputTextarea {
+    padding: 10px 12px;
+    min-height: 40px;
+    max-height: 120px;
+    border-radius: 10px;
+  }
+
+  .btnAttach {
+    padding: 8px;
+    flex-shrink: 0;
+  }
+
+  .btnSend {
+    padding: 0 14px;
+    font-size: 13px;
+    height: 40px;
+  }
+
+  .imgPreview {
+    padding: 4px 0;
+  }
+  .imgThumb img {
+    width: 48px;
+    height: 48px;
+  }
+}
+

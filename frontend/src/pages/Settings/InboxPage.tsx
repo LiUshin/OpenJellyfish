@@ -5,6 +5,7 @@ import {
 } from '@phosphor-icons/react';
 import * as api from '../../services/api';
 import { fmtUserTime } from '../../utils/timezone';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const { Text, Paragraph } = Typography;
 
@@ -15,6 +16,7 @@ const STATUS_TAGS: Record<string, { color: string; label: string }> = {
 };
 
 export default function InboxPage() {
+  const isMobile = useIsMobile();
   const [messages, setMessages] = useState<api.InboxMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string | undefined>(undefined);
@@ -55,15 +57,26 @@ export default function InboxPage() {
   const unreadCount = messages.filter((m) => m.status === 'unread').length;
 
   return (
-    <div style={{ padding: '24px 32px', maxWidth: 960, margin: '0 auto', width: '100%' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+    <div style={{
+      padding: isMobile ? '16px 12px 24px' : '24px 32px',
+      paddingLeft: isMobile ? 52 : undefined,
+      maxWidth: 960, margin: '0 auto', width: '100%',
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: isMobile ? 'flex-start' : 'center',
+        justifyContent: 'space-between',
+        marginBottom: 20,
+        flexWrap: isMobile ? 'wrap' : 'nowrap',
+        gap: isMobile ? 12 : 0,
+      }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Text style={{ fontSize: 18, fontWeight: 600, color: '#e0e0e8' }}>收件箱</Text>
           {unreadCount > 0 && (
             <Badge count={unreadCount} style={{ backgroundColor: '#e8524a' }} />
           )}
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {(['all', 'unread', 'handled'] as const).map((f) => (
             <Button
               key={f}
@@ -105,14 +118,25 @@ export default function InboxPage() {
                     border: `1px solid ${item.status === 'unread' ? 'rgba(232, 82, 74, 0.15)' : 'rgba(255,255,255,0.06)'}`,
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    marginBottom: 8,
+                    flexWrap: isMobile ? 'wrap' : 'nowrap',
+                    gap: isMobile ? 6 : 0,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
                       {item.status === 'unread' ? (
                         <Envelope size={18} weight="fill" style={{ color: '#e8524a', flexShrink: 0 }} />
                       ) : (
                         <EnvelopeOpen size={18} style={{ color: 'var(--jf-text-muted)', flexShrink: 0 }} />
                       )}
-                      <Text style={{ color: '#e0e0e8', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      <Text style={{
+                        color: '#e0e0e8', fontWeight: 500,
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        maxWidth: isMobile ? '55vw' : 'unset',
+                      }}>
                         {item.service_name}
                       </Text>
                       {item.wechat_user_id && (
@@ -135,7 +159,11 @@ export default function InboxPage() {
                         </Tooltip>
                       )}
                     </div>
-                    <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12, flexShrink: 0, marginLeft: 12 }}>{time}</Text>
+                    <Text style={{
+                      color: 'var(--jf-text-muted)', fontSize: 12,
+                      flexShrink: 0,
+                      marginLeft: isMobile ? 0 : 12,
+                    }}>{time}</Text>
                   </div>
 
                   <Paragraph

@@ -2884,3 +2884,123 @@
   font-family: var(--jf-font-code, ui-monospace, monospace);
   font-size: 0.85em;
 }
+
+.modelSelect {
+  width: 180px;
+}
+
+/* ============================================================
+   Chat 移动端适配 (≤ 767px)
+
+   不动桌面样式，只在窄屏把挤占空间的规则压缩：
+     1. chatHeader 左侧预留 52px 给浮动汉堡按钮（AppLayout 渲染）
+     2. messagesContainer 横向 padding 收到 14px（原 24px）
+     3. messageBody max-width 从 85% → 94%（空间拮据时保留点呼吸感）
+     4. inputArea padding 压缩
+     5. inputWrapper 内 padding 压缩 + 发送按钮边界紧贴右侧
+     6. suggestionChips 字号/内边距缩一档
+     7. streamElsewhereBanner 文案换行不溢出
+   ============================================================ */
+
+@media (max-width: 767px) {
+  .chatHeader {
+    padding: env(safe-area-inset-top, 0px) 12px 0 calc(52px + env(safe-area-inset-left, 0px));
+    height: calc(48px + env(safe-area-inset-top, 0px));
+    gap: 8px;
+  }
+
+  .chatTitle {
+    font-size: 13px;
+  }
+
+  .messagesContainer {
+    padding: 14px 14px 24px;
+  }
+
+  .messageBubble,
+  .messageBubbleUser {
+    gap: 10px;
+    padding-bottom: 18px;
+  }
+
+  .messageAvatar {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+  }
+
+  .messageBody {
+    max-width: 94%;
+  }
+
+  .inputArea {
+    padding: 10px calc(12px + env(safe-area-inset-right, 0px))
+      calc(12px + env(safe-area-inset-bottom, 0px))
+      calc(12px + env(safe-area-inset-left, 0px));
+  }
+
+  .inputToolbar {
+    gap: 2px;
+    padding: 0 2px 6px;
+  }
+
+  .inputToolbarDivider {
+    margin: 0 2px;
+  }
+
+  .capBtn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .inputWrapper {
+    padding: 4px 6px 4px 12px;
+    gap: 6px;
+  }
+
+  .emptyState {
+    padding: 20px 16px;
+    min-height: 40vh;
+    gap: 10px;
+  }
+
+  .emptyIcon {
+    font-size: 44px;
+  }
+
+  .emptyHint {
+    font-size: 13px;
+    max-width: 100%;
+  }
+
+  .suggestionChips {
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .suggestionChip {
+    padding: 8px 14px;
+    font-size: 12px;
+  }
+
+  .streamElsewhereBanner {
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    gap: 6px;
+  }
+
+  .streamElsewhereText {
+    font-size: 12px;
+    flex: 1 1 100%;
+  }
+
+  .scrollBottomBtn {
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .modelSelect {
+    width: 128px;
+  }
+}
+

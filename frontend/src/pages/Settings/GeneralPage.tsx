@@ -7,6 +7,7 @@ import { getTzOffset, setTzOffset, tzLabel, fmtUserTime } from '../../utils/time
 import { useTheme, type UiStyle } from '../../stores/themeContext';
 import { getYoloMode, setYoloMode, YOLO_EVENT } from '../../utils/yoloMode';
 import LogoLoading from '../../components/LogoLoading';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const { Text } = Typography;
 
@@ -162,6 +163,7 @@ function StatusDot({ ok }: { ok: boolean | null }) {
 }
 
 function ApiKeysCard() {
+  const isMobile = useIsMobile();
   const [masked, setMasked] = useState<api.ApiKeysMasked | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [showRaw, setShowRaw] = useState<Record<string, boolean>>({});
@@ -234,10 +236,10 @@ function ApiKeysCard() {
       background: C.bg2,
       borderRadius: 'var(--jf-radius-lg)',
       border: `1px solid ${C.border}`,
-      padding: '20px 24px',
+      padding: isMobile ? '16px 14px' : '20px 24px',
       marginBottom: 16,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: isMobile ? 'wrap' : 'nowrap', gap: isMobile ? 8 : 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Key size={18} color={C.primary} />
           <Text style={{ color: C.text, fontSize: 14, fontWeight: 500 }}>API Keys</Text>
@@ -299,8 +301,13 @@ function ApiKeysCard() {
                   const isEditing = editVal !== undefined;
 
                   return (
-                    <div key={f.field} style={{ display: 'grid', gridTemplateColumns: '140px 1fr auto', gap: 8, alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <div key={f.field} style={{
+                      display: 'grid',
+                      gridTemplateColumns: isMobile ? '1fr auto' : '140px 1fr auto',
+                      gap: isMobile ? '4px 8px' : 8,
+                      alignItems: 'center',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, gridColumn: isMobile ? '1 / -1' : 'auto' }}>
                         <Text style={{ color: C.muted, fontSize: 12 }}>{f.label}</Text>
                         {f.helpUrl && (
                           <a
@@ -380,6 +387,7 @@ function ApiKeysCard() {
 }
 
 export default function GeneralPage() {
+  const isMobile = useIsMobile();
   const [loading, setLoading] = useState(true);
   const [offset, setOffset] = useState(getTzOffset());
   const [saving, setSaving] = useState(false);
@@ -428,8 +436,21 @@ export default function GeneralPage() {
   const serverUtcStr = nowIso.replace('T', ' ').slice(0, 19);
   const userTimeStr = fmtUserTime(nowIso, 'datetime');
 
+  const cardBase: React.CSSProperties = {
+    background: C.bg2,
+    borderRadius: 'var(--jf-radius-lg)',
+    border: `1px solid ${C.border}`,
+    padding: isMobile ? '16px 14px' : '20px 24px',
+    marginBottom: 16,
+  };
+  const gridCols = isMobile ? '80px 1fr' : '100px 1fr';
+
   return (
-    <div style={{ padding: '24px 32px', maxWidth: 960, margin: '0 auto', width: '100%' }}>
+    <div style={{
+      padding: isMobile ? '16px 12px 24px' : '24px 32px',
+      paddingLeft: isMobile ? 52 : undefined,
+      maxWidth: 960, margin: '0 auto', width: '100%',
+    }}>
       <Text style={{ color: C.text, fontSize: 18, fontWeight: 600, display: 'block', marginBottom: 20 }}>
         通用设置
       </Text>
@@ -438,20 +459,14 @@ export default function GeneralPage() {
       <ApiKeysCard />
 
       {/* Time & Timezone */}
-      <div style={{
-        background: C.bg2,
-        borderRadius: 'var(--jf-radius-lg)',
-        border: `1px solid ${C.border}`,
-        padding: '20px 24px',
-        marginBottom: 16,
-      }}>
+      <div style={cardBase}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
           <Clock size={18} color={C.primary} />
           <Text style={{ color: C.text, fontSize: 14, fontWeight: 500 }}>时间与时区</Text>
           {saving && <Spin size="small" style={{ marginLeft: 8 }} />}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '12px 16px', alignItems: 'center' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: '12px 16px', alignItems: 'center' }}>
           <Text style={{ color: C.muted, fontSize: 13 }}>时区偏移</Text>
           <Select
             value={offset}
@@ -488,18 +503,13 @@ export default function GeneralPage() {
       </div>
 
       {/* UI Style */}
-      <div style={{
-        background: C.bg2,
-        borderRadius: 'var(--jf-radius-lg)',
-        border: `1px solid ${C.border}`,
-        padding: '20px 24px',
-      }}>
+      <div style={{ ...cardBase, marginBottom: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
           <PaintBrush size={18} color={C.primary} />
           <Text style={{ color: C.text, fontSize: 14, fontWeight: 500 }}>界面样式</Text>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '12px 16px', alignItems: 'center' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: '12px 16px', alignItems: 'center' }}>
           <Text style={{ color: C.muted, fontSize: 13 }}>样式风格</Text>
           <Select
             value={uiStyle}
@@ -517,13 +527,7 @@ export default function GeneralPage() {
       </div>
 
       {/* YOLO mode (admin) */}
-      <div style={{
-        background: C.bg2,
-        borderRadius: 'var(--jf-radius-lg)',
-        border: `1px solid ${C.border}`,
-        padding: '20px 24px',
-        marginTop: 16,
-      }}>
+      <div style={{ ...cardBase, marginTop: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <Lightning size={18} color={C.primary} weight={yolo ? 'fill' : 'regular'} />
           <Text style={{ color: C.text, fontSize: 14, fontWeight: 500 }}>YOLO 模式</Text>
@@ -534,7 +538,13 @@ export default function GeneralPage() {
           )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+        <div style={{
+          display: 'flex',
+          alignItems: isMobile ? 'flex-start' : 'center',
+          justifyContent: 'space-between',
+          gap: isMobile ? 12 : 16,
+          flexDirection: isMobile ? 'column-reverse' : 'row',
+        }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <Text style={{ color: C.muted, fontSize: 12, display: 'block' }}>
               开启后写文件、改文件、规划等操作不再弹审批卡，由 Agent 直接执行；适合自己一人快速迭代时使用。
@@ -555,13 +565,7 @@ export default function GeneralPage() {
       </div>
 
       {/* Batch run */}
-      <div style={{
-        background: C.bg2,
-        borderRadius: 'var(--jf-radius-lg)',
-        border: `1px solid ${C.border}`,
-        padding: '20px 24px',
-        marginTop: 16,
-      }}>
+      <div style={{ ...cardBase, marginTop: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
           <Lightning size={18} color={C.primary} />
           <Text style={{ color: C.text, fontSize: 14, fontWeight: 500 }}>批量运行</Text>
@@ -573,13 +577,7 @@ export default function GeneralPage() {
       </div>
 
       {/* Advanced Pages */}
-      <div style={{
-        background: C.bg2,
-        borderRadius: 'var(--jf-radius-lg)',
-        border: `1px solid ${C.border}`,
-        padding: '20px 24px',
-        marginTop: 16,
-      }}>
+      <div style={{ ...cardBase, marginTop: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
           <Sliders size={18} color={C.primary} />
           <Text style={{ color: C.text, fontSize: 14, fontWeight: 500 }}>高级功能</Text>

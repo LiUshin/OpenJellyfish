@@ -5,11 +5,12 @@ import {
 } from 'antd';
 import {
   SaveOutlined, HistoryOutlined, DeleteOutlined, EyeOutlined,
-  RollbackOutlined, UserOutlined,
+  RollbackOutlined, UserOutlined, EditOutlined,
 } from '@ant-design/icons';
 import type { UserProfile, PromptVersion } from '../../types';
 import * as api from '../../services/api';
 import { fmtUserTime } from '../../utils/timezone';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -36,6 +37,7 @@ const panelStyle: React.CSSProperties = {
 };
 
 export default function UserProfileEditor({ open, onClose, inline }: Props) {
+  const isMobile = useIsMobile();
   const [rules, setRules] = useState('');
   const [originalRules, setOriginalRules] = useState('');
   const [loading, setLoading] = useState(false);
@@ -45,6 +47,7 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
   const [showHistory, setShowHistory] = useState(true);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLabel, setPreviewLabel] = useState('');
+  const [editingMeta, setEditingMeta] = useState<{ id: string; label: string; note: string } | null>(null);
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -124,6 +127,18 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
     }
   };
 
+  const handleSaveMeta = async () => {
+    if (!editingMeta) return;
+    try {
+      await api.updateProfileVersionMeta(editingMeta.id, editingMeta.label, editingMeta.note);
+      message.success('版本名称已更新');
+      setEditingMeta(null);
+      loadVersions();
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : '更新失败');
+    }
+  };
+
   const hasChanges = rules !== originalRules;
 
   if (!open) return null;
@@ -131,7 +146,12 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
   const content = (
     <>
       <Spin spinning={loading}>
-        <div style={{ display: 'flex', gap: 16, position: 'relative' }}>
+        <div style={{
+          display: 'flex',
+          gap: isMobile ? 12 : 16,
+          position: 'relative',
+          flexDirection: isMobile ? 'column' : 'row',
+        }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <Text style={{ color: 'var(--jf-text-muted)', fontSize: 13, display: 'block', marginBottom: 12 }}>
               定义 AI 回复时始终遵守的个性化规则和偏好，这些规则会附加在每次对话的上下文中。
@@ -167,7 +187,7 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
           </div>
 
           {showHistory && (
-            <div style={{ width: 260, flexShrink: 0 }}>
+            <div style={{ width: isMobile ? '100%' : 260, flexShrink: 0 }}>
               <Collapse
                 defaultActiveKey={['history']}
                 ghost
@@ -206,6 +226,14 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
                                   <Popconfirm title="确定回滚？" onConfirm={() => handleRollback(v.id)} okText="确定" cancelText="取消">
                                     <Button size="small" type="text" icon={<RollbackOutlined />} />
                                   </Popconfirm>
+                                </Tooltip>
+                                <Tooltip title="重命名">
+                                  <Button
+                                    size="small"
+                                    type="text"
+                                    icon={<EditOutlined />}
+                                    onClick={() => setEditingMeta({ id: v.id, label: v.label, note: v.note })}
+                                  />
                                 </Tooltip>
                                 <Tooltip title="删除">
                                   <Popconfirm title="确定删除此版本？" onConfirm={() => handleDeleteVersion(v.id)} okText="确定" cancelText="取消">
@@ -273,11 +301,54 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
           {previewContent}
         </pre>
       </Modal>
+
+      <Modal
+        open={editingMeta !== null}
+        title="重命名历史记录"
+        onCancel={() => setEditingMeta(null)}
+        onOk={handleSaveMeta}
+        okText="保存"
+        cancelText="取消"
+        styles={{
+          header: { background: 'var(--jf-bg-panel)', borderBottom: '1px solid var(--jf-border)' },
+          content: { background: 'var(--jf-bg-panel)' },
+        }}
+      >
+        {editingMeta && (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <div>
+              <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>名称</Text>
+              <Input
+                value={editingMeta.label}
+                onChange={(e) => setEditingMeta({ ...editingMeta, label: e.target.value })}
+                style={{ background: 'var(--jf-bg-deep)', border: '1px solid var(--jf-border)', color: 'var(--jf-text)' }}
+              />
+            </div>
+            <div>
+              <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>备注</Text>
+              <TextArea
+                value={editingMeta.note}
+                onChange={(e) => setEditingMeta({ ...editingMeta, note: e.target.value })}
+                rows={3}
+                style={{ background: 'var(--jf-bg-deep)', border: '1px solid var(--jf-border)', color: 'var(--jf-text)' }}
+              />
+            </div>
+          </Space>
+        )}
+      </Modal>
     </>
   );
 
   if (inline) {
-    return <div style={{ padding: '16px 20px', height: '100%', overflow: 'auto' }}>{content}</div>;
+    return (
+      <div style={{
+        padding: isMobile ? '12px 12px 24px' : '16px 20px',
+        height: '100%',
+        overflow: 'auto',
+      }}>
+        {content}
+      </div>
+    );
   }
 
   return (
