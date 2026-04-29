@@ -364,3 +364,139 @@ kbd {
 
 .jf-file-md-preview img { max-width: 100%; border-radius: 6px; }
 .jf-file-md-preview hr { border: none; border-top: 1px solid var(--jf-border); margin: 1.2em 0; }
+
+/* ============================================================
+   MOBILE BASELINE (max-width: 767px)
+   仅给 <= 767px 的设备添加基础适配规则；桌面端完全不受影响。
+   具体页面/组件的移动端微调写在各自的 .module.css 里。
+   ============================================================ */
+
+@media (max-width: 767px) {
+  /* 使用动态视口高度（100dvh），避免 iOS Safari / Android Chrome 的地址栏
+     与底部工具栏把页面底部（输入框 / 功能条）推到视口之外遮住。
+     对不支持 dvh 的老浏览器，回退到 100vh。 */
+  html,
+  body,
+  #root {
+    height: 100vh;
+    height: 100dvh;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  /* iOS 上 input 聚焦时自动放大到 16px 以上才会不缩放，否则会粗暴缩放整页；
+     这里保证所有输入控件最小 16px，避免 focus 时视口跳变。 */
+  input,
+  textarea,
+  select,
+  [contenteditable='true'] {
+    font-size: 16px !important;
+  }
+
+  /* 滚动条在触屏上几乎用不到，且 iOS 原生不显示；把宽度压到 2px */
+  ::-webkit-scrollbar {
+    width: 2px;
+    height: 2px;
+  }
+
+  /* Ant Design Modal 默认宽度适配：窄屏铺满 + 上下留安全区 */
+  .ant-modal {
+    max-width: calc(100vw - 16px) !important;
+    margin: 8px auto !important;
+    top: 0 !important;
+  }
+  .ant-modal-body {
+    max-height: calc(100vh - 180px) !important;
+    overflow-y: auto !important;
+  }
+
+  /* Drawer 在窄屏几乎占满；Ant Design 默认 378px 在 iPhone SE 上太宽 */
+  .ant-drawer-content-wrapper {
+    max-width: 100vw !important;
+  }
+
+  /* 通用：禁用长按菜单以外的默认 webkit highlight（点击时的蓝色高亮方块） */
+  a,
+  button,
+  [role='button'] {
+    -webkit-tap-highlight-color: rgba(var(--jf-primary-rgb), 0.15);
+  }
+
+  /* 去除 iOS 原生的双击缩放延迟（CSS touch-action 比 pointer-events 更现代） */
+  body {
+    touch-action: manipulation;
+  }
+
+  /* ---------- Ant Design 组件移动端兜底 ----------
+     以下规则是为 /settings/* 子页面设计的通用兜底，所有设置相关页面都会受益。
+     桌面端完全不受影响（都包在 @media (max-width: 767px) 里）。 */
+
+  /* Tabs：Tab 头部溢出时允许横向滚动，避免文字被截断或强行换行 */
+  .ant-tabs-nav-wrap {
+    overflow-x: auto !important;
+  }
+
+  /* Segmented：窄屏下允许横向滚动，不要被强挤压 */
+  .ant-segmented {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* Pagination：窄屏下内容可能溢出，给一个滚动容器 */
+  .ant-pagination {
+    white-space: nowrap;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  /* Tag：窄屏下字号收一点 */
+  .ant-tag {
+    font-size: 12px;
+  }
+
+  /* Drawer 内的 Form.Item 标签与控件都纵向排列，避免挤压 */
+  .ant-drawer-body .ant-form-item .ant-form-item-label {
+    padding-bottom: 4px !important;
+  }
+  .ant-drawer-body .ant-form-item .ant-form-item-label > label {
+    height: auto !important;
+  }
+
+  /* Modal / Drawer footer 按钮满宽布局（每个按钮 flex:1），更适合触屏 */
+  .ant-modal-footer,
+  .ant-drawer-footer {
+    display: flex !important;
+    gap: 8px;
+  }
+  .ant-modal-footer > .ant-btn,
+  .ant-drawer-footer > .ant-btn {
+    flex: 1;
+  }
+
+  /* Table 水平滚动：mobile 下给 Table 自动水平滚动 */
+  .ant-table-wrapper {
+    max-width: 100%;
+  }
+  .ant-table-content,
+  .ant-table-body {
+    overflow-x: auto !important;
+  }
+
+  /* Select popup 在小屏上铺开更多可视范围 */
+  .ant-select-dropdown {
+    max-height: 50vh !important;
+  }
+
+  /* 顶部为汉堡菜单让出空间 —— 所有 settings 子页的首个 h1/h4/h5 可选地调整 padding
+     不直接改页面，这里提供一个工具类 .jf-mobile-page-top 供页面自助使用。 */
+  .jf-mobile-page-top {
+    padding-left: 44px !important;
+  }
+
+  /* 通用页面顶部标题条：防止被汉堡按钮遮挡 */
+  .jf-mobile-page-header {
+    padding-left: 52px !important;
+    padding-right: 16px !important;
+  }
+}
+

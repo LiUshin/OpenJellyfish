@@ -3,6 +3,7 @@ import { Switch, Typography, Space, Spin, message, Divider, Tag, Input, Button, 
 import { Brain, FolderOpen, Eye, PencilSimple, ArrowCounterClockwise, FloppyDisk } from '@phosphor-icons/react';
 import * as api from '../../services/api';
 import type { SoulConfig, CapabilityPromptItem } from '../../services/api';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -18,6 +19,11 @@ const CARD: React.CSSProperties = {
   borderRadius: 'var(--jf-radius-lg)',
   padding: '20px 24px',
   marginBottom: 16,
+};
+
+const CARD_MOBILE: React.CSSProperties = {
+  ...CARD,
+  padding: '16px 14px',
 };
 
 const ICON_WRAP: React.CSSProperties = {
@@ -38,6 +44,7 @@ const PROMPT_LABELS: Record<string, string> = {
 };
 
 export default function SoulSettings({ open, onClose, inline }: Props) {
+  const isMobile = useIsMobile();
   const [config, setConfig] = useState<SoulConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [updating, setUpdating] = useState<string | null>(null);
@@ -203,8 +210,8 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
         </Paragraph>
       </div>
 
-      <div style={CARD}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+      <div style={isMobile ? CARD_MOBILE : CARD}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: isMobile ? 10 : 16 }}>
           <div style={{ ...ICON_WRAP, background: 'rgba(var(--jf-primary-rgb), 0.12)' }}>
             <PencilSimple size={22} weight="duotone" color="var(--jf-primary)" />
           </div>
@@ -242,8 +249,8 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
         </div>
       </div>
 
-      <div style={CARD}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+      <div style={isMobile ? CARD_MOBILE : CARD}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: isMobile ? 10 : 16 }}>
           <div style={{ ...ICON_WRAP, background: 'rgba(var(--jf-secondary-rgb), 0.12)' }}>
             <FolderOpen size={22} weight="duotone" color="var(--jf-secondary)" />
           </div>
@@ -283,8 +290,8 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
 
       <Divider style={{ margin: '12px 0', borderColor: 'var(--jf-border)' }} />
 
-      <div style={CARD}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+      <div style={isMobile ? CARD_MOBILE : CARD}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: isMobile ? 10 : 16 }}>
           <div style={{ ...ICON_WRAP, background: 'rgba(var(--jf-accent-rgb), 0.12)' }}>
             <Brain size={22} weight="duotone" color="var(--jf-accent)" />
           </div>
@@ -309,7 +316,11 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
 
   if (inline) {
     return (
-      <div style={{ padding: '16px 20px', height: '100%', overflow: 'auto' }}>
+      <div style={{
+        padding: isMobile ? '12px 12px 24px' : '16px 20px',
+        height: '100%',
+        overflow: 'auto',
+      }}>
         {content}
       </div>
     );

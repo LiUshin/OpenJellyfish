@@ -7,6 +7,7 @@ import {
   Plus, PencilSimple, Trash, PlayCircle,
   ArrowsClockwise, CaretRight, Info, Clock,
   GearSix, ListDashes, CheckCircle, XCircle,
+  ArrowLeft,
 } from '@phosphor-icons/react';
 import {
   listSchedulerTasks, getSchedulerTask, createSchedulerTask,
@@ -14,6 +15,7 @@ import {
   listServices, getToken,
 } from '../../services/api';
 import { fmtUserTime, getTzOffset } from '../../utils/timezone';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const { TextArea } = Input;
 
@@ -414,6 +416,7 @@ function RunCard({ run }: { run: RunData }) {
 /* ────────────────────── Main Component ────────────────────── */
 
 export default function SchedulerPage() {
+  const isMobile = useIsMobile();
   const { message: msg } = App.useApp();
   const [form] = Form.useForm();
 
@@ -787,22 +790,28 @@ export default function SchedulerPage() {
       <>
         {/* Header */}
         <div style={{
-          padding: '16px 24px', borderBottom: `1px solid ${C.border}`,
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: isMobile ? '12px 14px' : '16px 24px',
+          borderBottom: `1px solid ${C.border}`,
+          display: 'flex',
+          alignItems: isMobile ? 'center' : 'center',
+          justifyContent: 'space-between',
+          gap: isMobile ? 8 : 0,
+          flexWrap: isMobile ? 'wrap' : 'nowrap',
         }}>
-          <Typography.Title level={4} style={{ margin: 0, color: C.textPrimary }}>
+          <Typography.Title level={4} style={{ margin: 0, color: C.textPrimary, fontSize: isMobile ? 16 : undefined, flex: isMobile ? '1 1 100%' : undefined }}>
             {t.name}
           </Typography.Title>
-          <Space>
+          <Space size={isMobile ? 4 : 8}>
             <Button
               type="primary"
+              size={isMobile ? 'small' : 'middle'}
               icon={<PlayCircle size={16} weight="fill" />}
               style={{ background: C.success, borderColor: C.success, color: '#000' }}
               onClick={handleRunNow}
             >
-              立即运行
+              {isMobile ? '运行' : '立即运行'}
             </Button>
-            <Button icon={<PencilSimple size={16} />} onClick={openEditModal}>编辑</Button>
+            <Button size={isMobile ? 'small' : 'middle'} icon={<PencilSimple size={16} />} onClick={openEditModal}>{isMobile ? '' : '编辑'}</Button>
             <Popconfirm
               title={`确定删除「${t.name}」？`}
               onConfirm={handleDelete}
@@ -810,13 +819,13 @@ export default function SchedulerPage() {
               cancelText="取消"
               okButtonProps={{ danger: true }}
             >
-              <Button danger icon={<Trash size={16} />}>删除</Button>
+              <Button size={isMobile ? 'small' : 'middle'} danger icon={<Trash size={16} />}>{isMobile ? '' : '删除'}</Button>
             </Popconfirm>
           </Space>
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: isMobile ? 14 : 24 }}>
           <Spin spinning={detailLoading}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
             {/* 基本信息 */}
@@ -967,16 +976,23 @@ export default function SchedulerPage() {
 
   /* ── Render ── */
 
+  const showListOnMobile = isMobile && !currentTask;
+  const showDetailOnMobile = isMobile && !!currentTask;
+
   return (
     <div style={{ display: 'flex', flex: 1, minHeight: 0, height: '100%' }}>
       {/* ── Sidebar ── */}
       <div style={{
-        width: 300, minWidth: 260, background: C.bgSecondary,
-        borderRight: `1px solid ${C.border}`,
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        width: isMobile ? (showListOnMobile ? '100%' : 0) : 300,
+        minWidth: isMobile ? 0 : 260,
+        background: C.bgSecondary,
+        borderRight: isMobile ? 'none' : `1px solid ${C.border}`,
+        display: isMobile && !showListOnMobile ? 'none' : 'flex',
+        flexDirection: 'column', overflow: 'hidden',
       }}>
         <div style={{
-          padding: '7px 16px', height: 47, boxSizing: 'border-box',
+          padding: isMobile ? '7px 16px 7px 52px' : '7px 16px',
+          height: 47, boxSizing: 'border-box',
           borderBottom: `1px solid ${C.border}`,
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         }}>
@@ -1045,8 +1061,35 @@ export default function SchedulerPage() {
       </div>
 
       {/* ── Main Panel ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {currentTask ? renderDetail() : (
+      <div style={{
+        flex: isMobile ? (showDetailOnMobile ? '1 1 100%' : '0 0 0') : 1,
+        display: isMobile && !showDetailOnMobile ? 'none' : 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}>
+        {currentTask ? (
+          <>
+            {isMobile && (
+              <div style={{
+                padding: '8px 12px',
+                borderBottom: `1px solid ${C.border}`,
+                background: C.bgSecondary,
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<ArrowLeft size={18} />}
+                  onClick={() => setCurrentTask(null)}
+                  style={{ color: C.textPrimary, padding: '4px 8px' }}
+                >
+                  返回
+                </Button>
+              </div>
+            )}
+            {renderDetail()}
+          </>
+        ) : (
           <div style={{
             display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center',
@@ -1069,7 +1112,8 @@ export default function SchedulerPage() {
         confirmLoading={saving}
         okText="保存"
         cancelText="取消"
-        width={560}
+        width={isMobile ? '100%' : 560}
+        style={isMobile ? { top: 0, paddingBottom: 0, maxWidth: '100%', margin: 0 } : undefined}
         forceRender
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>

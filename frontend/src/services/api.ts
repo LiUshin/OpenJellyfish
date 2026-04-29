@@ -579,6 +579,14 @@ export async function getProfileVersion(versionId: string): Promise<{ id: string
   return request('GET', `/user-profile/versions/${versionId}`);
 }
 
+export async function updateProfileVersionMeta(
+  versionId: string,
+  label?: string,
+  note?: string,
+): Promise<void> {
+  return request('PUT', `/user-profile/versions/${versionId}`, { label, note });
+}
+
 export async function deleteProfileVersion(versionId: string): Promise<void> {
   return request('DELETE', `/user-profile/versions/${versionId}`);
 }

@@ -850,7 +850,7 @@ export default function ChatPage() {
             <Select
               value={selectedModel || undefined}
               onChange={handleSelectModel}
-              style={{ width: 180 }}
+              className={styles.modelSelect}
               size="small"
               placeholder="选择模型"
               options={models.map((m) => ({ value: m.id, label: m.name }))}

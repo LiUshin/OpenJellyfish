@@ -3,11 +3,13 @@ import { Tabs, Tag } from 'antd';
 import UserProfileEditor from '../../components/modals/UserProfileEditor';
 import SystemPromptEditor from '../../components/modals/SystemPromptEditor';
 import SoulSettings from '../../components/modals/SoulSettings';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const ADV_SYSTEM_KEY = 'show_advanced_system';
 const ADV_SOUL_KEY = 'show_advanced_soul';
 
 export default function PromptPage() {
+  const isMobile = useIsMobile();
   const [tab, setTab] = useState<'profile' | 'system' | 'soul'>('profile');
   const [showSystem, setShowSystem] = useState(localStorage.getItem(ADV_SYSTEM_KEY) === '1');
   const [showSoul, setShowSoul] = useState(localStorage.getItem(ADV_SOUL_KEY) === '1');
@@ -61,7 +63,10 @@ export default function PromptPage() {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '12px 24px 0', flexShrink: 0 }}>
+      <div style={{
+        padding: isMobile ? '12px 12px 0 52px' : '12px 24px 0',
+        flexShrink: 0,
+      }}>
         <Tabs
           activeKey={tab}
           onChange={(k) => setTab(k as 'profile' | 'system' | 'soul')}

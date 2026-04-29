@@ -3,10 +3,12 @@ import { Input, Button, Table, Space, Typography, Tag, message, Popconfirm, Spin
 import { Package, Plus, Trash, ArrowsClockwise, MagnifyingGlass } from '@phosphor-icons/react';
 import * as api from '../../services/api';
 import type { PackageInfo } from '../../services/api';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const { Text, Paragraph } = Typography;
 
 export default function PackagesPage() {
+  const isMobile = useIsMobile();
   const [packages, setPackages] = useState<PackageInfo[]>([]);
   const [venvReady, setVenvReady] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -115,8 +117,12 @@ export default function PackagesPage() {
   ];
 
   return (
-    <div style={{ padding: '24px 32px', maxWidth: 960, margin: '0 auto', width: '100%' }}>
-      <Space align="center" size={10} style={{ marginBottom: 6 }}>
+    <div style={{
+      padding: isMobile ? '16px 12px 24px' : '24px 32px',
+      paddingLeft: isMobile ? 52 : undefined,
+      maxWidth: 960, margin: '0 auto', width: '100%',
+    }}>
+      <Space align="center" size={10} style={{ marginBottom: 6, flexWrap: 'wrap' }}>
         <Package size={22} weight="duotone" color="var(--jf-accent)" />
         <Text strong style={{ fontSize: 16, color: 'var(--jf-text)' }}>Python 环境</Text>
         {venvReady ? (
@@ -191,14 +197,26 @@ export default function PackagesPage() {
             </pre>
           )}
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12 }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: isMobile ? 'stretch' : 'center',
+            marginBottom: 8, gap: 12,
+            flexDirection: isMobile ? 'column' : 'row',
+          }}>
             <Input
               prefix={<MagnifyingGlass size={14} color="var(--jf-text-dim)" />}
               placeholder="搜索已安装的包…"
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
               allowClear
-              style={{ flex: 1, maxWidth: 300, background: 'var(--jf-bg-deep)', border: '1px solid var(--jf-border)', color: 'var(--jf-text)' }}
+              style={{
+                flex: 1,
+                maxWidth: isMobile ? '100%' : 300,
+                background: 'var(--jf-bg-deep)',
+                border: '1px solid var(--jf-border)',
+                color: 'var(--jf-text)',
+              }}
             />
             <Space size={8}>
               <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -221,7 +239,8 @@ export default function PackagesPage() {
               columns={columns}
               rowKey="name"
               size="small"
-              pagination={{ pageSize: 20, showSizeChanger: false }}
+              pagination={{ pageSize: 20, showSizeChanger: false, simple: isMobile }}
+              scroll={isMobile ? { x: 'max-content' } : undefined}
               style={{ background: 'var(--jf-bg-raised)', borderRadius: 'var(--jf-radius-md)' }}
             />
           </Spin>

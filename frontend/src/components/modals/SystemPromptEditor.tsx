@@ -13,6 +13,7 @@ import type { PromptVersion } from '../../types';
 import * as api from '../../services/api';
 import type { CapabilityPromptItem } from '../../services/api';
 import { fmtUserTime } from '../../utils/timezone';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -44,6 +45,7 @@ const CAP_LABELS: Record<string, string> = {
 };
 
 export default function SystemPromptEditor({ open, onClose, inline }: Props) {
+  const isMobile = useIsMobile();
   const [prompt, setPrompt] = useState('');
   const [originalPrompt, setOriginalPrompt] = useState('');
   const [loading, setLoading] = useState(false);
@@ -252,7 +254,12 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
   const content = (
     <>
       <Spin spinning={loading}>
-        <div style={{ display: 'flex', gap: 16, position: 'relative' }}>
+        <div style={{
+          display: 'flex',
+          gap: isMobile ? 12 : 16,
+          position: 'relative',
+          flexDirection: isMobile ? 'column' : 'row',
+        }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <TextArea
               value={prompt}
@@ -289,7 +296,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
           </div>
 
           {showHistory && (
-            <div style={{ width: 280, flexShrink: 0 }}>
+            <div style={{ width: isMobile ? '100%' : 280, flexShrink: 0 }}>
               <Collapse
                 defaultActiveKey={['history']}
                 ghost
@@ -605,7 +612,15 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
   );
 
   if (inline) {
-    return <div style={{ padding: '16px 20px', height: '100%', overflow: 'auto' }}>{content}</div>;
+    return (
+      <div style={{
+        padding: isMobile ? '12px 12px 24px' : '16px 20px',
+        height: '100%',
+        overflow: 'auto',
+      }}>
+        {content}
+      </div>
+    );
   }
 
   return (

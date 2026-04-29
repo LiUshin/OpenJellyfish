@@ -1380,9 +1380,28 @@ tauri-launcher/
 - **每 thread 一个 asyncio.Queue**：`_pending[thread_id]`，常驻后台 `_drainer_loop` 在线程**空闲**时合并 drain。
 - **active 引用计数 + 异步上下文管理器**：`mark_thread_active` / `mark_thread_inactive` 由 4 个流式入口（admin web `routes/chat.py`、consumer web + OpenAI 兼容 `routes/consumer.py`、admin 微信 `channels/wechat/admin_bridge.py`、consumer 微信 `channels/wechat/bridge.py`）调用。微信桥用 `async with scheduled_inject.thread_active(thread_id):` 包住整个流式 + 落库段，确保异常路径也会释放，避免 drainer 死锁。
 - **超时兜底**：单 item 在队列里超过 10 分钟就放弃 L2，仅留 L1。
-- **截断（避免上下文膨胀）**：state 里同名 pair 超过 `_MAX_LIVE_PAIRS=5`（通过 `additional_kwargs._sched_pair_id` + `_scheduled_task` 标识识别）时，通过 `RemoveMessage` 移除最老的若干对，并把它们摘要进**单个** `SystemMessage`（`additional_kwargs._sched_summary=True`）。已存在的旧摘要里的行会被合并保留进新摘要；`evict_count==0` 时不重建摘要。
+- **截断（避免上下文膨胀，2026-04-26 改造）**：state 里同名 pair 超过 `_MAX_LIVE_PAIRS=5`（通过 `additional_kwargs._sched_pair_id` + `_scheduled_task` 标识识别）时，通过 `RemoveMessage` 移除最老的若干对，并把它们摘要进**单个合成 `AIMessage`(tool_calls=[scheduled_task]) + `ToolMessage`** 对（`additional_kwargs._sched_summary=True` + `_sched_pair_id="summary_<rand>"`）。已存在的旧摘要里的行会被合并保留进新摘要；`evict_count==0` 时不重建摘要。**一定不要用 `SystemMessage` 做摘要**（见下文 Anthropic 坑）。
 - **Agent factory**：`_admin_agent_factory(user_id, conv_id)` / `_consumer_agent_factory(service_id, conv_id)` 是闭包，drain 时才调用 `create_user_agent` / `create_consumer_agent`，因此走的是已有 LRU 缓存。
 - **失败也注入**：scheduler 的 `_safe_persist_admin_failure` / `_safe_persist_service_failure` 已改为 async，同时写 L1 + 入 L2 队列（status=error）。
+
+### ⚠️ Anthropic "multiple non-consecutive system messages" 坑（2026-04-26 修复）
+- **症状**：`langchain_anthropic.chat_models._format_messages` 抛 `ValueError: Received multiple non-consecutive system messages.`；agent.astream 彻底崩掉，之后每次 astream 都复现（因为 bad state 已写进 checkpoint）。
+- **根因**：旧版 `scheduled_inject.py` 的截断路径把老的 scheduled_task pairs 替换成 `SystemMessage(content="[历史定时任务摘要] ...", additional_kwargs={"_sched_summary": True})`，这条 SystemMessage 沉在**对话历史中部**。Anthropic 的 formatter 明确只允许**单个 leading SystemMessage**（agent factory 注入的那条），再遇到任何 SystemMessage 都 raise。LangGraph checkpoint 会把这条 SystemMessage 永久存下来，所以**一次坏注入 = 线程永久不可用**，直到被 `RemoveMessage` 清掉。
+- **修复**（两层）：
+  1. **断未来**：`_build_summary_pair(summary_text, folded_count)` 改返回 `[AIMessage(tool_calls=[scheduled_task]), ToolMessage(content=summary_text)]`，tool_name 仍是 `scheduled_task`，`additional_kwargs` 标 `_sched_summary=True`；`_inject_batch` 用这对替代旧的 SystemMessage。这样摘要和正常的 scheduled_task pair 在类型上完全一致，Anthropic formatter 根本不会把它当 system 看。
+  2. **治存量**：新增 `async def repair_scheduled_state(agent, thread_id)`，用 `_find_legacy_system_summary_ids()` 找出所有 `isinstance(SystemMessage) and additional_kwargs["_sched_summary"]=True` 的消息，通过 `agent.aupdate_state(..., {"messages": [RemoveMessage(id) for id in ...]})` 删除。**幂等，状态干净时零成本**。
+  3. **调用时机**：5 个 agent.astream 入口必须在调用前先 repair 一次：
+     - `app/routes/chat.py::_stream_agent` — `await scheduled_inject.repair_scheduled_state(agent, thread_id)` → `mark_thread_active`
+     - `app/routes/consumer.py` — 3 处（`_stream_consumer` / `_stream_openai_compat` / 非流式），全部加 repair 调用
+     - `app/channels/wechat/admin_bridge.py` + `app/channels/wechat/bridge.py` — 改用 `async with scheduled_inject.thread_active(thread_id, agent=agent):`（`thread_active` 新增 `agent=` 可选参数，内部自动 repair）
+- **辅助 helper**：
+  - `_find_summary_ids(msgs)` — 返回**新形态** summary pair 的 id 列表（两条，AI + Tool）
+  - `_find_legacy_system_summary_ids(msgs)` — 返回**旧形态** SystemMessage summary 的 id 列表（给 repair 用）
+  - `_parse_summary_body(content)` — 从 ToolMessage content（新）或 SystemMessage content（老）中解析出 `["- A\n- B"]` → `["A", "B"]`，升级时保留老摘要内容
+  - `_scan_existing_pairs(msgs)` — 显式**跳过** `_sched_summary=True` 的 pair，不进 budget 计数（否则 5 个 pair 的上限会被摘要吃掉）
+- **为什么 L1（messages.jsonl 里的 tool block）没受影响**：L1 是前端渲染/持久化用的 `{"type":"tool","name":"scheduled_task",...}`，从来就不是 LangChain message object，和 Anthropic formatter 无关。L2 才是写进 LangGraph state 的真 message。
+- **禁止回退**：任何时候都不要为了"省一对消息"而把摘要改回 `SystemMessage`，或在对话历史中部插入任何 SystemMessage。真需要给 Agent 推系统级信息时，用 `AIMessage` 或 ToolMessage 包装；要改全局规则请改 `config["system_prompt"]` 或让 `middleware/todo.py::awrap_model_call` 在最外层 rewrite system_message（这才是 Anthropic 接受的做法）。
+- **Smoke test**：包含 7 个用例，覆盖 legacy 检测 / 新形态构造 / budget 排除 / 向前向后 summary body 解析 / Anthropic formatter 接受新形态 / Anthropic formatter 拒绝旧形态（reproduction）。未来修改 `scheduled_inject.py` 时务必回归。
 
 ### thread_id 约定
 - Admin：`f"{user_id}-{conv_id}"`
@@ -1578,7 +1597,77 @@ users/{admin}/inbox/
 - Key 是**长期凭据**，被泄露时去 https://huozi.app/workspace 吊销并用 `npx huozi-mcp --client cursor` 或 device-code 流程重新申请。
 - 自部署时把 `HUOZI_CLOUD_URL` 指向自己的实例即可，CLI 流程一致。
 
-### 一次性封面页
+## 前端移动端适配（2026-04-27）
+
+> 范围：`/chat`（admin）、`/s/{id}`（consumer service chat）、FilePanel、FilePreview、`/settings/*`（含 `/services` / `/scheduler` / `/wechat` —— 它们实际是 settings 的 sub-route 共用 `SettingsLayout`）。断点统一 **≤ 767px**。
+
+### 基础设施
+- `frontend/src/hooks/useMediaQuery.ts` —— 新增。SSR 安全；`useMediaQuery(query)` + 导出常量 `MOBILE_BREAKPOINT = '(max-width: 767px)'` + shortcut `useIsMobile()`。内部用 `mql.addEventListener('change', ...)`，Safari < 14 走 `addListener` 兼容分支。
+- `frontend/index.html` / `frontend/service-chat.html` / `app/routes/consumer_ui.py::_dev_fallback_html` —— 三处 viewport 都加了 `viewport-fit=cover`（顶到刘海/底部安全区）+ `<meta name="theme-color" content="#1c1c27">`（iOS Safari / Android Chrome 把地址栏涂成品牌色）。**新增 HTML 入口必须同步改**。
+- `frontend/src/styles/global.css` 末尾追加了一段 `@media (max-width: 767px)` baseline：`input/textarea/select/[contenteditable]` 强制 `font-size: 16px !important`（阻止 iOS Safari focus 时放大页面）、滚动条 `width/height: 2px`、`.ant-modal` 窄屏铺满、`.ant-drawer-content-wrapper { max-width: 100vw }`、`body { touch-action: manipulation }` 禁双击缩放。**baseline 只放「全站都需要的」规则**，页面微调写各自 `.module.css`。
+
+### AppLayout 抽屉化（`frontend/src/layouts/AppLayout.tsx`）
+- 桌面：保留原 `<Sider>` + 内嵌 `FilePreview` + 右侧 `FilePanel` 的三栏布局，零改动。
+- 移动：
+  - **导航 Sider → `Drawer` (placement=left, width=min(85vw, 320px), zIndex 1050)**，在 `<Content>` 左上 `position: absolute; top:6; left:6; zIndex:20` 放了个 Phosphor `List`（汉堡）按钮作触发器。
+  - **必须 `forceRender`** —— Chat 的 conversation 列表是 `createPortal(sidebarContent, document.getElementById('sider-slot'))`；抽屉关闭时如果不强制保留 DOM，`#sider-slot` 就没了，portal 报错。
+  - 抽取了 `renderSidebarContents(isCollapsed)` helper，桌面 `Sider` 和移动 `Drawer` **共用同一份 JSX**（包含 `<div id="sider-slot"/>`），保证 portal target 在两种模式下都活着。
+  - `useEffect` 监听 `location.pathname`，**切路由自动关掉 nav drawer**（移动侧栏点菜单后立刻收回）。
+  - **FilePreview → 全屏右抽屉 (placement=right, width=100vw, zIndex 1040, `destroyOnClose={false}`)**。`onClose={() => closeFile()}` 同步清 `editingFile`，否则抽屉关了 state 还认为文件在编辑，下次打开会闪旧文件。`closeFile` 本身带 dirty-check 的 modal confirm（见 `fileWorkspaceContext`），ESC / 遮罩点击都会触发确认，不会悄悄丢改动。
+  - 桌面的**可拖拽分隔条**（chat/preview 间的 `col-resize` div）在 `!isMobile` 判断下直接不渲染。
+  - **flex 计算**要补 `isMobile` 分支：`flex: isSettings ? 1 : (showChat ? (showPreview && !isMobile ? splitRatio : 1) : 0)` —— 移动端不再因 `showPreview=true` 就把 chat 列挤到 splitRatio 宽度。
+- `HeaderControls.tsx` 也加了 `isMobile` 判断，**分屏切换按钮 `SplitToggle` 及其分隔线在移动端整个不渲染**（移动已全屏 Drawer，分屏无意义）。文件浏览器按钮保留。
+
+### FilePanel 抽屉化（`frontend/src/components/FilePanel.tsx`）
+- 把原函数末尾的 `return (<div ref={panelRef}>...)` 抽成 `const panelBody = (...)`，然后末尾分支：`isMobile → <Drawer placement=right width=100vw title="文件" closable>{panelBody}</Drawer>`；桌面保留 `if (!fileBrowserOpen) return null; return panelBody;`。
+- `if (!isMobile && !fileBrowserOpen) return null` —— **移动端即便关闭也要 render**（交给 Drawer 处理动画），桌面端可以早退省资源。
+- 内部 `<div ref={panelRef}>` 在移动模式下 `width: '100%'`、`borderLeft: 'none'`；**左侧 `col-resize` 拖动把手在 `!isMobile` 下不渲染**（移动端没有拖动宽度的概念）。
+- `panelRef` 语义不变（drag-leave 判定、键盘快捷键焦点），因为 ref 挂在内部 div 上，Drawer 是包装层不影响 DOM 树中 ref 指向的元素。
+- Drawer `zIndex: 1045`，落在 nav drawer (1050) 和 FilePreview drawer (1040) 之间；如果两个文件相关 drawer 同时开着，FilePanel 会盖在 FilePreview 上——符合「选文件 > 看文件」的交互直觉。
+
+### Chat (/chat) 移动样式（`frontend/src/pages/Chat/chat.module.css` 末尾 `@media (max-width: 767px)`）
+- `.chatHeader { padding: 0 12px 0 52px; height: 48px }` —— **左侧留 52px 给浮动汉堡**（AppLayout 里的 List 按钮 36×36 + 留白）；少于 52px 会和 `.chatTitle` 重叠。
+- `.chatTitle { font-size: 13px }`、`.messagesContainer { padding: 14px 14px 24px }`、`.messageBody { max-width: 94% }`、`.messageBubble/.messageBubbleUser { gap: 10px; padding-bottom: 18px }`、`.messageAvatar { 28×28 }`。
+- `.inputArea { padding: 10px 12px 12px }`、`.inputToolbar { gap: 2px; padding: 0 2px 6px }`、`.capBtn { 32×32 }`（触控友好）、`.inputWrapper { padding: 4px 6px 4px 12px; gap: 6px }`。
+- `.emptyState` / `.suggestionChips` / `.streamElsewhereBanner` 各自缩字号和内边距，banner 允许 `flex-wrap` 并 `flex: 1 1 100%`（按钮换行到下一行）。
+- `.scrollBottomBtn` 向内收 `right/bottom: 12px`。
+- `.modelSelect { width: 180px }`（桌面），移动覆写 `width: 128px`。**注意 `Select` 原来是 `style={{ width: 180 }}`**，改成 `className={styles.modelSelect}` 才能被 media query 覆盖。以后再给 `Select` 加 inline width 就会破坏这个覆写。
+- **Chat 主 render 逻辑本身没动**，包括 Virtuoso + 浮动 StreamingMessage/PlanTracker/ApprovalCard 的结构、`scrollToAbsoluteBottom` 两步滚动、YOLO footer tag 等——零侵入。
+
+### service-chat 移动样式（`frontend/src/service-chat/serviceChat.module.css` 末尾 `@media (max-width: 767px)`）
+- `.header` padding `10px 14px`、logo 28×28、title 14px、**`.headerDesc { display: none }`**（描述过长会把标题挤出）。
+- `.authBox` 宽度 `max-width: calc(100vw - 32px)`，iPhone SE 也不会溢出。
+- `.messages { padding: 14px 12px 18px }`、`.userMsg { max-width: 90% }`。
+- `.welcomeScreen` 标题 22px、chip `max-width: 100%`（桌面是 360px）。
+- `.inputArea { padding: 8px 10px 10px }`、`.inputForm { gap: 6px }`、`.btnSend { padding: 0 14px; font-size: 13px; height: 40px }`、`.imgThumb img { 48×48 }`。
+- ServiceChatApp.tsx 本身**没动**，纯 CSS 适配。
+
+### 关键注意事项 / 未来改动须知
+- **不要删除 Drawer 的 `forceRender`**：Chat 的侧栏 createPortal 依赖它。
+- **给 `Select` / `Input` 设宽度时用 className 而非 inline style**，否则 media query 无法覆写。
+- **移动端新增汉堡 / 悬浮按钮要避让 `chatHeader`**：目前占用 `top: 6; left: 6; zIndex: 20`，`chatHeader` 已预留 `padding-left: 52px`。如果再加一个右侧悬浮按钮（比如「新对话」快捷），需要同步预留 `padding-right`。
+- **给 drawer 子内容新增「关闭」按钮时复用 `closeFile()`**，不要直接 `setEditingFile(null)` —— 会绕过 dirty-check。
+- **新增全 HTML 入口**（比如未来的 `admin-chat.html`）记得加 viewport-fit=cover + theme-color 两个 meta。
+- **SettingsLayout 侧栏自动随 AppLayout drawer 一起打开**：`SettingsLayout` 用 `createPortal` 把自己的 `Menu` 注入 AppLayout 的 `#sider-slot`，所以移动端汉堡菜单里**同时**展示「一级导航 + 当前 settings 子页选中项」。**不要**再额外给 Settings 搞独立侧栏，两个侧栏并存会让用户困惑。
+- **Settings 管理页通用套路**（2026-04-27 扩展范围）：
+  - `global.css` 追加了一段 Ant Design 组件兜底（`@media (max-width: 767px)` 内）：`.ant-tabs-nav-wrap { overflow-x: auto }`、`.ant-segmented { max-width: 100%; overflow-x: auto }`、`.ant-pagination { white-space: nowrap; overflow-x: auto }`、`.ant-tag { font-size: 12px }`、`.ant-drawer-body .ant-form-item .ant-form-item-label { padding-bottom: 4px }`、`.ant-modal-footer/.ant-drawer-footer { display: flex; gap: 8px }` + 子 `.ant-btn { flex: 1 }`、`.ant-table-content { overflow-x: auto }`、`.ant-select-dropdown { max-height: 50vh }`。以及两个工具类 `.jf-mobile-page-top`（`padding-left: 44px`）和 `.jf-mobile-page-header`（`padding-left: 52px; padding-right: 16px`）—— 供页面顶部自助避让汉堡按钮。**新加全站级 Ant Design fix 放这里，不要塞进单个页面 module.css。**
+  - 每个 settings 子页面标准套路：导 `useIsMobile()` → 最外层 padding 改成 `isMobile ? '16px 12px 24px' : '24px 32px'` + **强制 `paddingLeft: 52`**（给汉堡按钮让位）→ 顶部头部 `flexWrap: 'wrap'` + `gap: 8~12` → 卡片 padding 从 `24px` 缩到 `16px 14px` → 内部 `grid-template-columns` 收敛（比如 `80px 1fr` / `repeat(2, 1fr)`）→ 过长并列元素改 `flexDirection: 'column'` 堆叠。已适配：`WeChatPage`、`InboxPage`、`PackagesPage`、`BackupPage`、`PromptPage` 及其 3 个 inline 编辑器（`UserProfileEditor` / `SystemPromptEditor` / `SoulSettings`）、`GeneralPage` 及 `ApiKeysCard`、`SubagentManager`（`inline` + `Modal` 双模式）。
+  - **Table 横滚**：admin 管理页的 Table 统一加 `scroll={isMobile ? { x: 'max-content' } : undefined}` + `pagination={{ ..., simple: isMobile }}`。**简单列表页** PackagesPage 采用同样做法。
+  - **Modal → 全屏**：体积大的编辑/创建 Modal（AdminServices 的 Service 编辑、Scheduler 的任务编辑、SubagentManager 的编辑 Modal、AdminServices 的 API Key Modal、WeChat History Modal）走 `width={isMobile ? '100%' : N}` + `style={isMobile ? { top: 0, paddingBottom: 0, maxWidth: '100%', margin: 0 } : undefined}`，获得全屏效果。**不**用 Drawer 代替 —— Modal 已经能满足大表单的垂直滚动需要，避免重写。
+- **AdminServices / Scheduler 的 Stack 导航**（列表↔详情切换，替代双栏）：
+  - 桌面：保留左侧 30% 列表 + 右侧 70% 详情的双栏。
+  - 移动：用 `currentSvc` / `currentTask` state 决定渲染哪一栏：没选 → 列表铺满 100%；选中 → 详情铺满 100%，顶部多一个 Phosphor `ArrowLeft` 按钮调 `setCurrentSvc(null)` / `setCurrentTask(null)` 回到列表（原生 iOS/Android 的 stack 导航直觉）。
+  - 代码层面：**不额外加 `view` state**，直接复用已有的 `currentSvc` / `currentTask`；`display` 属性切换（`isMobile && !showListOnMobile ? 'none' : 'flex'`），**不**做条件渲染（保持 state 不丢、返回列表后滚动位置还在）。
+  - Detail header 里的按钮在移动端：图标按钮（`size="small"`）+ 空字符串作文本，复用同一 `<Button>` JSX 不写两套。返回按钮放在 header 最左侧，`order: isMobile ? ... : 0` 调 flex 顺序把标题挤下一行。
+  - **`AdminServices` 的 `createPortal` 不改**：里面没用到 sider-slot（它的导航走 SettingsLayout 的 Tabs portal，自动跟着 AppLayout drawer 走）。
+- **踩坑**：
+  - 给 Modal 传 `style={{ top: 0 }}` 一定要配 `paddingBottom: 0, maxWidth: '100%', margin: 0`，否则 Ant Design 默认的 `top: 100px` 和 `padding-bottom: 24px` 会让 Modal 还差一截。
+  - 不要在 settings inline 编辑器里用固定 `width: 280` 给侧栏，移动端必须 `isMobile ? '100%' : 280`，不然会横向溢出。
+  - 通用兜底中 `.ant-modal-footer > .ant-btn { flex: 1 }` 会让所有 Modal 的按钮变等宽——视觉上更适合触屏，但**如果某个 Modal 故意只有一个按钮，也会被拉成全宽**。接受这个 trade-off，不再单独 override。
+
+## 一次性封面页
+
+### 活字印刷术
 
 - `cover/movable-type.html` —— 活字印刷术封面页 demo，单文件、CDN 依赖（Google Fonts + ECharts SVG 渲染）、纯 CSS 纸纹与朱砂印章、ECharts 横向时间线（毕昇→古腾堡→王选 8 个节点，上下交错避让）。如果以后要做"项目封面/PPT 首页"风格的静态页，可以直接抄这套色板与版式：米色三段渐变 `#fbf3df → #f1e3c0 → #e6d2a3`、朱砂主色 `#9b2a2a`、衬线字体 `Noto Serif SC` + `Cormorant Garamond`、四角 1px 边框 + inset 6px 同色描边的"花边"装饰。
 
@@ -1751,3 +1840,57 @@ users/{admin}/inbox/
 - 当前修复：在 explicit flag / trailing slash 之外，`revealInBrowser` 会通过**父目录元数据**判断：`api.listFiles(parentDir(path))` 后找到同名 `FileItem`，只有 `item.is_dir === true` 才 `setBrowserPath(path)` + `setFileBrowserOpen(true)` + `setPendingAnchor(null)` 并 return；确认是文件或找不到时才 fall through 到 `openFile(path)`。
 - **不要用 `api.listFiles(path)` 直接探测目录**：某些后端/路径组合对「文件路径」可能返回空列表而不是抛错，前端会误判为“空文件夹”，导致 `<<FILE:/docs/a.md>>` 打不开文件、FilePanel 显示空目录。目录探测必须以父目录 listing 的 `is_dir` 为准。
 - 取舍：普通文件点击会多一次 `GET /api/files?path=<parent>` 元数据请求，再打开文件；但不会弹 toast，且父目录列表通常很小。若未来 FilePanel/markdown 渲染能直接携带 `data-jf-is-dir`，可跳过这个探测。
+
+## 移动端 safe-area + FilePanel↔Preview 互切（2026-04-27）
+
+> 痛点：(1) iOS Safari / Android Chrome 的地址栏和底部工具栏会**盖住页面底部**（输入框+功能按钮被截掉一截），用户截图反馈「对话框和功能选择栏被浏览器自身按钮遮住」。(2) 移动端点开文件后 FilePanel drawer（`zIndex: 1045`）仍盖在 FilePreview drawer（`zIndex: 1040`）上方，用户得**手动关掉**文件面板才能看到预览；关掉预览回来又得重开面板。
+
+### 修复 1：动态视口 + safe-area 内边距
+
+- `frontend/src/styles/global.css` 窄屏块新增：
+  ```css
+  html, body, #root {
+    height: 100vh;        /* 老浏览器 fallback */
+    height: 100dvh;       /* iOS Safari / Android Chrome 响应 URL bar 收缩 */
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  ```
+  `100dvh` 不是 `100vh` —— 后者是「初始视口高度」，地址栏收起后页面反而被下方留白；`dvh` 会随浏览器 UI 动态调整，输入栏永远挂在可见区域底部。
+- `pages/Chat/chat.module.css` 窄屏块：
+  - `.chatHeader` `padding` 改为 `env(safe-area-inset-top, 0px) 12px 0 calc(52px + env(safe-area-inset-left, 0px))`，`height` 改为 `calc(48px + env(safe-area-inset-top, 0px))` —— 刘海屏顶部不遮住 chatTitle，且汉堡菜单也不会被压住（菜单按钮自身的 top 已 offset）。
+  - `.inputArea` `padding` 四向全部用 `env(safe-area-inset-*, 0px)` —— iPhone 小黑条（home indicator）区域不再占用输入框点击面积。
+- `service-chat/serviceChat.module.css` 窄屏块：`.header` 和 `.inputArea` 同样用 `env(safe-area-inset-*)`。
+- `layouts/AppLayout.tsx` 汉堡按钮：`top`/`left` 改为 `calc(6px + env(safe-area-inset-*, 0px))`。
+- **前提：`index.html` / `service-chat.html` 必须有 `viewport-fit=cover`**（否则 env 都返回 0）。已在历史 commit 里加过，别回滚。
+
+### 修复 2：FilePanel ↔ FilePreview 互切（仅移动端）
+
+- 现状：两个组件都是独立的全屏 Drawer，z-index 叠在一起，用户体验割裂。
+- 方案：在 `AppLayout.tsx` 加一个 effect 监听 `editingFile` 变化，**只在 isMobile=true 时启用**：
+  - `prevEditingRef: null → path`（打开文件）+ `fileBrowserOpen=true` → `setFileBrowserOpen(false)` 并用 `reopenPanelRef.current=true` 打标记；
+  - `prevEditingRef: path → null`（关闭预览）+ `reopenPanelRef.current=true` → 自动 `setFileBrowserOpen(true)` 并清标记。
+- 桌面端：effect 在 `!isMobile` 分支 early return，行为完全不变（两个面板同屏 split 显示）。
+- 关键点：
+  1. `prevEditingRef.current = editingFile` 在 effect 开头立刻更新，避免同一次转换被重复触发；
+  2. deps 里必须含 `fileBrowserOpen` —— 否则用户在 `<<FILE:/folder/>>` 链接（`revealInBrowser` 先 `setFileBrowserOpen(true)` 再决定是否 `openFile`）场景下会漏触发；
+  3. `reopenPanelRef` 用 `useRef` 不用 state —— 不需要触发 re-render，只是个跨调用的持久标记；
+  4. 从 desktop → mobile 切屏时，effect 会把 reopenPanelRef 重置为 false，避免误触发。
+- 不改 FilePanel/FilePreview 内部 —— 逻辑集中在 AppLayout 这个唯一同时持有两个 drawer 的地方，避免两个组件互相引用。
+
+### 不要做的事
+
+- **不要把 FilePreview drawer 的 zIndex 改成比 FilePanel 高** 就想靠盖住解决 —— 用户还是看到两层 drawer 叠加的动效，下层 drawer 的遮罩会让上层输入失焦，体验更差。
+- **不要用 `100svh`**（small viewport height）：它是地址栏**展开**状态的高度，输入框会悬空在屏幕中间，桌子上留白。要的是动态响应，用 `dvh`。
+- **不要动 `position: fixed` 布局**：桌面端 FilePanel 本来是 inline 侧栏（`position: relative`），只在 isMobile 时才是 Drawer。强制 fixed 会破坏桌面 split layout。
+
+## 黄金 ETF 定时分析任务 Demo 设想（2026-04-28）
+
+- 用户想在另一个 demo page 做一个“定时分析任务/黄金 ETF 智能交易系统”演示，样式需贴近现有定时任务页面，而不是微信双手机聊天组件。
+- 演示重点：6 个定时任务时间轴（09:00 数据采集、14:00 决策前采集、14:10 新闻扫描、14:25 预测推送、15:30 验证、周日 22:00 周度演化）、4 因子决策打分、风控仓位、预测-验证-演化闭环、两条微信推送样例。
+- 视觉方向：深色海洋主题、sea token 风格、玻璃卡片、任务时间轴、因子权重条、手机推送卡片、状态徽标；可用单个 HTML 原型先验证信息层级。
+
+## 个性规则历史与 service Markdown 表格（2026-04-29）
+
+- 个性规则历史复用 `PromptVersion` 结构，后端入口在 `app/services/prompt.py` 的 profile versions 区域，路由在 `app/routes/settings_routes.py` 的 `/api/user-profile/versions/*`。若继续扩展历史记录元数据，应保持和 system prompt versions 的接口形状一致。
+- service-chat 直接复用 admin 的 `StreamingMessage` / `chat.module.css`，因此 service 根节点必须提供 `--jf-border`、`--jf-bg-raised`、`--jf-text` 等 `chat.module.css` 依赖的 token；否则 Markdown 表格边框等样式会因 CSS 变量缺失而失效。

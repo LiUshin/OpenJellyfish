@@ -45,6 +45,8 @@ import type {
 } from '../../services/api';
 import { fmtUserTime } from '../../utils/timezone';
 import LogoLoading from '../../components/LogoLoading';
+import { useIsMobile } from '../../hooks/useMediaQuery';
+import { ArrowLeft } from '@phosphor-icons/react';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -305,6 +307,7 @@ function PickerField({
 /* ───────── Main Page ───────── */
 
 export default function AdminServicesPage() {
+  const isMobile = useIsMobile();
   const [services, setServices] = useState<ServiceConfig[]>([]);
   const [currentSvc, setCurrentSvc] = useState<ServiceConfig | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -960,6 +963,7 @@ export default function AdminServicesPage() {
             loading={wcLoading}
             pagination={false}
             locale={{ emptyText: '暂无活跃会话' }}
+            scroll={isMobile ? { x: 'max-content' } : undefined}
             onRow={(_, index) => ({
               style: {
                 background: (index ?? 0) % 2 === 0 ? C.bg1 : C.bg2,
@@ -990,17 +994,22 @@ export default function AdminServicesPage() {
     body: { padding: '16px 24px 24px' },
   };
 
+  const showListOnMobile = isMobile && !currentSvc;
+  const showDetailOnMobile = isMobile && !!currentSvc;
+
   return (
     <div style={{ display: 'flex', flex: 1, minHeight: 0, height: '100%', width: '100%', background: C.bg0 }}>
       {/* ── Service list 30% ── */}
       <div style={{
-        flex: '0 0 30%',
-        maxWidth: '40%',
-        minWidth: 260,
+        flex: isMobile ? (showListOnMobile ? '1 1 100%' : '0 0 0') : '0 0 30%',
+        maxWidth: isMobile ? '100%' : '40%',
+        minWidth: isMobile ? 0 : 260,
         background: C.bg1,
-        borderRight: `1px solid ${C.border}`,
-        display: 'flex', flexDirection: 'column',
+        borderRight: isMobile ? 'none' : `1px solid ${C.border}`,
+        display: isMobile && !showListOnMobile ? 'none' : 'flex',
+        flexDirection: 'column',
         overflow: 'hidden',
+        paddingLeft: showListOnMobile ? 40 : undefined,
       }}
       >
         <div style={{
@@ -1112,9 +1121,10 @@ export default function AdminServicesPage() {
 
       {/* ── Detail panel 70% ── */}
       <div style={{
-        flex: '1 1 70%',
+        flex: isMobile ? (showDetailOnMobile ? '1 1 100%' : '0 0 0') : '1 1 70%',
         minWidth: 0, minHeight: 0,
-        display: 'flex', flexDirection: 'column',
+        display: isMobile && !showDetailOnMobile ? 'none' : 'flex',
+        flexDirection: 'column',
         overflow: 'hidden',
         background: C.bg0,
       }}
@@ -1133,14 +1143,29 @@ export default function AdminServicesPage() {
           <>
             {/* Detail Header */}
             <div style={{
-              padding: '20px 32px',
+              padding: isMobile ? '14px 16px' : '20px 32px',
               borderBottom: `1px solid ${C.border}`,
               background: C.bg1,
-              display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+              display: 'flex',
+              alignItems: isMobile ? 'center' : 'flex-start',
+              justifyContent: 'space-between',
+              gap: isMobile ? 8 : 0,
+              flexWrap: isMobile ? 'wrap' : 'nowrap',
             }}>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-                  <Title level={4} style={{ color: C.text, margin: 0, fontSize: 20 }}>
+              {isMobile && (
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<ArrowLeft size={18} />}
+                  onClick={() => setCurrentSvc(null)}
+                  style={{ color: C.text, padding: '4px 8px', marginRight: 4 }}
+                >
+                  返回
+                </Button>
+              )}
+              <div style={{ flex: isMobile ? '1 1 100%' : undefined, minWidth: 0, order: isMobile ? 3 : 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6, flexWrap: 'wrap' }}>
+                  <Title level={4} style={{ color: C.text, margin: 0, fontSize: isMobile ? 16 : 20 }}>
                     {currentSvc.name}
                   </Title>
                   <Tag
@@ -1157,16 +1182,16 @@ export default function AdminServicesPage() {
                   ID: <code style={{ fontFamily: "'Cascadia Code',monospace", color: C.accent }}>{currentSvc.id}</code>
                 </div>
               </div>
-              <Space>
-                <Button icon={<PencilSimple size={16} />} onClick={openEditModal}>编辑</Button>
+              <Space size={isMobile ? 4 : 8} style={{ order: isMobile ? 2 : 0 }}>
+                <Button size={isMobile ? 'small' : 'middle'} icon={<PencilSimple size={16} />} onClick={openEditModal}>{isMobile ? '' : '编辑'}</Button>
                 <Popconfirm title={`确定删除「${currentSvc.name}」？不可恢复。`} onConfirm={handleDeleteService}>
-                  <Button danger icon={<Trash size={16} />}>删除</Button>
+                  <Button size={isMobile ? 'small' : 'middle'} danger icon={<Trash size={16} />}>{isMobile ? '' : '删除'}</Button>
                 </Popconfirm>
               </Space>
             </div>
 
             {/* Scrollable Modules */}
-            <div style={{ flex: '1 1 0%', minHeight: 0, overflowY: 'auto', padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 24 }}>
+            <div style={{ flex: '1 1 0%', minHeight: 0, overflowY: 'auto', padding: isMobile ? '14px 14px 20px' : '24px 32px', display: 'flex', flexDirection: 'column', gap: isMobile ? 16 : 24 }}>
 
               {/* Stats Row */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
@@ -1262,6 +1287,7 @@ export default function AdminServicesPage() {
                   loading={keysLoading}
                   pagination={false}
                   locale={{ emptyText: '暂无 API Key' }}
+                  scroll={isMobile ? { x: 'max-content' } : undefined}
                   onRow={(_, index) => ({
                     style: { background: (index ?? 0) % 2 === 0 ? C.bg1 : C.bg2 },
                   })}
@@ -1335,8 +1361,9 @@ export default function AdminServicesPage() {
                     rowKey="id"
                     size="small"
                     loading={svcConvsLoading}
-                    pagination={{ pageSize: 20, hideOnSinglePage: true, size: 'small' }}
+                    pagination={{ pageSize: 20, hideOnSinglePage: true, size: isMobile ? 'small' : 'small', simple: isMobile }}
                     locale={{ emptyText: '暂无 consumer 会话' }}
+                    scroll={isMobile ? { x: 'max-content' } : undefined}
                     onRow={(_, index) => ({
                       style: { background: (index ?? 0) % 2 === 0 ? C.bg1 : C.bg2 },
                     })}
@@ -1366,8 +1393,9 @@ export default function AdminServicesPage() {
                       rowKey={(r, idx) => `${r.ts}-${idx ?? 0}`}
                       size="small"
                       loading={svcUsageLoading}
-                      pagination={{ pageSize: 50, hideOnSinglePage: true, size: 'small' }}
+                      pagination={{ pageSize: 50, hideOnSinglePage: true, size: 'small', simple: isMobile }}
                       locale={{ emptyText: '暂无调用记录' }}
+                      scroll={isMobile ? { x: 'max-content' } : undefined}
                       onRow={(_, index) => ({
                         style: { background: (index ?? 0) % 2 === 0 ? C.bg1 : C.bg2 },
                       })}
@@ -1414,7 +1442,8 @@ export default function AdminServicesPage() {
         confirmLoading={saving}
         okText="保存"
         cancelText="取消"
-        width={560}
+        width={isMobile ? '100%' : 560}
+        style={isMobile ? { top: 0, paddingBottom: 0, maxWidth: '100%', margin: 0 } : undefined}
         destroyOnClose
         styles={modalStyles}
       >
@@ -1585,7 +1614,8 @@ export default function AdminServicesPage() {
           if (generatedKey && currentSvc) loadKeys(currentSvc.id);
         }}
         footer={null}
-        width={440}
+        width={isMobile ? '100%' : 440}
+        style={isMobile ? { top: 0, paddingBottom: 0, maxWidth: '100%', margin: 0 } : undefined}
         destroyOnClose
         styles={modalStyles}
       >
@@ -1649,7 +1679,8 @@ export default function AdminServicesPage() {
         open={chatModalOpen}
         onCancel={() => setChatModalOpen(false)}
         footer={null}
-        width={600}
+        width={isMobile ? '100%' : 600}
+        style={isMobile ? { top: 0, paddingBottom: 0, maxWidth: '100%', margin: 0 } : undefined}
         destroyOnClose
         styles={modalStyles}
       >
