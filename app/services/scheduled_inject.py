@@ -20,9 +20,16 @@ Key design:
   only the agent's internal LangGraph memory misses it. A WARN is logged.
 - **Truncation @ 5 pairs.** Cap the count of synthetic injection pairs in
   state to the 5 most recent. Older pairs are removed via `RemoveMessage`
-  and replaced with a single `SystemMessage` summarizing the evicted runs
-  ("[历史定时任务摘要] N 条已折叠..."). Prevents context inflation while
-  preserving background awareness for the agent.
+  and replaced with a **synthetic AIMessage + ToolMessage pair** (tool
+  name ``scheduled_task``, with an ``additional_kwargs._sched_summary=True``
+  marker) whose ToolMessage content summarizes the evicted runs
+  ("[历史定时任务摘要] N 条已折叠..."). We deliberately avoid
+  ``SystemMessage`` here because ``langchain_anthropic._format_messages``
+  rejects non-consecutive system messages — inserting one mid-conversation
+  would blow up every subsequent turn with
+  ``ValueError: Received multiple non-consecutive system messages``.
+  A tool-call pair mirrors the shape of the injected pairs and is
+  Anthropic-safe.
 - **Active-stream tracking via refcount.** Streaming entry points
   (`app/routes/chat.py`, `app/routes/consumer.py`,
   `app/channels/wechat/admin_bridge.py`, `app/channels/wechat/bridge.py`)
@@ -35,13 +42,15 @@ Key design:
   `create_consumer_agent` are LRU-cached so this is cheap.
 
 Marker convention on injected messages (for later detection / truncation):
-    AIMessage / ToolMessage:
+    AIMessage / ToolMessage (regular injected pair):
         id = "sched_inj_ai_<run_marker>"  /  "sched_inj_tool_<run_marker>"
         additional_kwargs = {"_sched_pair_id": <run_marker>,
                              "_scheduled_task": True}
-    Summary SystemMessage:
-        id = "sched_summary_<random>"
-        additional_kwargs = {"_sched_summary": True}
+    Summary AIMessage / ToolMessage pair (replaces old SystemMessage form):
+        id = "sched_summary_ai_<rand>"  /  "sched_summary_tool_<rand>"
+        additional_kwargs = {"_sched_pair_id": "summary_<rand>",
+                             "_scheduled_task": True,
+                             "_sched_summary": True}
 """
 
 import asyncio
@@ -103,18 +112,74 @@ async def mark_thread_inactive(thread_id: str) -> None:
 
 
 @contextlib.asynccontextmanager
-async def thread_active(thread_id: str):
+async def thread_active(thread_id: str, *, agent: Optional[Any] = None):
     """Async context manager for streaming entry points.
 
     Brackets an `agent.astream` loop so any L2 injections queued during the
     stream wait for it to finish — guaranteed exception-safe via try/finally.
     Equivalent to manually pairing mark_thread_active / mark_thread_inactive.
+
+    If ``agent`` is supplied, also runs :func:`repair_scheduled_state` on entry
+    to remove any legacy stranded summary SystemMessages from pre-fix deploys
+    that would otherwise make the next ``astream`` fail with
+    ``multiple non-consecutive system messages``.
     """
+    if agent is not None:
+        try:
+            await repair_scheduled_state(agent, thread_id)
+        except Exception:
+            log.exception("repair_scheduled_state failed on thread=%s — "
+                          "continuing anyway; agent.astream may still error",
+                          thread_id)
     await mark_thread_active(thread_id)
     try:
         yield
     finally:
         await mark_thread_inactive(thread_id)
+
+
+async def repair_scheduled_state(agent: Any, thread_id: str) -> None:
+    """Scan state.messages for stranded ``_sched_summary=True`` SystemMessages
+    (from pre-fix deploys where summary was a SystemMessage) and remove them.
+
+    Anthropic's ``_format_messages`` raises ``ValueError: Received multiple
+    non-consecutive system messages`` when a SystemMessage sits mid-conversation,
+    so we must proactively clean this up before the next ``astream`` call.
+    Safe to call on every turn — no-op when state is clean.
+
+    This is exposed as a public API (not just via ``thread_active``) because
+    ``app/routes/chat.py`` and ``app/routes/consumer.py`` currently use manual
+    mark_thread_active/inactive calls and need to invoke repair separately.
+    """
+    if not thread_id or agent is None:
+        return
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        state = await agent.aget_state(config)
+    except Exception:
+        # Non-fatal: thread checkpoint may not exist yet on first turn.
+        return
+    messages = list((getattr(state, "values", None) or {}).get("messages") or [])
+    if not messages:
+        return
+
+    stranded_ids = _find_legacy_system_summary_ids(messages)
+    if not stranded_ids:
+        return
+
+    from langchain_core.messages import RemoveMessage
+
+    log.warning("repair_scheduled_state: removing %d stranded SystemMessage "
+                "summary(ies) on thread=%s (from pre-fix deploys)",
+                len(stranded_ids), thread_id)
+    try:
+        await agent.aupdate_state(
+            config,
+            {"messages": [RemoveMessage(id=mid) for mid in stranded_ids]},
+        )
+    except Exception:
+        log.exception("repair_scheduled_state: aupdate_state failed on "
+                      "thread=%s", thread_id)
 
 
 async def _wake_drainer(thread_id: str) -> None:
@@ -283,42 +348,50 @@ async def _inject_batch(thread_id: str, items: List[dict]) -> None:
         new_pairs.append({"ai": ai, "tool": tm, "meta": meta})
 
     existing_pairs: List[Dict[str, Any]] = _scan_existing_pairs(existing_messages)
-    existing_summary_id = _find_summary_id(existing_messages)
+    existing_summary_ids = _find_summary_ids(existing_messages)
 
     total_after = len(existing_pairs) + len(new_pairs)
     evict_count = max(0, total_after - _MAX_LIVE_PAIRS)
 
     update_messages: List[Any] = []
 
+    # Always clean up any legacy stranded SystemMessage summaries from old
+    # deploys — they cause Anthropic _format_messages to blow up because they
+    # sit mid-conversation. Even if we're not evicting anything new, remove them.
+    legacy_summary_ids = _find_legacy_system_summary_ids(existing_messages)
+    if legacy_summary_ids:
+        from langchain_core.messages import RemoveMessage
+        log.warning("Removing %d legacy SystemMessage summary(ies) on thread=%s "
+                    "(from pre-fix deploys)", len(legacy_summary_ids), thread_id)
+        for mid in legacy_summary_ids:
+            update_messages.append(RemoveMessage(id=mid))
+
     if evict_count > 0:
-        from langchain_core.messages import RemoveMessage, SystemMessage
+        from langchain_core.messages import RemoveMessage
 
         evicted = existing_pairs[:evict_count]
 
         # Combine old summary's lines (if any) with newly-evicted lines into a
-        # single fresh summary message, preserving all previously-evicted runs'
-        # info while keeping at most one summary message in state.
+        # single fresh summary pair, preserving all previously-evicted runs'
+        # info while keeping at most one summary pair in state.
         prior_summary_lines = _extract_prior_summary_lines(
-            existing_messages, existing_summary_id)
+            existing_messages, existing_summary_ids)
         evicted_lines = [_summarize_pair(p) for p in evicted]
         all_lines = prior_summary_lines + evicted_lines
 
-        if existing_summary_id is not None:
-            update_messages.append(RemoveMessage(id=existing_summary_id))
+        # Remove old summary pair (if any) so we can rebuild it.
+        for mid in existing_summary_ids:
+            update_messages.append(RemoveMessage(id=mid))
         for pair in evicted:
             for mid in pair["msg_ids"]:
                 update_messages.append(RemoveMessage(id=mid))
 
         if all_lines:
             summary_text = (
-                "[历史定时任务摘要] 以下是更早已执行的定时任务（已折叠以节约上下文）：\n"
+                _SUMMARY_PREFIX
                 + "\n".join(f"- {ln}" for ln in all_lines)
             )
-            update_messages.append(SystemMessage(
-                id=f"sched_summary_{uuid.uuid4().hex[:8]}",
-                content=summary_text,
-                additional_kwargs={"_sched_summary": True},
-            ))
+            update_messages.extend(_build_summary_pair(summary_text, len(all_lines)))
 
         log.info("Truncating scheduled_task pairs on thread=%s: "
                  "existing_pairs=%d, evicting=%d, new=%d, summary_lines=%d",
@@ -380,13 +453,20 @@ def _msg_kwargs(msg: Any) -> dict:
 
 
 def _scan_existing_pairs(messages: List[Any]) -> List[Dict[str, Any]]:
-    """Find synthetic scheduled_task pairs in chronological order."""
+    """Find synthetic scheduled_task pairs in chronological order.
+
+    Summary pairs (with ``_sched_summary=True``) are intentionally excluded —
+    they're meta, not real scheduled-task runs, and must not count toward
+    the live-pair budget.
+    """
     by_pair: Dict[str, Dict[str, Any]] = {}
     order: List[str] = []
     for m in messages:
         kw = _msg_kwargs(m)
         pid = kw.get("_sched_pair_id")
         if not pid or not kw.get("_scheduled_task"):
+            continue
+        if kw.get("_sched_summary"):
             continue
         if pid not in by_pair:
             by_pair[pid] = {"pair_id": pid, "ai_id": None, "tool_id": None,
@@ -422,11 +502,37 @@ def _scan_existing_pairs(messages: List[Any]) -> List[Dict[str, Any]]:
     return pairs
 
 
-def _find_summary_id(messages: List[Any]) -> Optional[str]:
+def _find_summary_ids(messages: List[Any]) -> List[str]:
+    """Return IDs of all current-form summary pair messages (AI+Tool, tagged
+    ``_sched_summary=True``). Used for removal when rebuilding the summary."""
+    ids: List[str] = []
     for m in messages:
+        kw = _msg_kwargs(m)
+        if not kw.get("_sched_summary"):
+            continue
+        # Skip legacy SystemMessage summaries — those are handled separately
+        # via _find_legacy_system_summary_ids (unconditional cleanup).
+        if m.__class__.__name__ == "SystemMessage":
+            continue
+        mid = getattr(m, "id", None)
+        if mid:
+            ids.append(mid)
+    return ids
+
+
+def _find_legacy_system_summary_ids(messages: List[Any]) -> List[str]:
+    """Find legacy ``SystemMessage(_sched_summary=True)`` stranded in state
+    from pre-fix deploys. They must be removed unconditionally — Anthropic's
+    ``_format_messages`` rejects non-consecutive system messages."""
+    ids: List[str] = []
+    for m in messages:
+        if m.__class__.__name__ != "SystemMessage":
+            continue
         if _msg_kwargs(m).get("_sched_summary"):
-            return getattr(m, "id", None)
-    return None
+            mid = getattr(m, "id", None)
+            if mid:
+                ids.append(mid)
+    return ids
 
 
 _SUMMARY_PREFIX = (
@@ -435,26 +541,96 @@ _SUMMARY_PREFIX = (
 
 
 def _extract_prior_summary_lines(messages: List[Any],
-                                 summary_id: Optional[str]) -> List[str]:
-    """Extract bullet lines from an existing summary message so we can rebuild it."""
-    if not summary_id:
-        return []
+                                 summary_ids: List[str]) -> List[str]:
+    """Extract bullet lines from existing summary messages so we can rebuild.
+
+    Prefers the ToolMessage body (current form); also accepts legacy
+    ``SystemMessage`` content for backwards-compatibility with pre-fix state.
+    """
+    if not summary_ids:
+        # Still check for any legacy SystemMessage summary — its content must
+        # be preserved even when we remove the message itself.
+        legacy_lines: List[str] = []
+        for m in messages:
+            if m.__class__.__name__ != "SystemMessage":
+                continue
+            if not _msg_kwargs(m).get("_sched_summary"):
+                continue
+            legacy_lines.extend(_parse_summary_body(getattr(m, "content", "")))
+        return legacy_lines
+
+    seen_ids = set(summary_ids)
     for m in messages:
-        if getattr(m, "id", None) != summary_id:
+        if getattr(m, "id", None) not in seen_ids:
             continue
-        content = getattr(m, "content", "") or ""
-        if not isinstance(content, str):
-            return []
-        body = content[len(_SUMMARY_PREFIX):] if content.startswith(_SUMMARY_PREFIX) else content
-        lines = []
-        for ln in body.splitlines():
-            ln = ln.strip()
-            if ln.startswith("- "):
-                lines.append(ln[2:])
-            elif ln:
-                lines.append(ln)
-        return lines
+        # ToolMessage carries the body; AIMessage in the pair has empty content.
+        if m.__class__.__name__ != "ToolMessage":
+            continue
+        return _parse_summary_body(getattr(m, "content", ""))
+    # Fall-through: also pick up legacy SystemMessage content if present.
+    for m in messages:
+        if m.__class__.__name__ != "SystemMessage":
+            continue
+        if not _msg_kwargs(m).get("_sched_summary"):
+            continue
+        return _parse_summary_body(getattr(m, "content", ""))
     return []
+
+
+def _parse_summary_body(content: Any) -> List[str]:
+    if not isinstance(content, str) or not content:
+        return []
+    body = content[len(_SUMMARY_PREFIX):] if content.startswith(_SUMMARY_PREFIX) else content
+    lines: List[str] = []
+    for ln in body.splitlines():
+        ln = ln.strip()
+        if ln.startswith("- "):
+            lines.append(ln[2:])
+        elif ln:
+            lines.append(ln)
+    return lines
+
+
+def _build_summary_pair(summary_text: str, folded_count: int) -> List[Any]:
+    """Build a synthetic AIMessage + ToolMessage pair carrying the summary body.
+
+    Uses the same ``scheduled_task`` tool_call shape as injected runs so it
+    formats cleanly through ``langchain_anthropic._format_messages`` — no
+    stray SystemMessage in mid-conversation.
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    rand = uuid.uuid4().hex[:8]
+    pair_id = f"summary_{rand}"
+    call_id = f"sched_summary_call_{rand}"
+    ai = AIMessage(
+        id=f"sched_summary_ai_{rand}",
+        content="",
+        tool_calls=[{
+            "id": call_id,
+            "name": "scheduled_task",
+            "args": {
+                "task_meta": {"kind": "summary", "folded_count": folded_count},
+                "status": "summary",
+            },
+        }],
+        additional_kwargs={
+            "_sched_pair_id": pair_id,
+            "_scheduled_task": True,
+            "_sched_summary": True,
+        },
+    )
+    tm = ToolMessage(
+        id=f"sched_summary_tool_{rand}",
+        tool_call_id=call_id,
+        content=summary_text,
+        additional_kwargs={
+            "_sched_pair_id": pair_id,
+            "_scheduled_task": True,
+            "_sched_summary": True,
+        },
+    )
+    return [ai, tm]
 
 
 def _summarize_pair(pair: Dict[str, Any]) -> str:
