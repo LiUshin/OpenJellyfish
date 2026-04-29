@@ -166,7 +166,11 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
     _active_streams[thread_id] = {"user_id": user_id, "conv_id": conv_id}
     # Notify scheduled-task injection module that this thread is active so any
     # pending L2 injections wait until our stream finishes (drained in `finally`).
+    # Also run one-shot repair to sweep out any legacy stranded summary
+    # SystemMessages from pre-fix deploys (would otherwise break Anthropic
+    # _format_messages on every turn).
     from app.services import scheduled_inject
+    await scheduled_inject.repair_scheduled_state(agent, thread_id)
     await scheduled_inject.mark_thread_active(thread_id)
     _saved = False
     _cancelled = False

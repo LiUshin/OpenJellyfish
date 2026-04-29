@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons';
 import { fmtUserTime } from '../../utils/timezone';
 import LogoLoading from '../../components/LogoLoading';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 import * as api from '../../services/api';
 
 interface SessionInfo {
@@ -165,6 +166,7 @@ function formatTime(ts?: string): string {
 }
 
 export default function WeChatPage() {
+  const isMobile = useIsMobile();
   const [pageState, setPageState] = useState<PageState>('loading');
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [qr, setQr] = useState<QrResult | null>(null);
@@ -283,18 +285,34 @@ export default function WeChatPage() {
     }
   };
 
+  const pageStyle: React.CSSProperties = isMobile
+    ? { ...S.page, padding: '24px 12px 24px', paddingLeft: 52 }
+    : S.page;
+  const cardStyle: React.CSSProperties = isMobile
+    ? { ...S.card, padding: '28px 20px', maxWidth: '100%' }
+    : S.card;
+  const qrImgStyle: React.CSSProperties = isMobile
+    ? { ...S.qrImg, width: 'min(70vw, 256px)', height: 'min(70vw, 256px)' }
+    : S.qrImg;
+  const messagesCardStyle: React.CSSProperties = isMobile
+    ? { ...S.messagesCard, maxWidth: '100%' }
+    : S.messagesCard;
+  const messagesListStyle: React.CSSProperties = isMobile
+    ? { ...S.messagesList, maxHeight: 'calc(60vh - 80px)' }
+    : S.messagesList;
+
   if (pageState === 'loading') {
     return (
-      <div style={{ ...S.page, justifyContent: 'center' }}>
-        <LogoLoading size={240} />
+      <div style={{ ...pageStyle, justifyContent: 'center' }}>
+        <LogoLoading size={isMobile ? 160 : 240} />
       </div>
     );
   }
 
   return (
-    <div style={S.page}>
+    <div style={pageStyle}>
       {/* Status Card */}
-      <div style={S.card}>
+      <div style={cardStyle}>
         {pageState === 'disconnected' && (
           <>
             <CloseCircleOutlined style={S.icon('#e74c3c')} />
@@ -323,7 +341,7 @@ export default function WeChatPage() {
               <img
                 src={`data:image/png;base64,${qr.qr_image_b64}`}
                 alt="微信登录二维码"
-                style={S.qrImg}
+                style={qrImgStyle}
               />
             </div>
             <div style={S.statusLabel}>
@@ -383,7 +401,7 @@ export default function WeChatPage() {
 
       {/* Messages */}
       {pageState === 'connected' && (
-        <div style={S.messagesCard}>
+        <div style={messagesCardStyle}>
           <div style={S.messagesHeader}>
             <h3 style={S.messagesTitle}>对话记录</h3>
             <Button
@@ -394,7 +412,7 @@ export default function WeChatPage() {
               style={{ color: 'var(--jf-text-muted)' }}
             />
           </div>
-          <div style={S.messagesList}>
+          <div style={messagesListStyle}>
             {messages.length === 0 ? (
               <div style={S.emptyMsg}>暂无对话记录</div>
             ) : (

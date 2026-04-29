@@ -3,8 +3,9 @@ import {
   type DragEvent, type MouseEvent as ReactMouseEvent,
   type ClipboardEvent, type KeyboardEvent,
 } from 'react';
-import { Button, Input, Tooltip, Spin, App, Dropdown, Progress } from 'antd';
+import { Button, Input, Tooltip, Spin, App, Dropdown, Progress, Drawer } from 'antd';
 import type { MenuProps } from 'antd';
+import { useIsMobile } from '../hooks/useMediaQuery';
 import {
   FolderOutlined,
   FolderOpenOutlined,
@@ -177,6 +178,7 @@ export default function FilePanel() {
     fileBrowserOpen, setFileBrowserOpen, editingFile, openFile,
     browserPath: currentPath, setBrowserPath: setCurrentPath,
   } = useFileWorkspace();
+  const isMobile = useIsMobile();
 
   const [files, setFiles] = useState<FileItem[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
@@ -904,9 +906,11 @@ export default function FilePanel() {
     ];
   };
 
-  if (!fileBrowserOpen) return null;
+  // On mobile we always render (inside a Drawer) so the Drawer's animation
+  // works; on desktop we skip the whole tree when closed to save resources.
+  if (!isMobile && !fileBrowserOpen) return null;
 
-  return (
+  const panelBody = (
     <div
       ref={panelRef}
       tabIndex={0}
@@ -916,34 +920,36 @@ export default function FilePanel() {
       onDragLeave={onPanelDragLeave}
       onDrop={onPanelDrop}
       style={{
-        width: panelWidth,
+        width: isMobile ? '100%' : panelWidth,
         flexShrink: 0,
         height: '100%',
         background: C.bg,
-        borderLeft: `1px solid ${C.border}`,
+        borderLeft: isMobile ? 'none' : `1px solid ${C.border}`,
         display: 'flex',
         flexDirection: 'column',
         position: 'relative',
         outline: 'none',
       }}
     >
-      {/* Resize handle */}
-      <div
-        style={{
-          position: 'absolute', top: 0, left: -4, width: 8, height: '100%',
-          cursor: 'col-resize', zIndex: 10,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}
-        onMouseDown={onResizeStart}
-        onMouseEnter={() => setResizeHover(true)}
-        onMouseLeave={() => setResizeHover(false)}
-      >
-        <div style={{
-          width: 2, height: '100%', borderRadius: 1,
-          background: resizeHover || draggingRef.current ? C.primary : 'transparent',
-          transition: 'background 0.15s',
-        }} />
-      </div>
+      {/* Resize handle — desktop only */}
+      {!isMobile && (
+        <div
+          style={{
+            position: 'absolute', top: 0, left: -4, width: 8, height: '100%',
+            cursor: 'col-resize', zIndex: 10,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+          onMouseDown={onResizeStart}
+          onMouseEnter={() => setResizeHover(true)}
+          onMouseLeave={() => setResizeHover(false)}
+        >
+          <div style={{
+            width: 2, height: '100%', borderRadius: 1,
+            background: resizeHover || draggingRef.current ? C.primary : 'transparent',
+            transition: 'background 0.15s',
+          }} />
+        </div>
+      )}
 
       {/* Toolbar */}
       <div style={{
@@ -1303,6 +1309,34 @@ export default function FilePanel() {
       )}
     </div>
   );
+
+  if (isMobile) {
+    return (
+      <Drawer
+        placement="right"
+        open={fileBrowserOpen}
+        onClose={() => setFileBrowserOpen(false)}
+        width="100vw"
+        closable
+        title="文件"
+        styles={{
+          body: { padding: 0, background: C.bg, height: '100%' },
+          header: {
+            padding: '8px 12px',
+            background: C.bg,
+            borderBottom: `1px solid ${C.border}`,
+            minHeight: 44,
+          },
+          wrapper: { background: C.bg },
+        }}
+        rootStyle={{ zIndex: 1045 }}
+      >
+        {panelBody}
+      </Drawer>
+    );
+  }
+
+  return panelBody;
 }
 
 /** Append " 副本" (or " 副本 N") before the extension to suggest a non-

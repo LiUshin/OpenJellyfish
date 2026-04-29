@@ -72,7 +72,8 @@ def _dev_fallback_html(svc_config: dict, service_id: str) -> str:
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#1c1c27" />
 {inject}
 <script type="module" src="{_DEV_VITE_ORIGIN}/@vite/client"></script>
 <script type="module" src="{_DEV_VITE_ORIGIN}/src/service-chat/main.tsx"></script>

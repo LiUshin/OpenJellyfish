@@ -194,6 +194,19 @@ def get_profile_version(user_id: str, version_id: str) -> Optional[dict]:
     return None
 
 
+def update_profile_version_meta(user_id: str, version_id: str, label: str = None, note: str = None) -> bool:
+    versions = _load_profile_versions(user_id)
+    for v in versions:
+        if v["id"] == version_id:
+            if label is not None:
+                v["label"] = label
+            if note is not None:
+                v["note"] = note
+            _save_profile_versions(user_id, versions)
+            return True
+    return False
+
+
 def delete_profile_version(user_id: str, version_id: str) -> bool:
     versions = _load_profile_versions(user_id)
     new_versions = [v for v in versions if v["id"] != version_id]

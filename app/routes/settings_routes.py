@@ -12,7 +12,8 @@ from app.services.prompt import (
     DEFAULT_SYSTEM_PROMPT, list_prompt_versions, save_prompt_version,
     get_prompt_version, update_prompt_version_meta, delete_prompt_version, rollback_prompt_version,
     get_user_profile, set_user_profile,
-    list_profile_versions, get_profile_version, delete_profile_version, rollback_profile_version,
+    list_profile_versions, get_profile_version, update_profile_version_meta,
+    delete_profile_version, rollback_profile_version,
 )
 from app.services.subagents import (
     list_user_subagents, get_user_subagent, add_user_subagent,
@@ -128,6 +129,14 @@ async def api_get_profile_version(version_id: str, user=Depends(get_current_user
     if not v:
         raise HTTPException(status_code=404, detail="版本不存在")
     return v
+
+
+@router.put("/api/user-profile/versions/{version_id}")
+async def api_update_profile_version(version_id: str, req: UpdateVersionMetaRequest, user=Depends(get_current_user)):
+    ok = update_profile_version_meta(user["user_id"], version_id, req.label, req.note)
+    if not ok:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    return {"success": True}
 
 
 @router.delete("/api/user-profile/versions/{version_id}")

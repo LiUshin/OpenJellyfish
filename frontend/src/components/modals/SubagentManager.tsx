@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import type { SubagentConfig } from '../../types';
 import * as api from '../../services/api';
+import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -20,6 +21,7 @@ interface Props {
 }
 
 export default function SubagentManager({ open, onClose, inline }: Props) {
+  const isMobile = useIsMobile();
   const [subagents, setSubagents] = useState<SubagentConfig[]>([]);
   const [availableTools, setAvailableTools] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -140,7 +142,13 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
                 opacity: agent.enabled ? 1 : 0.6,
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'flex-start',
+                flexWrap: isMobile ? 'wrap' : 'nowrap',
+                gap: isMobile ? 8 : 0,
+              }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                     <Text style={{ color: 'var(--jf-text)', fontWeight: 600, fontSize: 14 }}>
@@ -158,7 +166,7 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
                     ))}
                   </div>
                 </div>
-                <Space style={{ flexShrink: 0, marginLeft: 12 }}>
+                <Space style={{ flexShrink: 0, marginLeft: isMobile ? 0 : 12 }}>
                   <Switch
                     checked={agent.enabled}
                     size="small"
@@ -197,7 +205,8 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
         okText={editing ? '更新' : '创建'}
         cancelText="取消"
         confirmLoading={saving}
-        width={600}
+        width={isMobile ? '100%' : 600}
+        style={isMobile ? { top: 0, paddingBottom: 0, maxWidth: '100%', margin: 0 } : undefined}
         styles={{
           body: { padding: '16px 20px' },
           header: { background: 'var(--jf-bg-panel)', borderBottom: '1px solid var(--jf-border)' },
@@ -238,7 +247,7 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
             <Checkbox.Group style={{ width: '100%' }}>
               <div style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
+                gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)',
                 gap: '6px 12px',
                 maxHeight: 200,
                 overflow: 'auto',
@@ -258,7 +267,16 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
   );
 
   if (inline) {
-    return <div style={{ padding: '16px 20px', height: '100%', overflow: 'auto' }}>{content}</div>;
+    return (
+      <div style={{
+        padding: isMobile ? '16px 12px 24px' : '16px 20px',
+        paddingLeft: isMobile ? 52 : undefined,
+        height: '100%',
+        overflow: 'auto',
+      }}>
+        {content}
+      </div>
+    );
   }
 
   return (

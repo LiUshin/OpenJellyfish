@@ -451,7 +451,7 @@ async def _run_agent_and_reply(
 
     _MAX_HITL_LOOPS = 10
 
-    async with scheduled_inject.thread_active(thread_id):
+    async with scheduled_inject.thread_active(thread_id, agent=agent):
         for _loop_i in range(_MAX_HITL_LOOPS):
             async for event in agent.astream(
                 input_payload,

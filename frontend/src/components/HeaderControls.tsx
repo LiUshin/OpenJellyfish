@@ -2,6 +2,7 @@ import { Button, Tooltip } from 'antd';
 import { FolderOpen } from '@phosphor-icons/react';
 import SplitToggle from './SplitToggle';
 import { useFileWorkspace } from '../stores/fileWorkspaceContext';
+import { useIsMobile } from '../hooks/useMediaQuery';
 
 export default function HeaderControls() {
   const {
@@ -11,10 +12,12 @@ export default function HeaderControls() {
     fileBrowserOpen,
     setFileBrowserOpen,
   } = useFileWorkspace();
+  const isMobile = useIsMobile();
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-      {!!editingFile && (
+      {/* Split toggle只在桌面端有意义：移动端文件预览本身就是全屏 Drawer */}
+      {!!editingFile && !isMobile && (
         <>
           <SplitToggle value={splitMode} onChange={setSplitMode} />
           <div style={{

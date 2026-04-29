@@ -69,7 +69,7 @@ log = logging.getLogger("scheduler")
 
 _MAX_RUNS_STORED = 20
 _LOOP_INTERVAL_S = 30          # check every 30 seconds
-_TASK_TIMEOUT_S  = 300         # max 5 min per task run
+_TASK_TIMEOUT_S  = 1800        # max 30 min per task run
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────
@@ -1063,7 +1063,7 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
         steps.append(_step("finish", "Agent 执行完成"))
     except asyncio.TimeoutError:
         steps.append(_step("error", "任务超时"))
-        await _safe_persist_admin_failure(user_id, conv_id, task_meta, "任务超时（>5min）")
+        await _safe_persist_admin_failure(user_id, conv_id, task_meta, "任务超时（>30min）")
         return {"output": "任务超时", "success": False, "steps": steps}
     except Exception as e:
         steps.append(_step("error", f"Agent 执行失败: {e}"))
@@ -1205,7 +1205,7 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
     except asyncio.TimeoutError:
         steps.append(_step("error", "任务超时"))
         await _safe_persist_service_failure(admin_id, service_id, conversation_id,
-                                            task_meta, "任务超时（>5min）")
+                                            task_meta, "任务超时（>30min）")
         return {"output": "任务超时", "success": False, "steps": steps}
     except Exception as e:
         steps.append(_step("error", f"Service Agent 执行失败: {e}"))

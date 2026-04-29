@@ -93,8 +93,10 @@ async def _stream_consumer(agent, agent_input, config, ctx, conv_id):
     service_id = ctx["service_id"]
     thread_id = (config or {}).get("configurable", {}).get("thread_id", "")
     # Notify scheduled-task injection module that this thread is active so any
-    # pending L2 injections wait until our stream finishes.
+    # pending L2 injections wait until our stream finishes. Also sweep out any
+    # legacy stranded summary SystemMessages from pre-fix deploys.
     from app.services import scheduled_inject
+    await scheduled_inject.repair_scheduled_state(agent, thread_id)
     await scheduled_inject.mark_thread_active(thread_id)
     full_response = ""
     tool_records = []
@@ -251,6 +253,7 @@ async def _stream_openai_compat(agent, agent_input, config, ctx, conv_id, model_
     service_id = ctx["service_id"]
     thread_id = (config or {}).get("configurable", {}).get("thread_id", "")
     from app.services import scheduled_inject
+    await scheduled_inject.repair_scheduled_state(agent, thread_id)
     await scheduled_inject.mark_thread_active(thread_id)
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:12]
     created = int(time.time())
@@ -431,6 +434,7 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
 
     # Non-streaming: collect full response
     from app.services import scheduled_inject
+    await scheduled_inject.repair_scheduled_state(agent, thread_id)
     await scheduled_inject.mark_thread_active(thread_id)
     full_response = ""
     _ns_start = time.time()
