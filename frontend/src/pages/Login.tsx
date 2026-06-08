@@ -1,12 +1,15 @@
 import { useState, type CSSProperties } from 'react';
 import { Form, Input, Button, Tabs, Alert, Typography, Space } from 'antd';
 import { UserOutlined, LockOutlined, KeyOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '../stores/authContext';
+import LanguageSwitcher from '../components/LanguageSwitcher';
 
 const { Title, Text } = Typography;
 
 export default function Login() {
   const { login, register } = useAuth();
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState('login');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -17,7 +20,7 @@ export default function Login() {
     try {
       await login(values.username, values.password);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '登录失败');
+      setError(e instanceof Error ? e.message : t('login.loginFailed'));
     } finally {
       setLoading(false);
     }
@@ -29,7 +32,7 @@ export default function Login() {
     try {
       await register(values.username, values.password, values.reg_key);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '注册失败');
+      setError(e instanceof Error ? e.message : t('login.registerFailed'));
     } finally {
       setLoading(false);
     }
@@ -198,9 +201,20 @@ export default function Login() {
               JellyfishBot
             </Title>
             <Text style={{ color: 'var(--jf-text-muted)', fontSize: 16 }}>
-              Your Intelligent AI Companion 🪼
+              {t('login.tagline')}
             </Text>
           </Space>
+          {/* Floating language switcher — pre-auth, sync to backend skipped. */}
+          <div
+            style={{
+              position: 'absolute',
+              top: 'calc(12px + env(safe-area-inset-top, 0px))',
+              right: 'calc(12px + env(safe-area-inset-right, 0px))',
+              zIndex: 2,
+            }}
+          >
+            <LanguageSwitcher variant="icon" placement="bottom" syncBackend={false} />
+          </div>
         </div>
 
         <div
@@ -237,14 +251,14 @@ export default function Login() {
               items={[
                 {
                   key: 'login',
-                  label: '登录',
+                  label: t('login.loginTitle'),
                   children: (
                     <Form onFinish={handleLogin} layout="vertical" requiredMark={false}>
-                      <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
-                        <Input prefix={<UserOutlined />} placeholder="用户名" size="large" />
+                      <Form.Item name="username" rules={[{ required: true, message: t('login.usernameRequired') }]}>
+                        <Input prefix={<UserOutlined />} placeholder={t('login.username')} size="large" />
                       </Form.Item>
-                      <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
-                        <Input.Password prefix={<LockOutlined />} placeholder="密码" size="large" />
+                      <Form.Item name="password" rules={[{ required: true, message: t('login.passwordRequired') }]}>
+                        <Input.Password prefix={<LockOutlined />} placeholder={t('login.password')} size="large" />
                       </Form.Item>
                       <Form.Item>
                         <Button
@@ -256,7 +270,7 @@ export default function Login() {
                           loading={loading}
                           style={submitBtnStyle}
                         >
-                          登录
+                          {t('login.loginBtn')}
                         </Button>
                       </Form.Item>
                     </Form>
@@ -264,27 +278,27 @@ export default function Login() {
                 },
                 {
                   key: 'register',
-                  label: '注册',
+                  label: t('login.registerTitle'),
                   children: (
                     <Form onFinish={handleRegister} layout="vertical" requiredMark={false}>
-                      <Form.Item name="reg_key" rules={[{ required: true, message: '请输入注册码' }]}>
+                      <Form.Item name="reg_key" rules={[{ required: true, message: t('login.regKeyRequired') }]}>
                         <Input
                           prefix={<KeyOutlined />}
-                          placeholder="注册码 (如 DA-XXXXXXXX-XXXXXXXX)"
+                          placeholder={t('login.regKeyPlaceholder')}
                           size="large"
                         />
                       </Form.Item>
                       <Form.Item
                         name="username"
-                        rules={[{ required: true, min: 2, message: '至少 2 个字符' }]}
+                        rules={[{ required: true, min: 2, message: t('login.usernameMinLen') }]}
                       >
-                        <Input prefix={<UserOutlined />} placeholder="用户名" size="large" />
+                        <Input prefix={<UserOutlined />} placeholder={t('login.username')} size="large" />
                       </Form.Item>
                       <Form.Item
                         name="password"
-                        rules={[{ required: true, min: 4, message: '至少 4 个字符' }]}
+                        rules={[{ required: true, min: 4, message: t('login.passwordMinLen') }]}
                       >
-                        <Input.Password prefix={<LockOutlined />} placeholder="密码" size="large" />
+                        <Input.Password prefix={<LockOutlined />} placeholder={t('login.password')} size="large" />
                       </Form.Item>
                       <Form.Item>
                         <Button
@@ -296,7 +310,7 @@ export default function Login() {
                           loading={loading}
                           style={submitBtnStyle}
                         >
-                          注册
+                          {t('login.registerBtn')}
                         </Button>
                       </Form.Item>
                     </Form>

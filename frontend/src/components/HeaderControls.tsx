@@ -1,5 +1,6 @@
 import { Button, Tooltip } from 'antd';
 import { FolderOpen } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import SplitToggle from './SplitToggle';
 import { useFileWorkspace } from '../stores/fileWorkspaceContext';
 import { useIsMobile } from '../hooks/useMediaQuery';
@@ -13,6 +14,7 @@ export default function HeaderControls() {
     setFileBrowserOpen,
   } = useFileWorkspace();
   const isMobile = useIsMobile();
+  const { t } = useTranslation();
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
@@ -28,7 +30,7 @@ export default function HeaderControls() {
           }} />
         </>
       )}
-      <Tooltip title={fileBrowserOpen ? '关闭文件面板' : '文件面板'}>
+      <Tooltip title={fileBrowserOpen ? t('header.closeFilePanel') : t('header.openFilePanel')}>
         <Button
           type="text"
           size="small"

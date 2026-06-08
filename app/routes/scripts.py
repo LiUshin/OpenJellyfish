@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 
 from app.schemas.requests import RunScriptRequest
-from app.services.script_runner import run_script
+from app.services.script_runner import run_script, superadmin_script_unrestricted
 from app.deps import get_current_user
 from app.storage import get_storage_service
 
@@ -23,6 +23,7 @@ async def api_run_script(req: RunScriptRequest, user=Depends(get_current_user)):
             timeout=req.timeout,
             allowed_read_dirs=[ctx["docs_dir"]],
             allowed_write_dirs=ctx["write_dirs"],
+            unrestricted=superadmin_script_unrestricted(),
         )
 
 

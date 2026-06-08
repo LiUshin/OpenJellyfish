@@ -18,6 +18,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import hljs from 'highlight.js/lib/core';
 import { FileCode, ArrowsOutSimple, ArrowsInSimple, CircleNotch, Warning } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
+import i18n from '../../../i18n';
 import * as api from '../../../services/api';
 import { computeUnifiedDiff, lineDiff, type DiffLine, type DiffHunk } from '../../../utils/unifiedDiff';
 import { escapeHtml } from '../markdown';
@@ -87,7 +89,7 @@ function useOriginalFile(filePath: string): FetchState {
       })
       .catch(err => {
         if (cancelled) return;
-        setState({ loading: false, error: err?.message || '无法读取原文件', originalText: null });
+        setState({ loading: false, error: err?.message || i18n.t('editDiff.readOriginalFail'), originalText: null });
       });
     return () => { cancelled = true; };
   }, [filePath]);
@@ -140,6 +142,7 @@ export default function EditDiffViewer({
   status = 'done',
   errorMessage,
 }: Props) {
+  const { t } = useTranslation();
   const { loading, error, originalText } = useOriginalFile(filePath);
   const [expanded, setExpanded] = useState(false);
   const lang = useMemo(() => detectLang(filePath), [filePath]);
@@ -184,21 +187,20 @@ export default function EditDiffViewer({
     return { hunks: result.hunks, fullDiff: result.fullDiff, notFound: false, fallback: false };
   }, [originalText, oldString, newString, contextLines]);
 
-  // 状态徽章
   let statusNode: React.ReactNode;
   let statusClass = '';
   if (status === 'error') {
-    statusNode = <span>失败</span>;
+    statusNode = <span>{t('editDiff.statusFailed')}</span>;
     statusClass = styles.streamFileStatusError;
   } else if (status === 'pending') {
-    statusNode = <span>待审批</span>;
+    statusNode = <span>{t('editDiff.statusPending')}</span>;
     statusClass = styles.streamFileStatusPending;
   } else {
     const adds = data.fullDiff.filter(l => l.type === 'add').length;
     const dels = data.fullDiff.filter(l => l.type === 'del').length;
     statusNode = (
       <>
-        <span>已编辑</span>
+        <span>{t('editDiff.statusEdited')}</span>
         {adds > 0 && <span className={styles.diffStatAdd}>+{adds}</span>}
         {dels > 0 && <span className={styles.diffStatDel}>-{dels}</span>}
       </>
@@ -224,10 +226,10 @@ export default function EditDiffViewer({
               type="button"
               className={styles.diffExpandBtn}
               onClick={() => setExpanded(v => !v)}
-              title={expanded ? '收起为 hunk 视图' : '展开整文件'}
+              title={expanded ? t('editDiff.viewCollapseTip') : t('editDiff.viewExpandTip')}
             >
               {expanded ? <ArrowsInSimple size={12} /> : <ArrowsOutSimple size={12} />}
-              <span>{expanded ? '收起' : '展开全文'}</span>
+              <span>{expanded ? t('editDiff.viewCollapse') : t('editDiff.viewExpand')}</span>
             </button>
           )}
         </div>
@@ -236,7 +238,7 @@ export default function EditDiffViewer({
       {loading && (
         <div className={styles.diffLoading}>
           <span className={styles.streamFileSpin}><CircleNotch size={14} weight="bold" /></span>
-          <span>读取原文件…</span>
+          <span>{t('editDiff.loadOriginal')}</span>
         </div>
       )}
 
@@ -244,8 +246,8 @@ export default function EditDiffViewer({
         <div className={styles.diffWarn}>
           <Warning size={14} weight="duotone" />
           {data.notFound
-            ? '原文件中找不到 old_string，下方仅显示模型给出的替换片段对照'
-            : `${error ?? '原文件不可读'}，下方仅显示模型给出的替换片段对照`}
+            ? t('editDiff.fallbackNoOldString')
+            : t('editDiff.fallbackUnreadable', { err: error ?? t('editDiff.originalUnreadable') })}
         </div>
       )}
 
@@ -262,7 +264,7 @@ export default function EditDiffViewer({
           </div>
         ))}
         {!showFull && data.hunks.length === 0 && !loading && (
-          <div className={styles.diffEmpty}>无变化</div>
+          <div className={styles.diffEmpty}>{t('editDiff.noChange')}</div>
         )}
       </div>
 

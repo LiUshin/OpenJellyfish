@@ -10,6 +10,8 @@ Key differences from admin agent:
 
 import os
 import json
+import logging
+from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Any, Dict
 
@@ -65,53 +67,208 @@ def _build_consumer_system_prompt(
     base_prompt = base_prompt.replace("{today}", today_str)
     base_prompt = base_prompt.replace("{user_profile_context}", profile_context)
 
+    # ── 可用资源范围 ──
+    # 发布 Service 时设定的 allowed_docs / allowed_scripts 白名单必须显式告知 agent，
+    # 否则它不知道有哪些文档/脚本可用，会"迷茫不知道去哪看东西"。
+    # 这里只写白名单 pattern（不扫描真实文件）：'*' 表示全部，空脚本列表表示禁用脚本。
+    allowed_docs = service_config.get("allowed_docs") or []
+    allowed_scripts = service_config.get("allowed_scripts") or []
+
+    scope_lines = ["\n\n## 可用资源范围"]
+
+    # 文档范围（/docs/，只读）——必须明确告知"只读"，避免 agent 尝试修改 docs。
+    if "*" in allowed_docs:
+        scope_lines.append(
+            "- 文档（只读）：你可以访问 /docs/ 目录下的全部文件，仅可用 read_file / "
+            "read_document 读取，**不可修改、写入或删除**。请先用 ls 浏览目录结构再读取。"
+        )
+    elif allowed_docs:
+        scope_lines.append(
+            "- 文档（只读）：你只能读取 /docs/ 下以下范围内的文件（其余文件不可见，无需也无法读取）；"
+            "这些文件**只读**，仅可用 read_file / read_document 读取，不可修改、写入或删除："
+        )
+        for p in allowed_docs:
+            scope_lines.append(f"  - /docs/{str(p).lstrip('/')}")
+    else:
+        scope_lines.append("- 文档：本服务未开放任何 /docs/ 文档。")
+
+    # 脚本范围（/scripts/，仅可通过 run_script 执行）——必须明确"execute only"：
+    # 脚本只能被执行，不能读取源码、不能修改/写入。
+    if not allowed_scripts:
+        scope_lines.append("- 脚本：本服务不提供脚本执行能力，请勿尝试运行脚本。")
+    elif "*" in allowed_scripts:
+        scope_lines.append(
+            "- 脚本（仅执行）：你可以通过 run_script 执行 /scripts/ 目录下的全部脚本。"
+            "脚本**不能修改或写入**；调用方式：run_script(script_path=脚本路径)，"
+            "可选传 script_args / input_data / timeout。"
+        )
+    else:
+        scope_lines.append(
+            "- 脚本（仅执行）：你只能通过 run_script 执行以下脚本（其余脚本不可用）。"
+            "脚本**不能修改或写入**；调用方式：run_script(script_path=脚本路径)，"
+            "可选传 script_args / input_data / timeout："
+        )
+        for p in allowed_scripts:
+            scope_lines.append(f"  - /scripts/{str(p).lstrip('/')}")
+
+    scope_notice = "\n".join(scope_lines)
+
     consumer_notice = (
         "\n\n## 重要约束\n"
         "- /docs/ 目录中的文件是只读的，请勿尝试修改\n"
         "- 你生成的内容（图片、音频、视频等）保存在 /generated/ 目录\n"
     )
-    return base_prompt + consumer_notice
+    return base_prompt + scope_notice + consumer_notice
 
 
-def _create_consumer_read_tools(admin_id: str, allowed_docs: List[str]):
-    """Create read-only file tools scoped to admin's docs."""
+def _create_consumer_read_tools(
+    admin_id: str,
+    allowed_docs: List[str],
+    allowed_scripts: Optional[List[str]] = None,
+):
+    """Create read-only file tools scoped to admin's docs (+ whitelisted scripts).
+
+    docs/ 受 allowed_docs 控制；scripts/ 受 allowed_scripts 控制，**只读**（读源码
+    用于了解脚本用途/参数，实际执行仍走 run_script）。两套白名单互不影响。
+    """
     fs_dir = get_user_filesystem_dir(admin_id)
     docs_dir = os.path.join(fs_dir, "docs")
+    scripts_dir = os.path.join(fs_dir, "scripts")
+    allowed_scripts = allowed_scripts or []
+
+    def _norm_docs_path(path: str) -> str:
+        """归一化 docs 路径。consumer 读工具的根目录已经是 docs/，但 agent 习惯
+        按 /docs/xxx 的心智模型传路径（system prompt 里也是这么写的）。这里容忍
+        并剥掉开头多余的 docs/ 前缀，避免拼成 docs_dir/docs/xxx 而"目录不存在"。
+
+        字面优先、剥前缀兜底：若 docs 根下真实存在一个字面叫 docs 的子目录
+        （docs_dir/docs/...），优先按字面解析，避免误把真实嵌套目录当成命名空间前缀
+        剥掉。仅当字面路径不存在时才剥掉开头多余的 docs/ 前缀。
+        `/docs`（命名空间根 token）始终视为 docs 根。
+        """
+        clean = (path or "").lstrip("/").replace("\\", "/")
+        if not clean or clean == "docs":
+            return ""
+        if clean.startswith("docs/"):
+            stripped = clean[len("docs/"):]
+            try:
+                if os.path.exists(safe_join(docs_dir, clean)):
+                    return clean  # 字面路径真实存在（嵌套 docs/ 目录）→ 按字面
+            except (PermissionError, ValueError):
+                pass
+            return stripped
+        return clean
 
     def _is_allowed(path: str) -> bool:
         if not allowed_docs or allowed_docs == ["*"]:
             return True
-        norm = path.lstrip("/").replace("\\", "/")
+        norm = path.lstrip("/").replace("\\", "/").rstrip("/")
         for pattern in allowed_docs:
             if pattern == "*":
                 return True
-            if norm.startswith(pattern.lstrip("/")):
+            pat = pattern.lstrip("/").rstrip("/")
+            if not pat:
+                return True
+            # 精确命中，或在白名单目录之下
+            if norm == pat or norm.startswith(pat + "/"):
+                return True
+            # path 是白名单条目的祖先目录 → 允许列出（这样 ls 能逐级走到白名单）
+            if pat.startswith(norm + "/"):
                 return True
         return False
+
+    # ── scripts 命名空间（只读）──────────────────────────────────────
+    # 允许 agent 读取 allowed_scripts 白名单内的脚本源码，用于了解脚本用途/参数；
+    # 实际执行仍走 run_script。scripts/ 与 docs/ 是两套独立根目录与独立白名单。
+    def _norm_scripts_path(path: str) -> str:
+        """归一化 scripts 路径（相对 scripts_dir）。字面优先、剥前缀兜底，
+        与 _norm_docs_path 同理处理嵌套同名 scripts/ 目录的歧义。"""
+        clean = (path or "").lstrip("/").replace("\\", "/")
+        if not clean or clean == "scripts":
+            return ""
+        if clean.startswith("scripts/"):
+            stripped = clean[len("scripts/"):]
+            try:
+                if os.path.exists(safe_join(scripts_dir, clean)):
+                    return clean
+            except (PermissionError, ValueError):
+                pass
+            return stripped
+        return clean
+
+    def _is_script_allowed(path: str) -> bool:
+        """scripts 读权限：受 allowed_scripts 白名单约束（空 = 不可读任何脚本）。
+        与 docs 的 _is_allowed 同样允许祖先目录被列出，便于 ls 逐级走到白名单。"""
+        if not allowed_scripts:
+            return False
+        norm = path.lstrip("/").replace("\\", "/").rstrip("/")
+        if norm == "":
+            return True  # scripts 根可列（条目逐个再过滤）
+        for pattern in allowed_scripts:
+            if pattern == "*":
+                return True
+            pat = pattern.lstrip("/").rstrip("/")
+            if not pat:
+                return True
+            if norm == pat or norm.startswith(pat + "/"):
+                return True
+            if pat.startswith(norm + "/"):
+                return True
+        return False
+
+    def _is_scripts_ns(path: str) -> bool:
+        raw = (path or "").lstrip("/").replace("\\", "/")
+        return raw == "scripts" or raw.startswith("scripts/")
+
+    def _resolve(path: str):
+        """把 agent 传入路径路由到 docs/ 或 scripts/ 根。
+
+        返回 (full_path, rel, allowed, ns, err)：
+          - full_path: 物理绝对路径（err 非空时为 None）
+          - rel:       相对所属根的路径（用于 ls 逐项过滤）
+          - allowed:   该路径是否在对应白名单内
+          - ns:        'docs' | 'scripts'
+          - err:       错误消息（如越界 / generated 不可访问），否则 None
+        """
+        if _is_scripts_ns(path):
+            rel = _norm_scripts_path(path)
+            try:
+                full = safe_join(scripts_dir, rel) if rel else scripts_dir
+            except (PermissionError, ValueError):
+                return (None, rel, False, "scripts", "路径超出允许范围")
+            return (full, rel, _is_script_allowed(rel), "scripts", None)
+
+        clean = _norm_docs_path(path)
+        if clean.startswith("generated"):
+            return (None, clean, False, "docs", "generated/ 目录不可通过此工具浏览")
+        try:
+            full = safe_join(docs_dir, clean) if clean else docs_dir
+        except (PermissionError, ValueError):
+            return (None, clean, False, "docs", "路径超出允许范围")
+        return (full, clean, _is_allowed(clean), "docs", None)
+
+    def _entry_allowed(rel: str, ns: str) -> bool:
+        return _is_script_allowed(rel) if ns == "scripts" else _is_allowed(rel)
 
     @tool
     def ls(path: str = "/") -> str:
         """列出目录内容（只读文件系统）。
 
         Args:
-            path: 目录路径，/ 为根目录
+            path: 目录路径。/ 或 /docs 为文档根；/scripts 列出可读脚本。
         """
-        clean = path.lstrip("/").replace("\\", "/")
-        if clean.startswith("generated"):
-            return "generated/ 目录不可通过此工具浏览"
-        try:
-            target = safe_join(docs_dir, clean) if clean else docs_dir
-        except PermissionError:
-            return "路径超出允许范围"
-        if not os.path.isdir(target):
+        full, rel, _allowed, ns, err = _resolve(path)
+        if err:
+            return err
+        if not os.path.isdir(full):
             return f"目录不存在: {path}"
         entries = []
-        for name in sorted(os.listdir(target)):
-            full = os.path.join(target, name)
-            rel = os.path.join(clean, name).replace("\\", "/") if clean else name
-            if not _is_allowed(rel):
+        for name in sorted(os.listdir(full)):
+            child = os.path.join(full, name)
+            child_rel = os.path.join(rel, name).replace("\\", "/") if rel else name
+            if not _entry_allowed(child_rel, ns):
                 continue
-            suffix = "/" if os.path.isdir(full) else ""
+            suffix = "/" if os.path.isdir(child) else ""
             entries.append(f"{name}{suffix}")
         return "\n".join(entries) if entries else "(空目录)"
 
@@ -119,16 +276,16 @@ def _create_consumer_read_tools(admin_id: str, allowed_docs: List[str]):
     def read_file(path: str) -> str:
         """读取文件内容（只读）。
 
+        可读 /docs/ 下文档，也可读 /scripts/ 下白名单脚本的源码（用于了解脚本用途/参数）。
+
         Args:
-            path: 文件路径，如 /welcome.md
+            path: 文件路径，如 /welcome.md 或 /scripts/analyze.py
         """
-        clean = path.lstrip("/").replace("\\", "/")
-        if not _is_allowed(clean):
+        full, rel, allowed, ns, err = _resolve(path)
+        if err:
+            return err
+        if not allowed:
             return "无权限访问该文件"
-        try:
-            full = safe_join(docs_dir, clean)
-        except PermissionError:
-            return "路径超出允许范围"
         if not os.path.isfile(full):
             return f"文件不存在: {path}"
         try:
@@ -162,21 +319,17 @@ def _create_consumer_read_tools(admin_id: str, allowed_docs: List[str]):
             return f"order_by 只能是 name / modified / size，收到: {order_by}"
         limit = max(1, min(int(limit or 50), 500))
 
-        clean = path.lstrip("/").replace("\\", "/")
-        if clean.startswith("generated"):
-            return "generated/ 目录不可通过此工具浏览"
-        try:
-            target = safe_join(docs_dir, clean) if clean else docs_dir
-        except PermissionError:
-            return "路径超出允许范围"
+        target, base_rel, _allowed, ns, err = _resolve(path)
+        if err:
+            return err
         if not os.path.isdir(target):
             return f"目录不存在: {path}"
 
         rows = []
         for name in os.listdir(target):
             full = os.path.join(target, name)
-            rel = os.path.join(clean, name).replace("\\", "/") if clean else name
-            if not _is_allowed(rel):
+            rel = os.path.join(base_rel, name).replace("\\", "/") if base_rel else name
+            if not _entry_allowed(rel, ns):
                 continue
             try:
                 st = os.stat(full)
@@ -237,15 +390,11 @@ def _create_consumer_read_tools(admin_id: str, allowed_docs: List[str]):
         Args:
             path: 文件路径，如 /report.pdf
         """
-        clean = path.lstrip("/").replace("\\", "/")
-        if not _is_allowed(clean):
+        full, _rel, allowed, _ns, err = _resolve(path)
+        if err:
+            return err
+        if not allowed:
             return "无权限访问该文件"
-        if clean.startswith("generated"):
-            return "generated/ 目录不可访问"
-        try:
-            full = safe_join(docs_dir, clean)
-        except PermissionError:
-            return "路径超出允许范围"
         if not os.path.isfile(full):
             return f"文件不存在: {path}"
 
@@ -278,15 +427,11 @@ def _create_consumer_read_tools(admin_id: str, allowed_docs: List[str]):
             path: 文件路径（PDF / png / jpg / jpeg / webp / gif / bmp）
             page: PDF 时为 1-based 页码，默认 1（图片忽略）
         """
-        clean = path.lstrip("/").replace("\\", "/")
-        if not _is_allowed(clean):
+        full, _rel, allowed, _ns, err = _resolve(path)
+        if err:
+            return err
+        if not allowed:
             return "无权限访问该文件"
-        if clean.startswith("generated"):
-            return "generated/ 目录不可访问"
-        try:
-            full = safe_join(docs_dir, clean)
-        except PermissionError:
-            return "路径超出允许范围"
         if not os.path.isfile(full):
             return f"文件不存在: {path}"
 
@@ -434,8 +579,36 @@ def _create_consumer_script_tools(
     from app.services.script_runner import run_script as _run_script_impl
     from app.storage import get_storage_service
 
+    # scripts/ 物理根（与 consumer_script_execution 的 scripts_dir 一致），
+    # 用于"字面优先"存在性判断。
+    scripts_dir = os.path.join(get_user_filesystem_dir(admin_id), "scripts")
+
+    def _norm_script_path(script_path: str) -> str:
+        """归一化脚本路径。run_script 的 script_path 相对 scripts/ 根，但 agent 习惯
+        按 /scripts/xxx.py 传（system prompt 也这么写），容忍并剥掉开头 scripts/ 前缀，
+        否则既过不了白名单校验、又会拼成 scripts_dir/scripts/xxx 找不到文件。
+
+        字面优先、剥前缀兜底：若 scripts 根下真实存在字面 scripts/xxx.py（即真有嵌套
+        的 scripts/ 目录），按字面解析；否则剥掉开头多余的 scripts/ 前缀。
+        """
+        norm = (script_path or "").replace("\\", "/").lstrip("/")
+        if norm.startswith("scripts/"):
+            stripped = norm[len("scripts/"):]
+            try:
+                literal_full = os.path.realpath(os.path.join(scripts_dir, norm))
+                _sd = os.path.realpath(scripts_dir)
+                # 字面路径真实存在且未越界 → 按字面（嵌套 scripts/ 目录）
+                if os.path.isfile(literal_full) and (
+                    literal_full == _sd or literal_full.startswith(_sd + os.sep)
+                ):
+                    return norm
+            except (OSError, ValueError):
+                pass
+            return stripped
+        return norm
+
     def _script_allowed(script_path: str) -> bool:
-        norm = script_path.replace("\\", "/").lstrip("/")
+        norm = _norm_script_path(script_path)
         for pattern in allowed_scripts:
             if pattern == "*":
                 return True
@@ -461,13 +634,19 @@ def _create_consumer_script_tools(
         if not _script_allowed(script_path):
             return f"无权执行此脚本: {script_path}"
 
+        # 剥掉 agent 可能带的 /scripts/ 前缀，得到相对 scripts/ 根的路径再执行
+        norm_script_path = _norm_script_path(script_path)
+
         from app.services.venv_manager import get_user_python
         storage = get_storage_service()
-        with storage.consumer_script_execution(admin_id, service_id, conv_id, script_path) as ctx:
+        with storage.consumer_script_execution(admin_id, service_id, conv_id, norm_script_path) as ctx:
             if "error" in ctx:
                 return f"执行失败: {ctx['error']}"
+            # service/消费者侧脚本执行**始终保持完整限制**：
+            # 即使部署级超管开关 SUPERADMIN_SCRIPT_UNRESTRICTED 开启，这里也绝不
+            # 传 unrestricted=True（保持 AST/env/资源/超时/路径全部限制）。
             result = _run_script_impl(
-                script_path=script_path,
+                script_path=norm_script_path,
                 scripts_dir=ctx["scripts_dir"],
                 input_data=input_data,
                 args=script_args,
@@ -475,6 +654,7 @@ def _create_consumer_script_tools(
                 allowed_read_dirs=[ctx["docs_dir"]],
                 allowed_write_dirs=ctx["write_dirs"],
                 python_executable=get_user_python(admin_id),
+                unrestricted=False,
             )
         if result["error"]:
             return f"执行失败: {result['error']}"
@@ -489,7 +669,40 @@ def _create_consumer_script_tools(
     return [run_script]
 
 
-_consumer_agent_cache: Dict[str, Any] = {}
+log_consumer = logging.getLogger(__name__)
+
+_DEFAULT_CONSUMER_AGENT_CACHE_MAX = 48
+_CONSUMER_AGENT_CACHE_CAP = 512
+
+
+def consumer_agent_cache_max() -> int:
+    raw = os.environ.get("CONSUMER_AGENT_CACHE_MAX", "").strip()
+    if not raw:
+        return _DEFAULT_CONSUMER_AGENT_CACHE_MAX
+    try:
+        n = int(raw, 10)
+    except ValueError:
+        return _DEFAULT_CONSUMER_AGENT_CACHE_MAX
+    return max(4, min(_CONSUMER_AGENT_CACHE_CAP, n))
+
+
+_consumer_agent_cache: OrderedDict[str, Any] = OrderedDict()
+
+
+def _touch_consumer_agent_cache(key: str) -> None:
+    _consumer_agent_cache.move_to_end(key)
+
+
+def _put_consumer_agent_cache(key: str, agent: Any) -> None:
+    _consumer_agent_cache[key] = agent
+    _touch_consumer_agent_cache(key)
+    cap = consumer_agent_cache_max()
+    while len(_consumer_agent_cache) > cap:
+        evicted, _ = _consumer_agent_cache.popitem(last=False)
+        log_consumer.debug(
+            "Evicted consumer agent cache entry (max=%d): %s",
+            cap, evicted[:120],
+        )
 
 
 def create_consumer_agent(
@@ -525,6 +738,7 @@ def create_consumer_agent(
     ch_suffix = f"::ch={channel}" if channel and channel != "web" else ""
     cache_key = f"consumer::{admin_id}::{service_id}::{conv_id}{ws_suffix}{extra_suffix}{ch_suffix}"
     if cache_key in _consumer_agent_cache:
+        _touch_consumer_agent_cache(cache_key)
         return _consumer_agent_cache[cache_key]
 
     gen_dir = get_consumer_generated_dir(admin_id, service_id, conv_id)
@@ -544,7 +758,7 @@ def create_consumer_agent(
     research_tools = svc_config.get("research_tools", False)
 
     tools = []
-    tools.extend(_create_consumer_read_tools(admin_id, allowed_docs))
+    tools.extend(_create_consumer_read_tools(admin_id, allowed_docs, allowed_scripts))
     tools.extend(_create_consumer_gen_tools(admin_id, service_id, conv_id, capabilities))
     tools.extend(_create_consumer_script_tools(admin_id, service_id, conv_id, allowed_scripts))
 
@@ -562,6 +776,7 @@ def create_consumer_agent(
     if "scheduler" in capabilities:
         from app.services.tools import (
             create_service_schedule_tool, create_service_manage_tasks_tool,
+            create_spawn_child_task_tool,
             CAPABILITY_PROMPTS as _CP2,
         )
         tools.append(create_service_schedule_tool(
@@ -571,7 +786,13 @@ def create_consumer_agent(
         tools.append(create_service_manage_tasks_tool(
             admin_id, service_id, conv_id,
         ))
+        # v2: spawn — only fires inside scheduled-task execution, otherwise
+        # the tool returns an error string.  Always co-injected with the
+        # scheduler capability since spawn is meaningless without the parent
+        # task lineage.
+        tools.append(create_spawn_child_task_tool())
         system_prompt += "\n" + _CP2["service_scheduler"]
+        system_prompt += "\n" + _CP2["spawn"]
 
     # send_message 仅对反向投递渠道（wechat / scheduler）有意义；
     # web 直连 SSE 时 agent 的 token 已经流给浏览器，再调 send_message 既无投递目标
@@ -624,7 +845,7 @@ def create_consumer_agent(
         name=f"svc-{service_id}-{conv_id}",
     )
 
-    _consumer_agent_cache[cache_key] = agent
+    _put_consumer_agent_cache(cache_key, agent)
     return agent
 
 

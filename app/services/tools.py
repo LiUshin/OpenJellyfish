@@ -16,7 +16,10 @@ from app.services.ai_tools import (
     generate_speech as _gen_speech_impl,
     generate_video as _gen_video_impl,
 )
-from app.services.script_runner import run_script as _run_script_impl
+from app.services.script_runner import (
+    run_script as _run_script_impl,
+    superadmin_script_unrestricted,
+)
 
 PLAN_MODE_PROMPT = """[Plan Mode 已开启]
 你必须先分析用户的任务需求，而不是直接执行：
@@ -155,6 +158,42 @@ Agent 会读取文档内容，按照其中描述的步骤逐步执行。
 - **list** — 列出所有定时任务
 - **update** — 修改任务的调度、prompt、启用/禁用等
 - **delete** — 删除任务
+""",
+    "spawn": """
+## 自驱派生（spawn_child_task）— Agent 元能力
+
+⚠️ **此工具仅在你正在执行一个定时任务时可用。** 普通对话中调用会报错。
+
+你拥有 `spawn_child_task` 工具，可以在**当前定时任务执行过程中**派生一个新的"子定时任务"，
+让自己（或同 Service 下的同类 Agent）在未来某个时刻继续工作。这把"调度器"从纯被动的用户工具
+变成了 Agent 的元能力 —— 你可以自驱地组织多步骤、跨时段的工作循环。
+
+### 何时该 spawn
+
+- 当前任务完成后还需要追加一个"几分钟后/几小时后/明天"的后续动作
+- 调研/分析过程中发现一个值得独立深挖的子方向
+- 长流程被外部限制（API 配额/限流/时间窗）打断，需要稍后续跑
+- 多步骤工作流中"触发条件还不满足"，定个 trial 任务等条件
+
+### 何时不该 spawn
+
+- 用户在普通对话里说"帮我建个定时任务" → 用 `schedule_task`
+- 立即就能在当前轮次完成的事情 → 直接做，不要 spawn
+- 仅仅是"再等等" → 在当前任务里 sleep 不行（Agent 不应阻塞），但要权衡是否值得新建一棵子任务
+- 没有清晰的"为什么 spawn" → 不 spawn
+
+### 谱系与限频
+- 每个 spawn 都会接到当前任务下面，形成 root → ... → 当前 → 子 的谱系
+- 同一谱系（同 root）有派生频次上限（默认每小时 30 次），超限会报错
+- 谱系深度无硬上限，但**自查超过 5 层时认真考虑是否真的需要**
+
+### 关键参数
+- `name`: 子任务名（要清晰说明子任务做什么）
+- `prompt`: 给子 Agent 的指令（自然语言）
+- `schedule_type` + `schedule`: 默认 once + 空 → 立即；其他同 schedule_task
+- `capabilities`: 不填则继承父任务能力
+- `reason`: 派生原因，写入 spawn_reason，便于谱系图回溯
+- `inherit_reply_to`: 是否继承父任务推送通道，默认 True
 """,
     "service_broadcast": """
 ## Service 广播
@@ -388,6 +427,58 @@ def create_list_files_sorted_tool(user_id: str):
     return list_files_sorted
 
 
+_PERSONAL_MEMORY_MAX_CHARS = 8000
+
+
+def create_update_personal_memory_tool(user_id: str):
+    """Create the `update_personal_memory` tool.
+
+    Agent-managed memory lives in `user_profile.agent_notes` and is surfaced
+    in every system prompt under `## Agent 记忆`. The tool overwrites the
+    full content (the agent is responsible for merging old + new). When the
+    user sets `agent_notes_locked = true` in the profile, writes are refused
+    so the agent can't clobber a pinned snapshot.
+    """
+    from app.services.prompt import (
+        get_agent_notes, is_agent_notes_locked, set_agent_notes,
+    )
+
+    @tool
+    def update_personal_memory(content: str) -> str:
+        """覆盖式更新关于当前用户的长期记忆（Agent 记忆区）。
+
+        当你从对话中识别到用户的稳定偏好、身份背景、习惯、关键事实等值得跨会话记住的信息时，
+        调用此工具更新「Agent 记忆」。content 会**完整替换**现有内容，所以新内容必须包含
+        你想保留的旧信息 + 新增信息（先在心里合并好再写入）。
+
+        - 不要把单次对话的临时上下文写进来
+        - 不要重复用户在「个性规则」里已写的内容
+        - 不要超过 8000 字符，建议精炼 bullet 形式
+
+        Args:
+            content: 替换后的完整记忆文本（不是增量）
+
+        Returns:
+            成功时返回提示与字符数；用户已锁定时返回 [LOCKED] 错误信息。
+        """
+        if is_agent_notes_locked(user_id):
+            return "[LOCKED] 用户已锁定 Agent 记忆区，本次写入被拒绝。请勿反复尝试。"
+        if content is None:
+            content = ""
+        if len(content) > _PERSONAL_MEMORY_MAX_CHARS:
+            return (
+                f"[错误] 内容过长（{len(content)} 字符），上限 {_PERSONAL_MEMORY_MAX_CHARS}。"
+                "请精简后再调用。"
+            )
+        previous = get_agent_notes(user_id)
+        set_agent_notes(user_id, content)
+        delta = len(content) - len(previous)
+        sign = "+" if delta >= 0 else ""
+        return f"已更新 Agent 记忆：{len(content)} 字符（{sign}{delta}）。"
+
+    return update_personal_memory
+
+
 def create_move_file_tool(user_id: str):
     """Create a move_file tool that moves/renames a file or directory.
 
@@ -464,6 +555,7 @@ def create_run_script_tool(user_id: str):
                 allowed_read_dirs=[ctx["docs_dir"]],
                 allowed_write_dirs=ctx["write_dirs"],
                 python_executable=get_user_python(user_id),
+                unrestricted=superadmin_script_unrestricted(),
             )
         if result["error"]:
             return f"执行失败: {result['error']}"
@@ -853,6 +945,125 @@ def create_manage_scheduled_tasks_tool(user_id: str):
             return f"错误：未知操作 '{action}'，可选 'list'、'update'、'delete'"
 
     return manage_scheduled_tasks
+
+
+# ── Spawn child task (v2 self-driving meta-capability) ────────────────────
+
+def create_spawn_child_task_tool():
+    """Create the ``spawn_child_task`` tool used by an agent **inside** a
+    scheduled-task execution to fork off a follow-up scheduled task.
+
+    The tool reads its parent execution context (parent task id, root, depth,
+    spawn_chain, scope, reply_to inheritance) from
+    :func:`app.services.scheduler.get_current_task_context`, which is set by
+    ``_execute_task`` / ``_execute_service_task``.
+
+    Outside that context the tool returns a clear error rather than silently
+    creating an orphan root task — this is intentional, callers that want to
+    create root tasks should use ``schedule_task`` instead.
+
+    Spawn rate is bounded per **chain** (see ``app.services.spawn_limits``)
+    to prevent runaway recursion.
+    """
+    from langchain_core.tools import tool as _tool
+
+    @_tool
+    def spawn_child_task(
+        name: str,
+        prompt: str,
+        schedule_type: str = "once",
+        schedule: str = "",
+        capabilities: Optional[List[str]] = None,
+        doc_paths: Optional[List[str]] = None,
+        reason: Optional[str] = None,
+        inherit_reply_to: bool = True,
+        enabled: bool = True,
+    ) -> str:
+        """生成一个由当前定时任务派生的"子任务"，让 Agent 自驱地接续工作。
+
+        ⚠️ 仅在定时任务执行上下文中可用。如果用户在普通对话里要建定时任务，
+        请使用 `schedule_task` / `manage_scheduled_tasks`。
+
+        典型用途（自驱循环）：
+        - 一个"晨报采集"任务在跑完后 spawn 一个"半小时后整理"的子任务
+        - 一个"调研"任务发现需要更深的子主题，spawn 多个并行子任务
+        - 一个长流程根据中间结果决定下一步是否继续，spawn next-step
+
+        Args:
+            name: 子任务名称
+            prompt: Agent 在子任务中要做的事（自然语言指令）
+            schedule_type: "once" / "cron" / "interval"。默认 once。
+            schedule: 调度值。once 留空 → 立即执行；ISO 时间需带时区后缀；cron / interval 同顶层 schedule_task
+            capabilities: 子任务 Agent 需要的工具能力。留空 → 继承父任务
+            doc_paths: 文档驱动路径（相对 docs/）
+            reason: 派生原因（写入 spawn_reason，便于谱系图查看）
+            inherit_reply_to: 是否继承父任务的 reply_to（推送通道）。默认 True
+            enabled: 是否立即启用，默认 True
+        """
+        from app.services.scheduler import (
+            get_current_task_context,
+            create_child_task,
+        )
+        from app.services.spawn_limits import check_chain_quota
+
+        ctx = get_current_task_context()
+        if ctx is None:
+            return ("错误：spawn_child_task 仅可在定时任务执行期间调用。"
+                    "如果你在普通对话中想创建定时任务，请使用 schedule_task。")
+
+        # Atomic rate-limit check + register: prevents runaway recursion.
+        # Window/limit are configurable via SCHED_SPAWN_RATE_PER_HOUR.
+        quota = check_chain_quota(ctx.scope, ctx.uid, ctx.root_task_id,
+                                  service_id=ctx.service_id)
+        if not quota.allowed:
+            return (f"错误：派生频次超限。该谱系（root={ctx.root_task_id}）"
+                    f"在过去 {quota.window_seconds}s 内已派生 {quota.current} 次，"
+                    f"上限 {quota.limit}。最早一条配额释放于 {quota.reset_at}。")
+
+        # Build child config; inherit defaults from parent ctx where caller didn't specify.
+        actual_schedule = schedule
+        if schedule_type == "once" and schedule:
+            actual_schedule = _ensure_tz_suffix(schedule, ctx.tz_offset_hours)
+
+        task_config: Dict = {
+            "prompt": prompt,
+            "doc_path": doc_paths or [],
+            "capabilities": list(capabilities) if capabilities is not None
+                            else list(ctx.capabilities or []),
+        }
+        if ctx.permissions:
+            task_config["permissions"] = ctx.permissions
+
+        try:
+            child = create_child_task(ctx, {
+                "name": name,
+                "description": reason or "",
+                "schedule_type": schedule_type,
+                "schedule": actual_schedule,
+                "task_type": "agent",
+                "task_config": task_config,
+                "reply_to": ctx.reply_to if inherit_reply_to else None,
+                "enabled": enabled,
+                "spawn_reason": reason or "",
+            })
+        except Exception as e:
+            return f"错误：派生失败 — {e}"
+
+        next_run = child.get("next_run_at") or "未排定"
+        chain_str = "→".join(child.get("spawn_chain") or []) or "(root)"
+        return (
+            f"已派生子任务：\n"
+            f"  ID: {child['id']}\n"
+            f"  名称: {child['name']}\n"
+            f"  深度: {child['spawn_depth']}\n"
+            f"  谱系: {chain_str} → {child['id']}\n"
+            f"  调度: {schedule_type} → {actual_schedule or '(立即)'}\n"
+            f"  下次运行: {next_run}\n"
+            f"  本谱系已用配额: {quota.current}/{quota.limit} "
+            f"（窗口 {quota.window_seconds}s）"
+        )
+
+    return spawn_child_task
 
 
 def create_service_schedule_tool(

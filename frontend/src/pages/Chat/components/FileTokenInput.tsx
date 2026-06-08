@@ -23,6 +23,7 @@ import {
   useRef,
   type ClipboardEvent as RClipboardEvent,
 } from 'react';
+import i18n from '../../../i18n';
 import styles from '../chat.module.css';
 
 // ── Serialisation helpers ─────────────────────────────────────────────────────
@@ -82,7 +83,7 @@ function createChipNode(
   span.contentEditable = 'false';
   span.setAttribute('data-jf-file', path);
   if (isDir) span.setAttribute('data-jf-is-dir', 'true');
-  span.title = `${path} · 点击在文件浏览器打开`;
+  span.title = i18n.t('fileToken.openInBrowser', { path });
 
   // × button — left side, visible on hover via CSS
   const xBtn = document.createElement('button');
@@ -90,7 +91,7 @@ function createChipNode(
   xBtn.type = 'button';
   xBtn.tabIndex = -1;
   xBtn.textContent = '×';
-  xBtn.title = '删除引用';
+  xBtn.title = i18n.t('fileToken.removeRef');
   xBtn.addEventListener('mousedown', (e) => {
     // mousedown not click so it fires before the contenteditable loses focus
     e.preventDefault();
@@ -270,7 +271,7 @@ const FileTokenInput = forwardRef<FileTokenInputHandle, FileTokenInputProps>(
       onMentionConfirm,
       onMentionDismiss,
       mentionPickerActive = false,
-      placeholder = '输入消息...',
+      placeholder = i18n.t('fileToken.inputPlaceholder'),
       disabled = false,
       onImagePaste,
       className,

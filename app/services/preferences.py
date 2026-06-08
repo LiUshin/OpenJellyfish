@@ -15,10 +15,19 @@ _DEFAULTS: Dict[str, Any] = {
     # 每 capability 的默认 model（覆盖 config/model_catalog.json 的 defaults 块）
     # 形如 {"image": "openai:gpt-image-1", "tts": "openai:tts-1", ...}
     "capability_defaults": {},
+    # UI/messages 语言："zh" | "en"。空字符串视为未设置 → 后端按 Accept-Language
+    # 头解析（前端首次访问由 navigator.language 推断，写入 localStorage 后跨设备
+    # 通过此偏好同步）。
+    "language": "",
+    # 用户主动隐藏的 LLM model ID 列表（不在对话框显示）。默认空 = 全部显示。
+    "hidden_models": [],
 }
 
 # capability_defaults 内允许的 key
 _CAPABILITY_KEYS = {"llm", "image", "tts", "video", "stt", "s2s"}
+
+# 支持的 UI 语言。新增语言时把 ISO 639-1 加进来即可。
+SUPPORTED_LANGUAGES = ("zh", "en")
 
 
 def _pref_path(user_id: str) -> str:
@@ -43,7 +52,7 @@ def get_tz_offset(user_id: str) -> float:
 
 def update_preferences(user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
     prefs = get_preferences(user_id)
-    allowed_keys = {"tz_offset_hours", "capability_defaults"}
+    allowed_keys = {"tz_offset_hours", "capability_defaults", "language", "hidden_models"}
     for k, v in updates.items():
         if k not in allowed_keys:
             continue
@@ -57,6 +66,15 @@ def update_preferences(user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
                 elif isinstance(mid, str):
                     current[cap] = mid
             prefs["capability_defaults"] = current
+        elif k == "language":
+            # Empty string → "auto"; otherwise must be in supported list.
+            if v in (None, ""):
+                prefs["language"] = ""
+            elif isinstance(v, str) and v in SUPPORTED_LANGUAGES:
+                prefs["language"] = v
+        elif k == "hidden_models":
+            if isinstance(v, list):
+                prefs["hidden_models"] = [m for m in v if isinstance(m, str)]
         else:
             prefs[k] = v
     path = _pref_path(user_id)
@@ -72,3 +90,21 @@ def get_capability_default(user_id: str, capability: str) -> str:
         return ""
     caps = (get_preferences(user_id).get("capability_defaults") or {})
     return caps.get(capability, "") or ""
+
+
+def get_language_preference(user_id: str) -> str:
+    """读取用户的 UI 语言偏好。空串表示未设置（应回退到 Accept-Language）。"""
+    lang = (get_preferences(user_id).get("language") or "").strip()
+    if lang in SUPPORTED_LANGUAGES:
+        return lang
+    return ""
+
+
+def get_hidden_models(user_id: str) -> list:
+    """读取用户隐藏的 LLM model ID 列表。"""
+    return list(get_preferences(user_id).get("hidden_models") or [])
+
+
+def set_hidden_models(user_id: str, hidden: list) -> None:
+    """更新用户的隐藏 model 列表。"""
+    update_preferences(user_id, {"hidden_models": hidden})

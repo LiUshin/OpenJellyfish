@@ -195,15 +195,31 @@ class StorageService(ABC):
 
     def consumer_file_response(
         self, admin_id: str, service_id: str, conv_id: str, path: str,
+        download: bool = False,
     ) -> Any:
-        """Return a FastAPI Response for serving a consumer generated file."""
+        """Return a FastAPI Response for serving a consumer generated file.
+
+        download=True 时以附件形式下载（Content-Disposition: attachment），否则内联
+        （供 <img>/<audio>/<video>/<iframe> 预览）。会用 mimetypes 猜测 MIME。
+        path 解析走 safe_join，越界会抛 ValueError/FileNotFoundError 由调用方转 404。
+        """
+        import os
+        import mimetypes
+        from urllib.parse import quote
         from fastapi.responses import FileResponse, RedirectResponse
 
         url = self._get_consumer_media_url(admin_id, service_id, conv_id, path)
         if url is not None:
             return RedirectResponse(url=url)
         full = self._get_consumer_real_path(admin_id, service_id, conv_id, path)
-        return FileResponse(full)
+        if not os.path.isfile(full):
+            raise FileNotFoundError(path)
+        media_type = mimetypes.guess_type(full)[0] or "application/octet-stream"
+        filename = os.path.basename(full)
+        disposition = "attachment" if download else "inline"
+        # RFC 5987 filename* 处理非 ASCII 文件名
+        cd = f"{disposition}; filename*=UTF-8''{quote(filename)}"
+        return FileResponse(full, media_type=media_type, headers={"Content-Disposition": cd})
 
     # ── script execution ──
 

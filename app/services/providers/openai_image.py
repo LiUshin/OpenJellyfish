@@ -1,4 +1,4 @@
-"""OpenAI 文生图 provider（``gpt-image-1`` 等）。"""
+"""OpenAI 文生图 provider（``gpt-image-1``、``gpt-image-2`` 等）。"""
 
 from __future__ import annotations
 

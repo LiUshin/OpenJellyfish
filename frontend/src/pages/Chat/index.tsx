@@ -14,6 +14,7 @@ import {
   Stop,
   Paperclip,
 } from '@phosphor-icons/react';
+import { useTranslation, Trans } from 'react-i18next';
 import * as api from '../../services/api';
 import type { Conversation, Message } from '../../types';
 import StreamingMessage from './components/StreamingMessage';
@@ -82,21 +83,26 @@ async function getCachedImages(convId: string): Promise<{ dataUrl: string; name:
   } catch { return []; }
 }
 
+// Capability bar definitions; labels resolved through `t(labelKey)` at render
+// time so language flips refresh without re-creating the constant.
 const CAPABILITIES = [
-  { key: 'web', label: '联网', icon: <Globe size={16} /> },
-  { key: 'image', label: '绘图', icon: <Palette size={16} /> },
-  { key: 'speech', label: '语音', icon: <SpeakerHigh size={16} /> },
-  { key: 'video', label: '视频', icon: <VideoCamera size={16} /> },
+  { key: 'web', labelKey: 'chat.modeWeb', icon: <Globe size={16} /> },
+  { key: 'image', labelKey: 'chat.modeImage', icon: <Palette size={16} /> },
+  { key: 'speech', labelKey: 'chat.modeSpeech', icon: <SpeakerHigh size={16} /> },
+  { key: 'video', labelKey: 'chat.modeVideo', icon: <VideoCamera size={16} /> },
 ];
 
-const SUGGESTIONS = [
-  { emoji: '🛠️', text: '你能做什么', msg: '你可以帮我做哪些事情？请列举你的主要功能和使用场景' },
-  { emoji: '⏰', text: '如何设置定时任务', msg: '如何设置定时任务？请帮我介绍定时任务的配置方式和使用方法' },
-  { emoji: '🤖', text: '管理 Subagent', msg: '如何创建和管理 Subagent？请介绍 Subagent 的用途和配置方法' },
-  { emoji: '📡', text: '分发 Service', msg: '如何创建和分发 Service？请介绍 Service 的发布和管理流程' },
+// Suggestions live in i18n under chat.suggestion*. We keep emoji here to avoid
+// duplicating glyphs across locale files.
+const SUGGESTION_KEYS = [
+  { emoji: '🛠️', textKey: 'chat.suggestionWhatCanYouDo', msgKey: 'chat.suggestionWhatCanYouDoMsg' },
+  { emoji: '⏰', textKey: 'chat.suggestionScheduler', msgKey: 'chat.suggestionSchedulerMsg' },
+  { emoji: '🤖', textKey: 'chat.suggestionSubagent', msgKey: 'chat.suggestionSubagentMsg' },
+  { emoji: '📡', textKey: 'chat.suggestionService', msgKey: 'chat.suggestionServiceMsg' },
 ];
 
 export default function ChatPage() {
+  const { t } = useTranslation();
   const { message: messageApi } = App.useApp();
   const { editingFile, splitMode, setSplitMode } = useFileWorkspace();
   const stream = useStream();
@@ -238,7 +244,7 @@ export default function ChatPage() {
       const convs = await api.listConversations();
       setConversations(convs);
     } catch (e: unknown) {
-      messageApi.error(e instanceof Error ? e.message : '加载对话失败');
+      messageApi.error(e instanceof Error ? e.message : t('chat.loadConvFail'));
     }
   }
 
@@ -281,7 +287,7 @@ export default function ChatPage() {
       }
     } catch (e: unknown) {
       if (seq !== loadMessagesRef.current) return;
-      messageApi.error(e instanceof Error ? e.message : '加载消息失败');
+      messageApi.error(e instanceof Error ? e.message : t('chat.loadMsgFail'));
     } finally {
       if (seq === loadMessagesRef.current) setLoadingConv(false);
     }
@@ -294,7 +300,7 @@ export default function ChatPage() {
       setCurrentConvId(conv.id);
       setMessages([]);
     } catch (e: unknown) {
-      messageApi.error(e instanceof Error ? e.message : '创建对话失败');
+      messageApi.error(e instanceof Error ? e.message : t('chat.createConvFail'));
     }
   }
 
@@ -310,7 +316,7 @@ export default function ChatPage() {
         setMessages([]);
       }
     } catch (e: unknown) {
-      messageApi.error(e instanceof Error ? e.message : '删除失败');
+      messageApi.error(e instanceof Error ? e.message : t('chat.deleteFail'));
     }
   }
 
@@ -373,7 +379,7 @@ export default function ChatPage() {
   async function handleForceStop(convId: string) {
     try {
       await api.stopChat(convId);
-      messageApi.success('已请求终止上一轮对话');
+      messageApi.success(t('chat.abortPrevSuccess'));
       setTimeout(async () => {
         await checkServerStreaming();
         const detail = await api.getConversation(convId);
@@ -383,7 +389,7 @@ export default function ChatPage() {
         loadConversations();
       }, 1000);
     } catch {
-      messageApi.error('终止请求失败');
+      messageApi.error(t('chat.abortPrevFail'));
     }
   }
 
@@ -467,23 +473,23 @@ export default function ChatPage() {
     const hasImages = attachedImages.length > 0;
     if (!msg && !hasImages) return;
     if (isStreaming || interruptData) {
-      const streamTitle = conversations.find((c) => c.id === streamingConvId)?.title || '对话';
+      const streamTitle = conversations.find((c) => c.id === streamingConvId)?.title || t('chat.conversationFallback');
       messageApi.warning({
-        content: `「${streamTitle}」正在运行中，请等待完成或手动停止后再发送`,
+        content: t('chat.queueRunning', { title: streamTitle }),
         duration: 3,
       });
       return;
     }
     if (serverStreaming.includes(currentConvId ?? '')) {
       messageApi.warning({
-        content: '当前对话的上一轮仍在后台运行中，请先终止后再发送',
+        content: t('chat.queueRunningPrev'),
         duration: 3,
       });
       return;
     }
     if (serverInterrupted.includes(currentConvId ?? '')) {
       messageApi.warning({
-        content: '当前对话有待审批的操作，请先处理审批或终止后再发送',
+        content: t('chat.queueApprovalPending'),
         duration: 3,
       });
       return;
@@ -492,13 +498,13 @@ export default function ChatPage() {
     let convId = currentConvId;
     if (!convId) {
       try {
-        const title = msg ? msg.slice(0, 30) : '图片对话';
+        const title = msg ? msg.slice(0, 30) : t('chat.imgConvTitle');
         const conv = await api.createConversation(title);
         setConversations((prev) => [conv, ...prev]);
         convId = conv.id;
         setCurrentConvId(convId);
       } catch {
-        messageApi.error('创建对话失败');
+        messageApi.error(t('chat.createConvFail'));
         return;
       }
     }
@@ -583,8 +589,8 @@ export default function ChatPage() {
   }
 
   const currentTitle = currentConvId
-    ? conversations.find((c) => c.id === currentConvId)?.title || '对话'
-    : '选择或创建一个对话';
+    ? conversations.find((c) => c.id === currentConvId)?.title || t('chat.conversationFallback')
+    : t('chat.selectOrCreate');
 
   const siderSlot = document.getElementById('sider-slot');
 
@@ -596,7 +602,7 @@ export default function ChatPage() {
           icon={<Plus size={16} />}
           onClick={handleNewChat}
         >
-          新对话
+          {t('chat.newChat')}
         </Button>
       </div>
       <div className={styles.convList}>
@@ -611,12 +617,12 @@ export default function ChatPage() {
             >
               <span className={styles.convTitle}>{conv.title}</span>
               {isConvStreaming && (
-                <span className={styles.streamingDots} title="正在回复">
+                <span className={styles.streamingDots} title={t('chat.streamingTitle')}>
                   <span>.</span><span>.</span><span>.</span>
                 </span>
               )}
               {isConvHitl && (
-                <span className={styles.hitlBadge} title="等待审批">?</span>
+                <span className={styles.hitlBadge} title={t('chat.hitlBadge')}>?</span>
               )}
               <Button
                 type="text"
@@ -634,7 +640,7 @@ export default function ChatPage() {
         })}
         {conversations.length === 0 && (
           <div style={{ padding: 20, textAlign: 'center', color: 'var(--jf-text-dim)', fontSize: 12 }}>
-            暂无对话
+            {t('chat.emptyConversations')}
           </div>
         )}
       </div>
@@ -667,19 +673,21 @@ export default function ChatPage() {
                 />
               </div>
               <p style={{ fontSize: 22, fontWeight: 600, margin: '12px 0 4px' }}>
-                Hi! 我是 JellyfishBot
+                {t('chat.welcomeTitle')}
               </p>
               <p className={styles.emptyHint}>
-                按住 <kbd>Tab</kbd> 说话，松开自动发送
+                <Trans i18nKey="chat.voiceHint">
+                  Hold <kbd>Tab</kbd> to speak, release to send
+                </Trans>
               </p>
               <div className={styles.suggestionChips}>
-                {SUGGESTIONS.map((s) => (
+                {SUGGESTION_KEYS.map((s) => (
                   <button
-                    key={s.text}
+                    key={s.textKey}
                     className={styles.suggestionChip}
-                    onClick={() => handleSend(s.msg)}
+                    onClick={() => handleSend(t(s.msgKey))}
                   >
-                    {s.emoji} {s.text}
+                    {s.emoji} {t(s.textKey)}
                   </button>
                 ))}
               </div>
@@ -731,7 +739,7 @@ export default function ChatPage() {
             }`}
             onClick={resetScroll}
           >
-            <CaretDown size={14} /> 回到底部
+            <CaretDown size={14} /> {t('chat.backToBottom')}
           </button>
         </div>
 
@@ -740,16 +748,16 @@ export default function ChatPage() {
           <div className={styles.streamElsewhereBanner}>
             <span className={styles.streamElsewhereText}>
               {interruptData ? '⏸' : '⏳'}{' '}
-              「{conversations.find((c) => c.id === streamingConvId)?.title || '对话'}」
-              {interruptData ? '等待审批中' : '正在运行中'}
+              「{conversations.find((c) => c.id === streamingConvId)?.title || t('chat.conversationFallback')}」
+              {interruptData ? t('chat.runStateAwaiting') : t('chat.runStateRunning')}
             </span>
             <div className={styles.streamElsewhereActions}>
               <Button size="small" type="link" onClick={navigateToStreamingConv}>
-                查看
+                {t('chat.viewBtn')}
               </Button>
               {isStreaming && (
                 <Button size="small" type="link" danger onClick={handleStop}>
-                  停止
+                  {t('chat.stopBtn')}
                 </Button>
               )}
             </div>
@@ -760,11 +768,11 @@ export default function ChatPage() {
         {!isStreaming && !interruptData && currentConvId && serverStreaming.includes(currentConvId) && (
           <div className={styles.streamElsewhereBanner}>
             <span className={styles.streamElsewhereText}>
-              ⏳ 上一轮对话仍在后台运行中
+              {t('chat.prevRoundRunning')}
             </span>
             <div className={styles.streamElsewhereActions}>
               <Button size="small" type="link" danger onClick={() => handleForceStop(currentConvId)}>
-                终止并保存
+                {t('chat.terminateAndSave')}
               </Button>
               <Button
                 size="small"
@@ -774,7 +782,7 @@ export default function ChatPage() {
                   if (currentConvId) loadMessages(currentConvId);
                 }}
               >
-                刷新状态
+                {t('chat.refreshState')}
               </Button>
             </div>
           </div>
@@ -784,14 +792,14 @@ export default function ChatPage() {
         {!isStreaming && !interruptData && currentConvId && serverInterrupted.includes(currentConvId) && (
           <div className={styles.streamElsewhereBanner}>
             <span className={styles.streamElsewhereText}>
-              ⏸ 此对话有待审批的操作
+              {t('chat.pendingApproval')}
             </span>
             <div className={styles.streamElsewhereActions}>
               <Button size="small" type="link" onClick={() => tryRestoreInterrupt(currentConvId)}>
-                恢复审批
+                {t('chat.resumeApproval')}
               </Button>
               <Button size="small" type="link" danger onClick={() => handleForceStop(currentConvId)}>
-                终止并保存
+                {t('chat.terminateAndSave')}
               </Button>
             </div>
           </div>
@@ -811,7 +819,7 @@ export default function ChatPage() {
             disabled={isStreaming}
           />
           <div className={styles.inputToolbar}>
-            <Tooltip title="上传文件">
+            <Tooltip title={t('chat.uploadTooltip')}>
               <button
                 className={`${styles.capBtn} ${attachedImages.length > 0 ? styles.capBtnActive : ''}`}
                 onClick={() => imageAttachRef.current?.triggerUpload()}
@@ -822,7 +830,7 @@ export default function ChatPage() {
             </Tooltip>
             <div className={styles.inputToolbarDivider} />
             {CAPABILITIES.map((cap) => (
-              <Tooltip key={cap.key} title={cap.label}>
+              <Tooltip key={cap.key} title={t(cap.labelKey)}>
                 <button
                   className={`${styles.capBtn} ${capabilities.includes(cap.key) ? styles.capBtnActive : ''}`}
                   onClick={() => {
@@ -838,7 +846,7 @@ export default function ChatPage() {
               </Tooltip>
             ))}
             <div className={styles.inputToolbarDivider} />
-            <Tooltip title={planMode ? 'Plan Mode 已开启' : 'Plan Mode：先规划再执行'}>
+            <Tooltip title={planMode ? t('chat.planModeOn') : t('chat.planModeHint')}>
               <button
                 className={`${styles.capBtn} ${planMode ? styles.capBtnActive : ''}`}
                 onClick={() => setPlanMode(!planMode)}
@@ -852,7 +860,7 @@ export default function ChatPage() {
               onChange={handleSelectModel}
               className={styles.modelSelect}
               size="small"
-              placeholder="选择模型"
+              placeholder={t('chat.modelPlaceholder')}
               options={models.map((m) => ({ value: m.id, label: m.name }))}
               popupMatchSelectWidth={false}
             />
@@ -873,7 +881,7 @@ export default function ChatPage() {
               onMentionNavUp={handleMentionNavUp}
               onMentionConfirm={handleMentionConfirm}
               onMentionDismiss={handleMentionDismiss}
-              placeholder="输入消息... (Enter 发送, Shift+Enter 换行, @ 引用文件)"
+              placeholder={t('chat.inputPlaceholder')}
               disabled={isStreaming}
               onImagePaste={handleImagePaste}
             />
@@ -909,7 +917,7 @@ export default function ChatPage() {
           {yoloOn && currentConvId && yoloApprovedConvs.has(currentConvId) && (
             <div
               className={styles.yoloFooterTag}
-              title="YOLO 模式已自动批准本会话内的 HITL 操作"
+              title={t('chat.yoloAutoApprove')}
             >
               <span className={styles.yoloFooterDot} />
               yolo

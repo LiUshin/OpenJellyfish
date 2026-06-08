@@ -10,6 +10,7 @@ New structure:
 """
 
 import logging
+import os
 from datetime import datetime
 
 logging.basicConfig(
@@ -17,6 +18,15 @@ logging.basicConfig(
     format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
 )
+
+# httpx 默认在 INFO 级别为每次请求打一行（"HTTP Request: POST ... 200 OK"）。
+# 我们的微信 iLink 长轮询每 2 秒一次 getupdates，几个 session 每天数十万行
+# 噪声日志会撑爆 /var/log/journal。把 httpx 调到 WARNING 后，仅异常/超时
+# 仍可见（错误依然会经业务代码 log.exception 打出）。
+# 同样关掉 httpcore（httpx 底层）和 openai/anthropic SDK 的 INFO 噪声。
+for _noisy in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection",
+               "openai._base_client", "anthropic._base_client"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,22 +95,54 @@ if _WECHAT_AVAILABLE:
     app.include_router(wechat_ui_router)
 
 
+def _is_scheduler_disabled() -> bool:
+    return os.getenv("DISABLE_SCHEDULER", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _apply_safe_startup() -> None:
+    """Emergency: one env flag disables the two heaviest startup paths.
+
+    Set ``SAFE_STARTUP=1`` when the instance is wedged (OOM / CPU / SSH timeout).
+    Forces ``DISABLE_SCHEDULER=1`` and ``RESTORE_VENVS_ON_STARTUP=0`` for this process.
+    """
+    if os.getenv("SAFE_STARTUP", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return
+    os.environ["DISABLE_SCHEDULER"] = "1"
+    os.environ["RESTORE_VENVS_ON_STARTUP"] = "0"
+    print(
+        "[JellyfishBot] SAFE_STARTUP: set DISABLE_SCHEDULER=1, "
+        "RESTORE_VENVS_ON_STARTUP=0 (remove SAFE_STARTUP after recovery)"
+    )
+
+
 @app.on_event("startup")
 async def startup():
     import asyncio
     from app.services.inbox import set_main_loop
     set_main_loop(asyncio.get_running_loop())
 
+    _apply_safe_startup()
+
     await init_checkpointer()
     print("[JellyfishBot] Checkpointer initialized")
 
     from app.services.scheduler import get_scheduler
-    get_scheduler().start()
-    print("[JellyfishBot] Task scheduler started")
+    if _is_scheduler_disabled():
+        print("[JellyfishBot] Task scheduler DISABLED (DISABLE_SCHEDULER env)")
+    else:
+        get_scheduler().start()
+        print("[JellyfishBot] Task scheduler started")
 
-    from app.services.venv_manager import restore_all_venvs
+    from app.services.venv_manager import restore_all_venvs, restore_venvs_on_startup_enabled
     await restore_all_venvs()
-    print("[JellyfishBot] User venvs verified")
+    if restore_venvs_on_startup_enabled():
+        print("[JellyfishBot] User venvs verified")
+    else:
+        print("[JellyfishBot] Venv restore skipped at startup")
 
     if _WECHAT_AVAILABLE:
         from app.channels.wechat.session_manager import get_session_manager
@@ -120,7 +162,8 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     from app.services.scheduler import get_scheduler
-    await get_scheduler().stop()
+    if not _is_scheduler_disabled():
+        await get_scheduler().stop()
 
     if _WECHAT_AVAILABLE:
         from app.channels.wechat.session_manager import get_session_manager

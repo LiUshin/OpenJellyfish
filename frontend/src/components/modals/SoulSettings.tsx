@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Switch, Typography, Space, Spin, message, Divider, Tag, Input, Button, Popconfirm } from 'antd';
 import { Brain, FolderOpen, Eye, PencilSimple, ArrowCounterClockwise, FloppyDisk } from '@phosphor-icons/react';
+import { useTranslation, Trans } from 'react-i18next';
 import * as api from '../../services/api';
 import type { SoulConfig, CapabilityPromptItem } from '../../services/api';
 import { useIsMobile } from '../../hooks/useMediaQuery';
@@ -38,12 +39,13 @@ const ICON_WRAP: React.CSSProperties = {
 
 const SOUL_PROMPT_KEYS = ['memory_subagent', 'soul_edit'] as const;
 
-const PROMPT_LABELS: Record<string, string> = {
-  memory_subagent: 'Memory Subagent 提示词',
-  soul_edit: 'Soul 文件系统 提示词',
+const PROMPT_LABEL_KEYS: Record<string, string> = {
+  memory_subagent: 'soul.promptLabelMemory',
+  soul_edit: 'soul.promptLabelSoul',
 };
 
 export default function SoulSettings({ open, onClose, inline }: Props) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [config, setConfig] = useState<SoulConfig | null>(null);
   const [loading, setLoading] = useState(false);
@@ -71,11 +73,11 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
       }
       setEditTexts(texts);
     } catch {
-      message.error('加载 Soul 配置失败');
+      message.error(t('soul.loadFail'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (open) load();
@@ -87,9 +89,9 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
     try {
       const res = await api.updateSoulConfig({ [key]: value });
       setConfig(res.config);
-      message.success('设置已更新');
+      message.success(t('soul.updateSuccess'));
     } catch {
-      message.error('更新失败');
+      message.error(t('soul.updateFail'));
     } finally {
       setUpdating(null);
     }
@@ -99,13 +101,13 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
     setSavingPrompt(key);
     try {
       await api.updateCapabilityPrompt(key, editTexts[key] || '');
-      message.success('提示词已保存');
+      message.success(t('soul.promptSaved'));
       const item = prompts[key];
       if (item) {
         setPrompts({ ...prompts, [key]: { ...item, custom: editTexts[key] || null } });
       }
     } catch {
-      message.error('保存失败');
+      message.error(t('soul.promptSaveFail'));
     } finally {
       setSavingPrompt(null);
     }
@@ -120,9 +122,9 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
         setEditTexts({ ...editTexts, [key]: item.default });
         setPrompts({ ...prompts, [key]: { ...item, custom: null } });
       }
-      message.success('已恢复默认');
+      message.success(t('soul.promptResetSuccess'));
     } catch {
-      message.error('重置失败');
+      message.error(t('soul.promptResetFail'));
     } finally {
       setSavingPrompt(null);
     }
@@ -156,12 +158,12 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <Space size={6}>
-            <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>{PROMPT_LABELS[key]}</Text>
-            {isCustom && <Tag color="orange" style={{ fontSize: 10, lineHeight: '14px', padding: '0 4px' }}>已自定义</Tag>}
+            <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>{t(PROMPT_LABEL_KEYS[key])}</Text>
+            {isCustom && <Tag color="orange" style={{ fontSize: 10, lineHeight: '14px', padding: '0 4px' }}>{t('soul.customizedTag')}</Tag>}
           </Space>
           <Space size={4}>
             {isCustom && (
-              <Popconfirm title="恢复为默认提示词？" onConfirm={() => resetPrompt(key)} okText="确定" cancelText="取消">
+              <Popconfirm title={t('soul.promptResetConfirm')} onConfirm={() => resetPrompt(key)} okText={t('common.confirm')} cancelText={t('common.cancel')}>
                 <Button
                   size="small" type="text"
                   icon={<ArrowCounterClockwise size={14} />}
@@ -199,14 +201,14 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
         <Space align="center" size={10}>
           <Brain size={22} weight="duotone" color="var(--jf-primary)" />
           <Text strong style={{ fontSize: 16, color: 'var(--jf-text)' }}>
-            Memory & Soul
+            {t('soul.title')}
           </Text>
           <Tag color="purple" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
-            Advanced
+            {t('soul.advTag')}
           </Tag>
         </Space>
         <Paragraph style={{ color: 'var(--jf-text-muted)', fontSize: 13, marginTop: 6, marginBottom: 0 }}>
-          控制 Agent 的长期记忆和自我认知能力。Memory Subagent 可以管理笔记，Soul Edit 可以让文件面板直接管理灵魂文件。
+          {t('soul.intro')}
         </Paragraph>
       </div>
 
@@ -217,7 +219,7 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <Text strong style={{ fontSize: 14, color: 'var(--jf-text)' }}>Memory Subagent 写入</Text>
+              <Text strong style={{ fontSize: 14, color: 'var(--jf-text)' }}>{t('soul.memorySubagentTitle')}</Text>
               <Switch
                 checked={config.memory_subagent_enabled}
                 loading={updating === 'memory_subagent_enabled'}
@@ -226,8 +228,9 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
               />
             </div>
             <Paragraph style={{ color: 'var(--jf-text-muted)', fontSize: 12, marginBottom: 0, lineHeight: '18px' }}>
-              启用后，Memory Subagent 可以在 <code style={{ color: 'var(--jf-accent)', fontSize: 11 }}>soul/</code> 目录下创建、编辑、删除笔记和文件。
-              对话记录本身保持只读，Subagent 不能修改已发生的聊天历史。
+              <Trans i18nKey="soul.memorySubagentDesc">
+                When on, the Memory Subagent can create / edit / delete notes and files under <code style={{ color: 'var(--jf-accent)', fontSize: 11 }}>soul/</code>. Conversation history stays read-only — the subagent can never modify past chats.
+              </Trans>
             </Paragraph>
             {config.memory_subagent_enabled && (
               <div style={{
@@ -237,10 +240,10 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
               }}>
                 <Text style={{ color: 'var(--jf-text-muted)', fontSize: 11 }}>
                   <Eye size={12} style={{ marginRight: 4, verticalAlign: -1 }} />
-                  对话历史：只读
+                  {t('soul.convReadOnly')}
                   <span style={{ margin: '0 8px', color: 'var(--jf-text-dim)' }}>|</span>
                   <PencilSimple size={12} style={{ marginRight: 4, verticalAlign: -1 }} />
-                  soul/ 文件：读写
+                  {t('soul.soulRW')}
                 </Text>
               </div>
             )}
@@ -256,7 +259,7 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <Text strong style={{ fontSize: 14, color: 'var(--jf-text)' }}>Soul 文件系统</Text>
+              <Text strong style={{ fontSize: 14, color: 'var(--jf-text)' }}>{t('soul.soulFsTitle')}</Text>
               <Switch
                 checked={config.soul_edit_enabled}
                 loading={updating === 'soul_edit_enabled'}
@@ -265,8 +268,9 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
               />
             </div>
             <Paragraph style={{ color: 'var(--jf-text-muted)', fontSize: 12, marginBottom: 0, lineHeight: '18px' }}>
-              启用后，<code style={{ color: 'var(--jf-accent)', fontSize: 11 }}>soul/</code> 目录会出现在文件面板中，你可以直接浏览和管理全部灵魂文件。
-              同时 Agent 也可以在对话中直接读写 soul/ 下的文件。
+              <Trans i18nKey="soul.soulFsDesc">
+                When on, the <code style={{ color: 'var(--jf-accent)', fontSize: 11 }}>soul/</code> folder appears in the file panel — browse and manage all soul files directly. The agent can also read/write files under soul/ in chat.
+              </Trans>
             </Paragraph>
             {config.soul_edit_enabled && (
               <div style={{
@@ -276,10 +280,10 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
               }}>
                 <Text style={{ color: 'var(--jf-text-muted)', fontSize: 11 }}>
                   <FolderOpen size={12} style={{ marginRight: 4, verticalAlign: -1 }} />
-                  文件面板中可见 soul/ 目录
+                  {t('soul.soulFsVisible')}
                   <span style={{ margin: '0 8px', color: 'var(--jf-text-dim)' }}>|</span>
                   <PencilSimple size={12} style={{ marginRight: 4, verticalAlign: -1 }} />
-                  Agent 可直接修改 soul/ 内文件
+                  {t('soul.soulFsAgentEdit')}
                 </Text>
               </div>
             )}
@@ -297,7 +301,7 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <Text strong style={{ fontSize: 14, color: 'var(--jf-text)' }}>包含消费者对话</Text>
+              <Text strong style={{ fontSize: 14, color: 'var(--jf-text)' }}>{t('soul.consumerConvTitle')}</Text>
               <Switch
                 checked={config.include_consumer_conversations}
                 loading={updating === 'include_consumer_conversations'}
@@ -306,7 +310,7 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
               />
             </div>
             <Paragraph style={{ color: 'var(--jf-text-muted)', fontSize: 12, marginBottom: 0, lineHeight: '18px' }}>
-              允许 Memory Subagent 读取 Service 消费者的对话记录。关闭时，记忆范围仅限管理员自己的对话。
+              {t('soul.consumerConvDesc')}
             </Paragraph>
           </div>
         </div>

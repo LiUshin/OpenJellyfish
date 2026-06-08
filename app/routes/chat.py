@@ -2,8 +2,11 @@ import base64
 import json
 import asyncio
 import logging
+import os
 import re
 import uuid
+from typing import Optional
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
@@ -22,6 +25,73 @@ router = APIRouter(tags=["chat"])
 _cancel_flags: dict[str, asyncio.Event] = {}
 _interrupt_state: dict[str, dict] = {}
 _active_streams: dict[str, dict] = {}  # thread_id → {user_id, conv_id}
+
+
+# ── Concurrency control for agent construction ──────────────────────────────
+# ``create_user_agent`` is a *synchronous* function doing heavy work
+# (LangGraph init + provider clients + tool/sub-agent wiring → 1–3s, 100–300 MB
+# per fresh instance). Calling it directly from an async route handler blocks
+# the event loop for the entire construction time, freezing every in-flight
+# SSE stream.
+#
+# Strategy:
+#   1) Off-load to ``asyncio.to_thread`` so the loop stays responsive.
+#   2) Bound concurrency via an ``asyncio.Semaphore`` so a burst of cache-miss
+#      chats can't fork N threads each booting a full LangGraph at once (CPU
+#      spike → OOM risk on small instances).
+#
+# Cache-hit fast path is unchanged: ``create_user_agent`` returns the cached
+# agent in microseconds when the LRU key matches (same user/model/caps/day),
+# so the semaphore is barely touched for steady-state traffic.
+
+_CHAT_DEFAULT_CONCURRENT = 4
+_CHAT_CONCURRENT_CAP = 64
+
+
+def chat_concurrency_slots() -> int:
+    """Resolve ``CHAT_MAX_CONCURRENT`` env into a bounded int."""
+    raw = os.environ.get("CHAT_MAX_CONCURRENT", "").strip()
+    if not raw:
+        return _CHAT_DEFAULT_CONCURRENT
+    try:
+        n = int(raw)
+    except ValueError:
+        return _CHAT_DEFAULT_CONCURRENT
+    return max(1, min(_CHAT_CONCURRENT_CAP, n))
+
+
+_chat_create_sem: Optional[asyncio.Semaphore] = None
+
+
+def _get_chat_create_sem() -> asyncio.Semaphore:
+    """Lazy-init the create-agent semaphore on first use.
+
+    Lazy so the semaphore binds to whichever event loop is actually running
+    when the first chat request arrives (works under pytest's per-test loops).
+    """
+    global _chat_create_sem
+    if _chat_create_sem is None:
+        slots = chat_concurrency_slots()
+        _chat_create_sem = asyncio.Semaphore(slots)
+        _log.info(
+            "chat: at most %d create_user_agent(s) constructing at once "
+            "(CHAT_MAX_CONCURRENT)",
+            slots,
+        )
+    return _chat_create_sem
+
+
+async def _create_user_agent_bounded(*args, **kwargs):
+    """Run ``create_user_agent`` in a worker thread under a semaphore.
+
+    Returns the same value as the underlying sync function (cached or freshly
+    built agent). Cache hits go through the same path but cost essentially
+    nothing — the semaphore acquire + thread hop are nanoseconds compared to
+    a real LangGraph init.
+    """
+    sem = _get_chat_create_sem()
+    async with sem:
+        return await asyncio.to_thread(create_user_agent, *args, **kwargs)
 
 _MIME_TO_EXT = {
     "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
@@ -496,11 +566,18 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
         _saved = True
         yield f"data: {json.dumps({'type': 'error', 'content': f'Agent 错误: {str(e)}'}, ensure_ascii=False)}\n\n"
     finally:
-        if not _saved and full_response:
+        # 连接中断兜底保存。除 full_response（文本）外，纯工具调用场景下 full_response
+        # 可能为空但 blocks 已有流式出的工具卡片（如 write_file 的部分内容），同样应保存，
+        # 否则"已生成内容丢失"。
+        _has_block_content = any(
+            (b.get("content") or b.get("args") or b.get("result"))
+            for b in blocks
+        ) if blocks else False
+        if not _saved and (full_response or _has_block_content):
             _log.info("Connection lost for %s, saving partial response", thread_id)
             _blk_sanitize()
             save_message(user_id, conv_id, "assistant",
-                         full_response + "\n\n⚠️ [连接中断 — 已保存已生成内容]",
+                         (full_response or "") + "\n\n⚠️ [连接中断 — 已保存已生成内容]",
                          tool_calls=tool_records if tool_records else None,
                          blocks=blocks if blocks else None)
         _cancel_flags.pop(thread_id, None)
@@ -530,7 +607,9 @@ async def api_chat(req: ChatRequest, user=Depends(get_current_user)):
     attachments = _extract_and_save_images(user_id, conv_id, canonical_message)
     save_message(user_id, conv_id, "user", save_text, attachments=attachments)
 
-    agent = create_user_agent(user_id, model=req.model, capabilities=req.capabilities, username=username)
+    agent = await _create_user_agent_bounded(
+        user_id, model=req.model, capabilities=req.capabilities, username=username
+    )
     thread_id = f"{user_id}-{conv_id}"
     config = {
         "configurable": {"thread_id": thread_id},
@@ -596,7 +675,9 @@ async def api_chat_resume(req: ResumeRequest, user=Depends(get_current_user)):
     username = user.get("username", user_id)
     conv_id = req.conversation_id
 
-    agent = create_user_agent(user_id, model=req.model, capabilities=req.capabilities, username=username)
+    agent = await _create_user_agent_bounded(
+        user_id, model=req.model, capabilities=req.capabilities, username=username
+    )
     thread_id = f"{user_id}-{conv_id}"
     config = {
         "configurable": {"thread_id": thread_id},

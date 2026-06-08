@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   ChatCircleDots,
 } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import styles from '../chat.module.css';
 import { FilePreviewBody } from './StreamingFilePreview';
 import EditDiffViewer from './EditDiffViewer';
@@ -56,6 +57,7 @@ function FileActionCard({
   decision: Decision | undefined;
   onDecide: (d: Decision) => void;
 }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [editedContent, setEditedContent] = useState(
     action.name === 'write_file' ? action.args.content ?? '' : action.args.new_string ?? '',
@@ -83,7 +85,7 @@ function FileActionCard({
     <Tag
       color={decision.type === 'approve' ? 'success' : decision.type === 'reject' ? 'error' : 'warning'}
     >
-      {decision.type === 'approve' ? '已批准' : decision.type === 'reject' ? '已拒绝' : '已编辑'}
+      {decision.type === 'approve' ? t('approval.approved') : decision.type === 'reject' ? t('approval.rejected') : t('approval.edited')}
     </Tag>
   );
 
@@ -106,8 +108,8 @@ function FileActionCard({
             <div className={styles.diffPanelHeader}>
               <div className={styles.diffPanelTitle}>
                 <ShieldCheck size={16} weight="duotone" color="var(--jf-warning)" />
-                <span style={{ fontFamily: 'var(--jf-font-code)', fontSize: 12 }}>{filePath ?? '未知路径'}</span>
-                <Tag color="blue" style={{ fontSize: 10 }}>编辑中</Tag>
+                <span style={{ fontFamily: 'var(--jf-font-code)', fontSize: 12 }}>{filePath ?? t('approval.unknownPath')}</span>
+                <Tag color="blue" style={{ fontSize: 10 }}>{t('approval.editingTag')}</Tag>
               </div>
             </div>
             <TextArea
@@ -124,24 +126,24 @@ function FileActionCard({
           <div className={styles.approvalActionBar}>
             <div className={styles.approvalActionBarMeta}>
               {!editing && addCount > 0 && (
-                <span style={{ color: 'var(--jf-success)' }}>+{addCount} 行</span>
+                <span style={{ color: 'var(--jf-success)' }}>{t('approval.linesAdded', { n: addCount })}</span>
               )}
               {badge}
             </div>
             <Space size={6}>
               {allowed.includes('edit') && !editing && (
-                <Button size="small" icon={<PencilSimple size={14} />} onClick={() => setEditing(true)}>编辑</Button>
+                <Button size="small" icon={<PencilSimple size={14} />} onClick={() => setEditing(true)}>{t('approval.edit')}</Button>
               )}
               {editing && (
-                <Button size="small" type="primary" onClick={handleSaveEdit}>保存编辑</Button>
+                <Button size="small" type="primary" onClick={handleSaveEdit}>{t('approval.saveEdit')}</Button>
               )}
               {allowed.includes('reject') && (
-                <Popconfirm title="确认拒绝此操作？" onConfirm={handleReject} okText="确认" cancelText="取消">
-                  <Button size="small" danger icon={<X size={14} weight="bold" />}>拒绝</Button>
+                <Popconfirm title={t('approval.rejectConfirm')} onConfirm={handleReject} okText={t('common.confirm')} cancelText={t('common.cancel')}>
+                  <Button size="small" danger icon={<X size={14} weight="bold" />}>{t('approval.reject')}</Button>
                 </Popconfirm>
               )}
               {allowed.includes('approve') && (
-                <Button size="small" type="primary" icon={<Check size={14} weight="bold" />} onClick={handleApprove}>批准</Button>
+                <Button size="small" type="primary" icon={<Check size={14} weight="bold" />} onClick={handleApprove}>{t('approval.approve')}</Button>
               )}
             </Space>
           </div>
@@ -160,7 +162,7 @@ function FileActionCard({
     <div className={styles.approvalFileBlock}>
       {!editing ? (
         <EditDiffViewer
-          filePath={filePath ?? '未知路径'}
+          filePath={filePath ?? t('approval.unknownPath')}
           oldString={action.args.old_string ?? ''}
           newString={action.args.new_string ?? ''}
           status={decision ? 'done' : 'pending'}
@@ -170,8 +172,8 @@ function FileActionCard({
           <div className={styles.diffPanelHeader}>
             <div className={styles.diffPanelTitle}>
               <ShieldCheck size={16} weight="duotone" color="var(--jf-warning)" />
-              <span style={{ fontFamily: 'var(--jf-font-code)', fontSize: 12 }}>{filePath ?? '未知路径'}</span>
-              <Tag color="blue" style={{ fontSize: 10 }}>编辑 new_string</Tag>
+              <span style={{ fontFamily: 'var(--jf-font-code)', fontSize: 12 }}>{filePath ?? t('approval.unknownPath')}</span>
+              <Tag color="blue" style={{ fontSize: 10 }}>{t('approval.editingNewString')}</Tag>
             </div>
           </div>
           <TextArea
@@ -189,18 +191,18 @@ function FileActionCard({
           <div className={styles.approvalActionBarMeta}>{badge}</div>
           <Space size={6}>
             {allowed.includes('edit') && !editing && (
-              <Button size="small" icon={<PencilSimple size={14} />} onClick={() => setEditing(true)}>编辑</Button>
+              <Button size="small" icon={<PencilSimple size={14} />} onClick={() => setEditing(true)}>{t('approval.edit')}</Button>
             )}
             {editing && (
-              <Button size="small" type="primary" onClick={handleSaveEdit}>保存编辑</Button>
+              <Button size="small" type="primary" onClick={handleSaveEdit}>{t('approval.saveEdit')}</Button>
             )}
             {allowed.includes('reject') && (
-              <Popconfirm title="确认拒绝此操作？" onConfirm={handleReject} okText="确认" cancelText="取消">
-                <Button size="small" danger icon={<X size={14} weight="bold" />}>拒绝</Button>
+              <Popconfirm title={t('approval.rejectConfirm')} onConfirm={handleReject} okText={t('common.confirm')} cancelText={t('common.cancel')}>
+                <Button size="small" danger icon={<X size={14} weight="bold" />}>{t('approval.reject')}</Button>
               </Popconfirm>
             )}
             {allowed.includes('approve') && (
-              <Button size="small" type="primary" icon={<Check size={14} weight="bold" />} onClick={handleApprove}>批准</Button>
+              <Button size="small" type="primary" icon={<Check size={14} weight="bold" />} onClick={handleApprove}>{t('approval.approve')}</Button>
             )}
           </Space>
         </div>
@@ -222,6 +224,7 @@ function PlanActionCard({
   decision: Decision | undefined;
   onDecide: (d: Decision) => void;
 }) {
+  const { t } = useTranslation();
   const [steps, setSteps] = useState<string[]>([...(action.args.steps ?? [])]);
   const [edited, setEdited] = useState(false);
   const allowed = config?.allowed_decisions ?? ['approve', 'reject'];
@@ -247,7 +250,7 @@ function PlanActionCard({
 
   const badge = decision && (
     <Tag color={decision.type === 'approve' ? 'success' : decision.type === 'reject' ? 'error' : 'warning'}>
-      {decision.type === 'approve' ? '已批准' : decision.type === 'reject' ? '已拒绝' : '已编辑'}
+      {decision.type === 'approve' ? t('approval.approved') : decision.type === 'reject' ? t('approval.rejected') : t('approval.edited')}
     </Tag>
   );
 
@@ -262,8 +265,8 @@ function PlanActionCard({
           <ListChecks size={22} weight="duotone" />
         </div>
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>执行计划确认</div>
-          <div style={{ fontSize: 11, color: 'var(--jf-text-muted)' }}>Agent 准备执行 {steps.length} 个步骤</div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{t('approval.planTitle')}</div>
+          <div style={{ fontSize: 11, color: 'var(--jf-text-muted)' }}>{t('approval.planSubtitle', { count: steps.length })}</div>
         </div>
         {badge}
       </div>
@@ -279,7 +282,7 @@ function PlanActionCard({
                 disabled={!!decision}
                 size="small"
                 className={styles.planStepInput}
-                placeholder={`步骤 ${i + 1}`}
+                placeholder={t('approval.planStepPh', { n: i + 1 })}
               />
               {!decision && (
                 <Button type="text" size="small" danger icon={<Trash size={14} />} onClick={() => removeStep(i)} />
@@ -292,7 +295,7 @@ function PlanActionCard({
       {action.args.questions && action.args.questions.length > 0 && (
         <div className={styles.planQuestions}>
           <div style={{ fontSize: 12, color: 'var(--jf-warning)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <ChatCircleDots size={14} /> Agent 的问题
+            <ChatCircleDots size={14} /> {t('approval.planAgentQuestions')}
           </div>
           {action.args.questions.map((q, i) => (
             <div key={i} className={styles.planQuestion}>{q}</div>
@@ -303,17 +306,17 @@ function PlanActionCard({
       {!decision && (
         <div className={styles.planFooter}>
           <Button size="small" icon={<Plus size={14} weight="bold" />} onClick={addStep} type="dashed">
-            插入步骤
+            {t('approval.planAddStep')}
           </Button>
           <Space>
             {allowed.includes('reject') && (
-              <Popconfirm title="确认拒绝此计划？" onConfirm={handleReject} okText="确认" cancelText="取消">
-                <Button size="small" danger icon={<X size={14} weight="bold" />}>中止</Button>
+              <Popconfirm title={t('approval.planRejectConfirm')} onConfirm={handleReject} okText={t('common.confirm')} cancelText={t('common.cancel')}>
+                <Button size="small" danger icon={<X size={14} weight="bold" />}>{t('approval.planAbort')}</Button>
               </Popconfirm>
             )}
             {allowed.includes('approve') && (
               <Button size="small" type="primary" icon={<Check size={14} weight="bold" />} onClick={handleApprove}>
-                {edited ? '提交修改' : '确认执行'}
+                {edited ? t('approval.planSubmitEdit') : t('approval.planConfirmRun')}
               </Button>
             )}
           </Space>
@@ -324,6 +327,7 @@ function PlanActionCard({
 }
 
 export default function ApprovalCard({ actions, configs, onResume }: ApprovalCardProps) {
+  const { t } = useTranslation();
   const [decisions, setDecisions] = useState<(Decision | undefined)[]>(
     () => new Array(actions.length).fill(undefined),
   );
@@ -407,10 +411,10 @@ export default function ApprovalCard({ actions, configs, onResume }: ApprovalCar
         <div className={styles.approvalBatchBar}>
           <Space>
             <Button size="small" type="primary" icon={<Check size={14} weight="bold" />} onClick={batchApprove}>
-              批量批准
+              {t('approval.batchApprove')}
             </Button>
             <Button size="small" danger icon={<X size={14} weight="bold" />} onClick={batchReject}>
-              批量拒绝
+              {t('approval.batchReject')}
             </Button>
           </Space>
         </div>

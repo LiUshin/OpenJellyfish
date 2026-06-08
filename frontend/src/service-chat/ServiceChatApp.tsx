@@ -14,19 +14,30 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import LanguageSwitcher from '../components/LanguageSwitcher';
 import StreamingMessage from '../pages/Chat/components/StreamingMessage';
-import { setMediaUrlBuilder, setFileRevealEnabled } from '../pages/Chat/markdown';
+import { setMediaUrlBuilder, setFileRevealEnabled, setFileDownloadMode } from '../pages/Chat/markdown';
 import {
   AuthError,
   buildConsumerMediaUrl,
   clearStoredKey,
   consumeKeyFromUrl,
   createConversation,
+  getConversation,
+  getMediaToken,
   getStoredKey,
+  loadConvStore,
+  saveConvStore,
   setStoredKey,
+  type ConsumerMessage,
+  type ConvMeta,
 } from './serviceApi';
+import type { StreamBlock } from '../pages/Chat/types';
 import { useServiceStream } from './streamHandler';
 import ServiceToolBadge from './ServiceToolBadge';
+import GeneratedFilesPanel from './GeneratedFilesPanel';
+import ConversationDrawer from './ConversationDrawer';
 import styles from './serviceChat.module.css';
 
 export interface ServiceConfig {
@@ -52,7 +63,77 @@ type MessageEntry =
 
 const MAX_PENDING_IMAGES = 5;
 
+/** 从首条用户消息派生会话标题（截断）。 */
+function makeTitle(text: string): string {
+  const t = (text || '').trim().replace(/\s+/g, ' ');
+  if (!t) return '';
+  return t.length > 30 ? t.slice(0, 30) + '…' : t;
+}
+
+/** 把后端存储的 blocks 归一成 StreamBlock（补默认字段，历史 thinking 默认折叠）。 */
+function normalizeBlocks(raw: unknown[]): StreamBlock[] {
+  const out: StreamBlock[] = [];
+  for (const item of raw) {
+    const b = item as Record<string, unknown>;
+    if (!b || typeof b !== 'object') continue;
+    switch (b.type) {
+      case 'text':
+        out.push({ type: 'text', content: String(b.content ?? '') });
+        break;
+      case 'thinking':
+        out.push({ type: 'thinking', content: String(b.content ?? ''), collapsed: b.collapsed !== false });
+        break;
+      case 'tool':
+        out.push({
+          type: 'tool',
+          name: String(b.name ?? ''),
+          args: String(b.args ?? ''),
+          result: String(b.result ?? ''),
+          done: b.done !== false,
+          resultCollapsed: b.resultCollapsed !== false,
+        });
+        break;
+      case 'subagent':
+        out.push({ ...(b as object), collapsed: b.collapsed !== false, done: b.done !== false } as StreamBlock);
+        break;
+      default:
+        break;
+    }
+  }
+  return out;
+}
+
+/** 后端历史消息 → 前端可渲染的 MessageEntry（跳过空/系统消息）。 */
+function backendMsgToEntry(m: ConsumerMessage): MessageEntry | null {
+  if (m.role === 'user') {
+    return { kind: 'user', data: { text: m.content ?? '', images: [] } };
+  }
+  if (m.role === 'assistant') {
+    let blocks: StreamBlock[];
+    if (Array.isArray(m.blocks) && m.blocks.length > 0) {
+      blocks = normalizeBlocks(m.blocks);
+    } else {
+      blocks = [];
+      for (const tc of m.tool_calls ?? []) {
+        blocks.push({
+          type: 'tool',
+          name: tc.name ?? '',
+          args: tc.args ?? '',
+          result: tc.result ?? '',
+          done: true,
+          resultCollapsed: true,
+        });
+      }
+      if (m.content) blocks.push({ type: 'text', content: m.content });
+    }
+    if (blocks.length === 0) return null;
+    return { kind: 'assistant', data: { blocks } };
+  }
+  return null;
+}
+
 export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
+  const { t } = useTranslation();
   const [apiKey, setApiKey] = useState<string>(() => {
     const fromUrl = consumeKeyFromUrl(config.service_id);
     return fromUrl ?? getStoredKey(config.service_id);
@@ -65,57 +146,128 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
   const [pendingImgs, setPendingImgs] = useState<{ dataUrl: string; name: string }[]>([]);
   const [draft, setDraft] = useState('');
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
+  const [mediaToken, setMediaToken] = useState<string>('');
+  const [filesPanelOpen, setFilesPanelOpen] = useState(false);
+  const [convList, setConvList] = useState<ConvMeta[]>(() => loadConvStore(config.service_id).items);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── 注入 consumer 端的 mediaUrl builder（一次性，依赖 apiKey + convId） ──
+  // ── 注入 consumer 端的 mediaUrl builder（一次性，依赖 token + convId） ──
   // 用 ref 让闭包总能拿到最新值，但 setMediaUrlBuilder 只调一次。
-  const apiKeyRef = useRef(apiKey);
+  const mediaTokenRef = useRef(mediaToken);
   const convIdRef = useRef(conversationId);
-  useEffect(() => { apiKeyRef.current = apiKey; }, [apiKey]);
+  const apiKeyRef = useRef(apiKey);
+  useEffect(() => { mediaTokenRef.current = mediaToken; }, [mediaToken]);
   useEffect(() => { convIdRef.current = conversationId; }, [conversationId]);
+  useEffect(() => { apiKeyRef.current = apiKey; }, [apiKey]);
 
   useEffect(() => {
     setMediaUrlBuilder((path) =>
-      buildConsumerMediaUrl(apiKeyRef.current, convIdRef.current, path),
+      buildConsumerMediaUrl(mediaTokenRef.current, convIdRef.current, path),
     );
-    // service-chat（消费者侧）没有 FilePanel，禁用「在文件浏览器中打开」点击 pill，
-    // 避免渲染出无效 UI；非媒体 <<FILE:>> 仍以 &lt;FILE:...&gt; 文本回退展示。
+    // service-chat（消费者侧）没有 FilePanel：关闭「在文件浏览器中定位」pill，
+    // 改为「直接下载」模式——非媒体 <<FILE:>> 渲染成下载链接，媒体 caption 带下载按钮。
     setFileRevealEnabled(false);
+    setFileDownloadMode(true);
   }, []);
 
-  // ── 创建/恢复会话 ─────────────────────────────────────────────────
-  const initConversation = useCallback(
-    async (key: string): Promise<string | null> => {
+  // 媒体 URL builder（供 GeneratedFilesPanel 等使用），随 token / convId 变化
+  const buildMediaUrl = useCallback(
+    (path: string, opts?: { download?: boolean }) =>
+      buildConsumerMediaUrl(mediaToken, conversationId, path, opts),
+    [mediaToken, conversationId],
+  );
+
+  // ── 会话列表持久化（本浏览器维度，刷新不丢） ──────────────────────
+  // 关键：首屏恢复（didInitRef）完成前不写盘，否则会用 conversationId=null
+  // 把 localStorage 里的 activeId 清掉，导致刷新无法恢复上次会话。
+  const didInitRef = useRef(false);
+  useEffect(() => {
+    if (!didInitRef.current) return;
+    saveConvStore(config.service_id, convList, conversationId);
+  }, [convList, conversationId, config.service_id]);
+
+  // ── 取会话级媒体 token（恢复/切换/新建时刷新） ────────────────────
+  const refreshMediaToken = useCallback(async (key: string, convId: string) => {
+    try {
+      setMediaToken(await getMediaToken(key, convId));
+    } catch (tokErr) {
+      console.error('Failed to fetch media token:', tokErr);
+      setMediaToken('');
+    }
+  }, []);
+
+  // ── 恢复/切换到某个已存在的会话（从后端拉历史消息） ────────────────
+  const openConversation = useCallback(
+    async (convId: string, key: string) => {
+      try {
+        const conv = await getConversation(key, convId);
+        if (!conv) {
+          // 后端已无此会话（被 admin 删了等）→ 从本地列表清掉
+          setConvList((prev) => prev.filter((c) => c.id !== convId));
+          if (convIdRef.current === convId) {
+            setConversationId(null);
+            setMessages([]);
+          }
+          return;
+        }
+        const entries = conv.messages
+          .map(backendMsgToEntry)
+          .filter((e): e is MessageEntry => e !== null);
+        setMessages(entries as MessageEntry[]);
+        setConversationId(convId);
+        setWelcomeDismissed(true);
+        void refreshMediaToken(key, convId);
+      } catch (err) {
+        if (err instanceof AuthError) handleAuthFail(err.message);
+        else console.error('Failed to open conversation:', err);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [refreshMediaToken],
+  );
+
+  // ── 首次进入：恢复上次活跃会话（不再每次刷新都新建空会话） ──────────
+  useEffect(() => {
+    if (!apiKey || didInitRef.current) return;
+    const store = loadConvStore(config.service_id);
+    setConvList(store.items);
+    const activeId = store.activeId;
+    // 标记 init 完成 → 之后持久化 effect 才会写盘（避免清掉 activeId）
+    didInitRef.current = true;
+    if (activeId) void openConversation(activeId, apiKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiKey]);
+
+  // ── 懒创建会话（首次发消息时才建，并登记到本地列表） ───────────────
+  const createAndRegister = useCallback(
+    async (key: string, firstText: string): Promise<string | null> => {
       try {
         const conv = await createConversation(key);
         setConversationId(conv.id);
+        const title = makeTitle(firstText);
+        setConvList((prev) => [
+          { id: conv.id, title, updatedAt: new Date().toISOString() },
+          ...prev.filter((c) => c.id !== conv.id),
+        ]);
+        void refreshMediaToken(key, conv.id);
         return conv.id;
       } catch (err) {
-        if (err instanceof AuthError) {
-          handleAuthFail(err.message);
-        } else {
-          console.error('Failed to create conversation:', err);
-        }
+        if (err instanceof AuthError) handleAuthFail(err.message);
+        else console.error('Failed to create conversation:', err);
         return null;
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    [refreshMediaToken],
   );
-
-  useEffect(() => {
-    if (apiKey && !conversationId) {
-      void initConversation(apiKey);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey]);
 
   // ── Stream handler ──────────────────────────────────────────────
   const stream = useServiceStream({
-    onAuthError: () => handleAuthFail('API Key 无效，请重新输入'),
+    onAuthError: () => handleAuthFail(t('service.authError')),
     onError: (msg) => console.error('stream error:', msg),
     onDone: (finalBlocks) => {
       // ❗ finalBlocks 由 hook 直接传入，不能用 stream.blocks（首次 render 闭包永远是 []）
@@ -129,20 +281,77 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
         { kind: 'assistant', data: { blocks: finalBlocks } },
       ]);
       stream.reset();
+      // 本轮结束：把当前会话顶到列表最前并更新时间（用于排序展示）
+      const id = convIdRef.current;
+      if (id) {
+        setConvList((prev) => {
+          const found = prev.find((c) => c.id === id);
+          if (!found) return prev;
+          return [
+            { ...found, updatedAt: new Date().toISOString() },
+            ...prev.filter((c) => c.id !== id),
+          ];
+        });
+      }
     },
   });
+
+  // ── 抽屉操作 ──────────────────────────────────────────────────────
+  const handleSelectConversation = useCallback(
+    (convId: string) => {
+      setDrawerOpen(false);
+      if (convId === convIdRef.current) return;
+      stream.abort();
+      stream.reset();
+      void openConversation(convId, apiKeyRef.current);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [openConversation, stream],
+  );
+
+  const handleNewConversation = useCallback(() => {
+    setDrawerOpen(false);
+    stream.abort();
+    stream.reset();
+    setConversationId(null);
+    setMessages([]);
+    setMediaToken('');
+    setDraft('');
+    setPendingImgs([]);
+    setWelcomeDismissed(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stream]);
+
+  const handleDeleteConversation = useCallback(
+    (convId: string) => {
+      // 仅本地移除（服务器数据保留）
+      setConvList((prev) => prev.filter((c) => c.id !== convId));
+      if (convIdRef.current === convId) {
+        setConversationId(null);
+        setMessages([]);
+        setMediaToken('');
+        setWelcomeDismissed(false);
+      }
+    },
+    [],
+  );
 
   function handleAuthFail(msg: string) {
     setApiKey('');
     clearStoredKey(config.service_id);
     setAuthError(msg);
     setConversationId(null);
+    setMediaToken('');
+    setFilesPanelOpen(false);
+    setDrawerOpen(false);
+    // 允许重新登录后再次恢复活跃会话（会话列表本身保留在 localStorage）
+    didInitRef.current = false;
   }
 
   function handleAuthSubmit() {
     const key = keyInput.trim();
     if (!key) {
-      setAuthError('请输入 API Key');
+      setAuthError(t('service.authEmpty'));
       return;
     }
     setStoredKey(config.service_id, key);
@@ -212,7 +421,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
 
       let convId = conversationId;
       if (!convId) {
-        convId = await initConversation(apiKey);
+        convId = await createAndRegister(apiKey, text);
         if (!convId) return;
       }
 
@@ -231,7 +440,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
       // 立即把用户消息推入 list
       setMessages((prev) => [
         ...prev,
-        { kind: 'user', data: { text: text || '[图片]', images: imgs.map((i) => i.dataUrl) } },
+        { kind: 'user', data: { text: text || '[image]', images: imgs.map((i) => i.dataUrl) } },
       ]);
       setDraft('');
       setPendingImgs([]);
@@ -239,7 +448,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
 
       void stream.send(apiKey, { conversation_id: convId, message: payload });
     },
-    [apiKey, conversationId, draft, pendingImgs, stream, initConversation],
+    [apiKey, conversationId, draft, pendingImgs, stream, createAndRegister],
   );
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -261,6 +470,14 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
   const showEmpty = !showWelcome && messages.length === 0 && !stream.isStreaming;
 
   // ── 渲染 ────────────────────────────────────────────────────────
+  // Header right slot: language switcher (no backend sync — consumers can't
+  // hit /api/preferences without an admin token).
+  const headerLangSwitcher = (
+    <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
+      <LanguageSwitcher variant="icon" placement="bottom" syncBackend={false} />
+    </div>
+  );
+
   if (!apiKey) {
     return (
       <div className={styles.page}>
@@ -270,6 +487,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
           {config.service_desc && (
             <span className={styles.headerDesc}>{config.service_desc}</span>
           )}
+          {headerLangSwitcher}
         </header>
         <div className={styles.authOverlay}>
           <div className={styles.authBox}>
@@ -278,7 +496,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
             <input
               type="text"
               autoComplete="off"
-              placeholder="请输入 API Key (sk-svc-...)"
+              placeholder={t('service.authPlaceholder')}
               value={keyInput}
               onChange={(e) => setKeyInput(e.target.value)}
               onKeyDown={(e) => {
@@ -291,7 +509,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
             />
             {authError && <div className={styles.authError}>{authError}</div>}
             <button type="button" onClick={handleAuthSubmit}>
-              开始对话
+              {t('service.authStart')}
             </button>
           </div>
         </div>
@@ -302,16 +520,58 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
   return (
     <div className={styles.page}>
       <header className={styles.header}>
+        <button
+          type="button"
+          className={styles.menuBtn}
+          onClick={() => setDrawerOpen(true)}
+          title={t('service.convMenu', '会话')}
+          aria-label={t('service.convMenu', '会话')}
+        >
+          ☰
+        </button>
         <div className={styles.headerLogo}>S</div>
         <h1 className={styles.headerTitle}>{config.service_name}</h1>
         {config.service_desc && (
           <span className={styles.headerDesc}>{config.service_desc}</span>
         )}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          {conversationId && (
+            <button
+              type="button"
+              className={styles.filesBtn}
+              onClick={() => setFilesPanelOpen(true)}
+              title={t('service.filesTitle', '本会话生成文件')}
+            >
+              📁 {t('service.filesBtn', '文件')}
+            </button>
+          )}
+          <LanguageSwitcher variant="icon" placement="bottom" syncBackend={false} />
+        </div>
       </header>
+
+      {drawerOpen && (
+        <ConversationDrawer
+          items={convList}
+          activeId={conversationId}
+          onSelect={handleSelectConversation}
+          onNew={handleNewConversation}
+          onDelete={handleDeleteConversation}
+          onClose={() => setDrawerOpen(false)}
+        />
+      )}
+
+      {filesPanelOpen && conversationId && (
+        <GeneratedFilesPanel
+          apiKey={apiKey}
+          convId={conversationId}
+          buildUrl={buildMediaUrl}
+          onClose={() => setFilesPanelOpen(false)}
+        />
+      )}
 
       {showWelcome ? (
         <div className={styles.welcomeScreen}>
-          <div className={styles.welcomeTitle}>{config.service_name || '你好'}</div>
+          <div className={styles.welcomeTitle}>{config.service_name || t('service.welcomeFallback')}</div>
           {config.welcome_message && (
             <div className={styles.welcomeMessage}>{config.welcome_message}</div>
           )}
@@ -339,7 +599,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
           {showEmpty && (
             <div className={styles.emptyState}>
               <div className={styles.emptyStateIcon}>💬</div>
-              <p>发送消息开始对话</p>
+              <p>{t('service.emptyHint')}</p>
             </div>
           )}
           {messages.map((m, i) =>
@@ -370,10 +630,13 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
               />
             ),
           )}
-          {stream.isStreaming && (
+          {(stream.isStreaming || stream.blocks.length > 0) && (
+            // 防御性：只要还有未提交的流式 blocks 就继续渲染，即便 isStreaming 已翻 false
+            // （中断/异常路径），避免已生成内容在提交前从视图消失。正常/中断结束都会
+            // 走 onDone 把 blocks 固化进 messages 并 reset，届时 stream.blocks 清空不再重复。
             <StreamingMessage
               blocks={stream.blocks}
-              isStreaming
+              isStreaming={stream.isStreaming}
               toolRenderer={ServiceToolBadge}
               hideSubagents
               scheduledTaskFriendlyMode
@@ -393,7 +656,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
                   type="button"
                   className={styles.imgThumbRm}
                   onClick={() => setPendingImgs((prev) => prev.filter((_, j) => j !== i))}
-                  aria-label="移除图片"
+                  aria-label={t('service.removeImage')}
                 >
                   ×
                 </button>
@@ -422,7 +685,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
           <button
             type="button"
             className={styles.btnAttach}
-            title="上传图片"
+            title={t('service.uploadImage')}
             onClick={() => fileInputRef.current?.click()}
             disabled={stream.isStreaming || pendingImgs.length >= MAX_PENDING_IMAGES}
           >
@@ -443,7 +706,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
           <textarea
             ref={textareaRef}
             className={styles.inputTextarea}
-            placeholder="输入消息... (可粘贴图片)"
+            placeholder={t('service.inputPlaceholder')}
             value={draft}
             rows={1}
             onChange={(e) => setDraft(e.target.value)}
@@ -459,7 +722,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
               (!draft.trim() && pendingImgs.length === 0)
             }
           >
-            发送
+            {t('service.sendBtn')}
           </button>
         </form>
       </div>

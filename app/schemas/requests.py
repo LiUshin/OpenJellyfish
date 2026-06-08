@@ -87,6 +87,13 @@ class UserProfileRequest(BaseModel):
     investment_habits: str = ""
     user_persona: str = ""
     custom_notes: str = ""
+    agent_notes: str = ""
+    agent_notes_locked: bool = False
+
+
+class AgentNotesRequest(BaseModel):
+    content: str = ""
+    locked: bool = False
 
 
 class SubagentRequest(BaseModel):

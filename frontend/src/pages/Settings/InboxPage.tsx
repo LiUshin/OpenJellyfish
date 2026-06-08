@@ -1,21 +1,23 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { List, Tag, Button, Empty, Spin, Typography, Popconfirm, message, Badge, Tooltip, Collapse } from 'antd';
 import {
   Envelope, EnvelopeOpen, Trash, Eye, Robot, ArrowClockwise, User,
 } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import * as api from '../../services/api';
 import { fmtUserTime } from '../../utils/timezone';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const { Text, Paragraph } = Typography;
 
-const STATUS_TAGS: Record<string, { color: string; label: string }> = {
-  unread: { color: 'red', label: '未读' },
-  read: { color: 'default', label: '已读' },
-  handled: { color: 'green', label: '已处理' },
+const STATUS_KEYS: Record<string, { color: string; key: string }> = {
+  unread: { color: 'red', key: 'inbox.statusUnread' },
+  read: { color: 'default', key: 'inbox.statusRead' },
+  handled: { color: 'green', key: 'inbox.statusHandled' },
 };
 
 export default function InboxPage() {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [messages, setMessages] = useState<api.InboxMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,11 +29,11 @@ export default function InboxPage() {
       const res = await api.listInbox(filter);
       setMessages(res.messages);
     } catch {
-      message.error('加载收件箱失败');
+      message.error(t('inbox.loadFail'));
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter, t]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -40,7 +42,7 @@ export default function InboxPage() {
       await api.updateInboxStatus(id, 'read');
       setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, status: 'read' } : m)));
     } catch {
-      message.error('操作失败');
+      message.error(t('inbox.opFail'));
     }
   };
 
@@ -48,11 +50,17 @@ export default function InboxPage() {
     try {
       await api.deleteInboxMessage(id);
       setMessages((prev) => prev.filter((m) => m.id !== id));
-      message.success('已删除');
+      message.success(t('inbox.deleted'));
     } catch {
-      message.error('删除失败');
+      message.error(t('inbox.deleteFail'));
     }
   };
+
+  const filterLabels = useMemo(() => ({
+    all: t('inbox.filterAll'),
+    unread: t('inbox.filterUnread'),
+    handled: t('inbox.filterHandled'),
+  }), [t]);
 
   const unreadCount = messages.filter((m) => m.status === 'unread').length;
 
@@ -71,7 +79,7 @@ export default function InboxPage() {
         gap: isMobile ? 12 : 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Text style={{ fontSize: 18, fontWeight: 600, color: '#e0e0e8' }}>收件箱</Text>
+          <Text style={{ fontSize: 18, fontWeight: 600, color: '#e0e0e8' }}>{t('inbox.title')}</Text>
           {unreadCount > 0 && (
             <Badge count={unreadCount} style={{ backgroundColor: '#e8524a' }} />
           )}
@@ -85,10 +93,10 @@ export default function InboxPage() {
               onClick={() => setFilter(f === 'all' ? undefined : f)}
               style={{ borderRadius: 'var(--jf-radius-sm)' }}
             >
-              {f === 'all' ? '全部' : f === 'unread' ? '未读' : '已处理'}
+              {filterLabels[f]}
             </Button>
           ))}
-          <Tooltip title="刷新">
+          <Tooltip title={t('inbox.refresh')}>
             <Button type="text" size="small" icon={<ArrowClockwise size={16} />} onClick={load} style={{ color: 'var(--jf-text-muted)' }} />
           </Tooltip>
         </div>
@@ -98,14 +106,14 @@ export default function InboxPage() {
         {messages.length === 0 && !loading ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={<Text style={{ color: 'var(--jf-text-muted)' }}>暂无消息</Text>}
+            description={<Text style={{ color: 'var(--jf-text-muted)' }}>{t('inbox.empty')}</Text>}
             style={{ marginTop: 60 }}
           />
         ) : (
           <List
             dataSource={messages}
             renderItem={(item) => {
-              const st = STATUS_TAGS[item.status] || STATUS_TAGS.unread;
+              const st = STATUS_KEYS[item.status] || STATUS_KEYS.unread;
               const time = fmtUserTime(item.timestamp, 'short');
               return (
                 <div
@@ -140,7 +148,9 @@ export default function InboxPage() {
                         {item.service_name}
                       </Text>
                       {item.wechat_user_id && (
-                        <Tooltip title={`微信用户 ID: ${item.wechat_user_id}${item.wechat_session_id ? `\n会话: ${item.wechat_session_id}` : ''}`}>
+                        <Tooltip title={item.wechat_session_id
+                          ? t('inbox.wechatTipWithSession', { id: item.wechat_user_id, session: item.wechat_session_id })
+                          : t('inbox.wechatTip', { id: item.wechat_user_id })}>
                           <Tag
                             icon={<User size={11} style={{ marginRight: 3, verticalAlign: -1 }} />}
                             color="cyan"
@@ -152,9 +162,9 @@ export default function InboxPage() {
                           </Tag>
                         </Tooltip>
                       )}
-                      <Tag color={st.color} style={{ marginLeft: 4, fontSize: 11 }}>{st.label}</Tag>
+                      <Tag color={st.color} style={{ marginLeft: 4, fontSize: 11 }}>{t(st.key)}</Tag>
                       {item.handled_by === 'agent' && (
-                        <Tooltip title="已由 Agent 自动处理">
+                        <Tooltip title={t('inbox.tagAgentHandled')}>
                           <Robot size={14} style={{ color: '#52c41a', flexShrink: 0 }} />
                         </Tooltip>
                       )}
@@ -168,7 +178,7 @@ export default function InboxPage() {
 
                   <Paragraph
                     style={{ color: '#c4c4d4', fontSize: 13, marginBottom: item.agent_response ? 8 : 4, whiteSpace: 'pre-wrap' }}
-                    ellipsis={{ rows: 3, expandable: true, symbol: '展开' }}
+                    ellipsis={{ rows: 3, expandable: true, symbol: t('inbox.expand') }}
                   >
                     {item.message}
                   </Paragraph>
@@ -179,7 +189,7 @@ export default function InboxPage() {
                       ghost
                       items={[{
                         key: '1',
-                        label: <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>Agent 处理结果</Text>,
+                        label: <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>{t('inbox.agentResultLabel')}</Text>,
                         children: (
                           <Paragraph style={{ color: '#a0a0b8', fontSize: 12, margin: 0, whiteSpace: 'pre-wrap' }}>
                             {item.agent_response}
@@ -191,12 +201,12 @@ export default function InboxPage() {
 
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 4 }}>
                     {item.status === 'unread' && (
-                      <Tooltip title="标记已读">
+                      <Tooltip title={t('inbox.markRead')}>
                         <Button type="text" size="small" icon={<Eye size={14} />} onClick={() => handleMarkRead(item.id)} style={{ color: 'var(--jf-text-muted)' }} />
                       </Tooltip>
                     )}
-                    <Popconfirm title="确定删除？" onConfirm={() => handleDelete(item.id)} okText="删除" cancelText="取消">
-                      <Tooltip title="删除">
+                    <Popconfirm title={t('inbox.deleteConfirm')} onConfirm={() => handleDelete(item.id)} okText={t('inbox.deleteBtn')} cancelText={t('common.cancel')}>
+                      <Tooltip title={t('inbox.deleteBtn')}>
                         <Button type="text" size="small" danger icon={<Trash size={14} />} />
                       </Tooltip>
                     </Popconfirm>

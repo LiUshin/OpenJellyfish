@@ -393,9 +393,101 @@ def create_admin_memory_tools(user_id: str) -> List:
             lines.append(f"[{ts}] Service「{svc}」({st}): {content}{resp_line}")
         return "\n".join(lines)
 
+    @tool
+    def list_task_trees(scope: str = "admin", limit: int = 20) -> str:
+        """列出当前用户的根任务（root tasks），用于自驱循环 / 谱系导航。
+
+        派生出的子任务（descendants）不会出现在此列表，请用 read_task_tree
+        具体展开某个根任务的整棵谱系。
+
+        Args:
+            scope: "admin" 列出管理员的根任务；"service:<svc_id>" 列指定 Service。
+            limit: 最多返回 N 条，按 created_at 倒序。默认 20
+        """
+        from app.services import scheduler_tree as st
+        if scope.startswith("service:"):
+            svc = scope.split(":", 1)[1].strip()
+            if not svc:
+                return "错误：scope='service:' 后需指定 service_id"
+            roots = st.list_root_tasks("service", user_id, svc)
+        elif scope == "admin":
+            roots = st.list_root_tasks("admin", user_id)
+        else:
+            return f"错误：未知 scope '{scope}'，可选 'admin' 或 'service:<svc_id>'"
+
+        if not roots:
+            return f"{scope} 范围下当前没有 root 任务。"
+        roots.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        lines = [f"{scope} root 任务（共 {len(roots)} 个，显示前 {limit}）："]
+        for r in roots[:limit]:
+            lines.append(
+                f"- [{r['id']}] {r.get('name', '?')} "
+                f"(enabled={r.get('enabled', True)}, "
+                f"children={r.get('children_count', 0)}, "
+                f"descendants={r.get('descendants_count', 0)}, "
+                f"next={r.get('next_run_at') or '-'})"
+            )
+        return "\n".join(lines)
+
+    @tool
+    def read_task_tree(task_id: str, scope: str = "admin",
+                       max_depth: int = 5) -> str:
+        """读取一棵定时任务谱系的概览（含子孙最近的执行结果摘要）。
+
+        用于 Agent 在新一轮主对话中回顾"过去这棵任务谱系做了什么"。
+
+        Args:
+            task_id: 任意层级的任务 ID（系统会自动定位到该任务并向下展开）
+            scope: "admin" 或 "service:<svc_id>"
+            max_depth: 展开深度，默认 5
+        """
+        from app.services import scheduler_tree as st
+        if scope.startswith("service:"):
+            svc = scope.split(":", 1)[1].strip()
+            if not svc:
+                return "错误：scope='service:' 后需指定 service_id"
+            tree = st.walk_tree("service", user_id, task_id, svc,
+                                max_depth=max_depth)
+            sc, sid = "service", svc
+        elif scope == "admin":
+            tree = st.walk_tree("admin", user_id, task_id, max_depth=max_depth)
+            sc, sid = "admin", None
+        else:
+            return f"错误：未知 scope '{scope}'"
+
+        if not tree:
+            return f"未找到任务 {task_id} (scope={scope})"
+
+        out: List[str] = []
+
+        def _render(node: Dict[str, Any], depth: int) -> None:
+            m = node.get("meta") or {}
+            indent = "  " * depth
+            out.append(
+                f"{indent}- [{m.get('id')}] {m.get('name', '?')}  "
+                f"d={m.get('spawn_depth', '?')}  "
+                f"enabled={m.get('enabled', True)}  "
+                f"runs={len(m.get('runs', []))}  "
+                f"next={m.get('next_run_at') or '-'}"
+            )
+            ds = (m.get("descendants_summary") or "").strip()
+            if ds:
+                first = ds.splitlines()[0][:120]
+                out.append(f"{indent}  ↳ L3 摘要[1/{len(ds.splitlines())}]: {first}")
+            if node.get("truncated"):
+                out.append(f"{indent}  … (深度截断)")
+            for c in node.get("children", []):
+                _render(c, depth + 1)
+
+        out.append(f"任务谱系（{sc}{':'+sid if sid else ''}, root={task_id}, "
+                   f"max_depth={max_depth}）：")
+        _render(tree, 0)
+        return "\n".join(out)
+
     all_tools = [list_conversations, read_conversation,
                   list_service_conversations, read_service_conversation,
-                  read_inbox]
+                  read_inbox,
+                  list_task_trees, read_task_tree]
 
     if config.get("memory_subagent_enabled", False):
         soul_root = _soul_content_dir(user_id)

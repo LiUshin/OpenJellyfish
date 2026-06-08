@@ -4,6 +4,8 @@ Agent factory — creates and caches per-user deepagents instances.
 
 import os
 import json
+import logging
+from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 
@@ -16,6 +18,8 @@ from deepagents import create_deep_agent
 from app.core.settings import ROOT_DIR, DEFAULT_MODEL, CHECKPOINT_DB
 from app.core.security import get_user_filesystem_dir, get_user_dir
 from app.storage import create_agent_backend
+
+log = logging.getLogger(__name__)
 
 # ==================== Checkpointer ====================
 
@@ -63,6 +67,19 @@ THINKING_MODEL_CONFIG = {
     },
     "anthropic:claude-sonnet-4-5-thinking": {
         "base_model": "anthropic:claude-sonnet-4-5-20250929",
+        "params": {"thinking": {"type": "enabled", "budget_tokens": 10000}, "max_tokens": 16000},
+    },
+    # Bedrock thinking variants
+    "bedrock:claude-opus-4-7-thinking": {
+        "base_model": "bedrock:claude-opus-4-7",
+        "params": {"thinking": {"type": "adaptive"}, "max_tokens": 32000},
+    },
+    "bedrock:claude-opus-4-6-thinking": {
+        "base_model": "bedrock:claude-opus-4-6",
+        "params": {"thinking": {"type": "enabled", "budget_tokens": 16000}, "max_tokens": 32000},
+    },
+    "bedrock:claude-sonnet-4-6-thinking": {
+        "base_model": "bedrock:claude-sonnet-4-6",
         "params": {"thinking": {"type": "enabled", "budget_tokens": 10000}, "max_tokens": 16000},
     },
     "openai:gpt-5.4": {
@@ -142,6 +159,42 @@ def _resolve_model(model_id: str, user_id: Optional[str] = None):
             base_url="https://api.minimax.io/anthropic",
         )
 
+    # AWS Bedrock（Bearer Token + InvokeModel REST）。
+    # 支持 Anthropic Claude 4.5+ 系列模型，使用 bedrock-runtime 端点。
+    # 注意：thinking 变体（如 bedrock:claude-opus-4-7-thinking）必须先在
+    # THINKING_MODEL_CONFIG 中查表得到 base_model，否则会把 "-thinking" 后缀
+    # 直接作为 model id 拼到 URL 里 → 400 invalid model identifier。
+    if model_id.startswith("bedrock:"):
+        from app.core.api_config import get_provider_credentials
+        from app.services.bedrock import ChatBedrockInvoke
+        creds = get_provider_credentials("bedrock", user_id=user_id)
+        if not creds.get("api_key"):
+            raise RuntimeError("未配置 Bedrock API Key（设置页 → Bedrock）")
+
+        if model_id in THINKING_MODEL_CONFIG:
+            cfg = THINKING_MODEL_CONFIG[model_id]
+            base_model = cfg["base_model"]
+            params = cfg["params"]
+            bare_model = base_model.split(":", 1)[1]
+            return ChatBedrockInvoke(
+                model_name=bare_model,
+                api_key=creds["api_key"],
+                region=creds.get("region", "us-east-1"),
+                max_tokens=params.get("max_tokens", 8192),
+                thinking=params.get("thinking"),
+            )
+
+        bare_model = model_id.split(":", 1)[1]
+        # max_tokens 默认抬到 16000：开启 fine-grained tool streaming 后，写大文件时
+        # 工具入参（content）若超过输出上限会在 JSON 中途截断导致解析失败/内容丢失，
+        # 给文件写入留足余量。Claude Sonnet/Opus 4.x 均支持更高上限。
+        return ChatBedrockInvoke(
+            model_name=bare_model,
+            api_key=creds["api_key"],
+            region=creds.get("region", "us-east-1"),
+            max_tokens=16000,
+        )
+
     api_key, base_url = _get_llm_config(model_id, user_id=user_id)
     extra_kwargs: Dict[str, Any] = {}
     if base_url:
@@ -151,16 +204,49 @@ def _resolve_model(model_id: str, user_id: Optional[str] = None):
 
     if model_id in THINKING_MODEL_CONFIG:
         cfg = THINKING_MODEL_CONFIG[model_id]
-        return init_chat_model(model=cfg["base_model"], **cfg["params"], **extra_kwargs)
+        base_model = cfg["base_model"]
+        params = cfg["params"]
+        return init_chat_model(model=base_model, **params, **extra_kwargs)
 
     if extra_kwargs:
         return init_chat_model(model=model_id, **extra_kwargs)
     return model_id
 
 
-# ==================== Agent cache ====================
+# ==================== Agent cache (LRU, bounded) ====================
+#
+# 历史上为无界 dict：每 (user, model, caps, 日期) 常驻一个 deep agent ——
+# 长时用 LangGraph 对象会把内存顶满，像「泄露」。按 env 上限淘汰最久未访问项。
 
-_agent_cache: Dict[str, Any] = {}
+_DEFAULT_ADMIN_AGENT_CACHE_MAX = 32
+_ADMIN_AGENT_CACHE_CAP = 256
+
+
+def admin_agent_cache_max() -> int:
+    raw = os.environ.get("ADMIN_AGENT_CACHE_MAX", "").strip()
+    if not raw:
+        return _DEFAULT_ADMIN_AGENT_CACHE_MAX
+    try:
+        n = int(raw, 10)
+    except ValueError:
+        return _DEFAULT_ADMIN_AGENT_CACHE_MAX
+    return max(4, min(_ADMIN_AGENT_CACHE_CAP, n))
+
+
+_agent_cache: OrderedDict[str, Any] = OrderedDict()
+
+
+def _touch_admin_agent_cache(key: str) -> None:
+    _agent_cache.move_to_end(key)
+
+
+def _put_admin_agent_cache(key: str, agent: Any) -> None:
+    _agent_cache[key] = agent
+    _touch_admin_agent_cache(key)
+    cap = admin_agent_cache_max()
+    while len(_agent_cache) > cap:
+        evicted, _ = _agent_cache.popitem(last=False)
+        log.debug("Evicted admin agent cache entry (max=%d): %s", cap, evicted[:120])
 
 
 def clear_agent_cache(user_id: Optional[str] = None):
@@ -183,8 +269,9 @@ def create_user_agent(
     from app.services.tools import (
         create_run_script_tool, create_ai_gen_tools, create_send_message_tool,
         create_web_tools, create_schedule_tool, create_manage_scheduled_tasks_tool,
+        create_spawn_child_task_tool,
         create_publish_service_task_tool, create_list_files_sorted_tool,
-        create_move_file_tool,
+        create_move_file_tool, create_update_personal_memory_tool,
         propose_plan, CAPABILITY_PROMPTS, PLAN_MODE_PROMPT,
     )
     from app.services.document_tools import create_document_tools
@@ -204,6 +291,7 @@ def create_user_agent(
     cache_key = f"{user_id}::{model}::{cap_key}::{date_key}"
 
     if cache_key in _agent_cache:
+        _touch_admin_agent_cache(cache_key)
         return _agent_cache[cache_key]
 
     from app.storage import get_storage_service
@@ -240,6 +328,7 @@ def create_user_agent(
         create_run_script_tool(user_id),
         create_list_files_sorted_tool(user_id),
         create_move_file_tool(user_id),
+        create_update_personal_memory_tool(user_id),
     ]
     # Document parsing tools (read_document + view_pdf_page_or_image) — always
     # injected. They are read-only and operate inside fs_dir; the docs capability
@@ -257,10 +346,16 @@ def create_user_agent(
     tools.extend(create_web_tools(user_id=user_id))
     tools.append(create_schedule_tool(user_id))
     tools.append(create_manage_scheduled_tasks_tool(user_id))
+    # v2: self-spawning meta-capability. The tool is always-injected (no
+    # capabilities gate) but only fires when called inside a scheduled-task
+    # execution context — outside it returns an error string.  The capability
+    # prompt is appended below alongside scheduler / service_broadcast.
+    tools.append(create_spawn_child_task_tool())
     tools.append(create_publish_service_task_tool(user_id))
     if "web" not in capabilities:
         system_prompt += "\n" + _cap("web")
     system_prompt += "\n" + _cap("scheduler")
+    system_prompt += "\n" + _cap("spawn")
     system_prompt += "\n" + _cap("service_broadcast")
     # documents tool is always injected (read_document + view_pdf_page_or_image),
     # so unconditionally append its prompt; user can still override via
@@ -294,7 +389,7 @@ def create_user_agent(
         },
     )
 
-    _agent_cache[cache_key] = agent
+    _put_admin_agent_cache(cache_key, agent)
     return agent
 
 

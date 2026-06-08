@@ -54,71 +54,146 @@ The scheduler loop runs every 30 seconds, checks next_run_at,
 and executes due tasks in background asyncio tasks.
 """
 
+import heapq
 import os
 import json
+import time
 import uuid
 import asyncio
 import logging
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 
 from app.core.security import get_user_dir
 from app.core.jsonl_store import append_jsonl_many, read_jsonl
+from app.services import scheduler_tree as st
 
 log = logging.getLogger("scheduler")
 
+# 同时为「就绪」状态的定时任务数上限 —— 重启后多条 cron/interval 若同时过期，
+# 未限流时为每条任务起一个 create_user_agent，易在 4GB 实例上触发 OOM。
+_DEFAULT_SCHED_SLOTS = 4
+_SCHED_SLOTS_CAP = 64
+
+
+def scheduler_concurrency_slots() -> int:
+    """可读 env SCHEDULER_MAX_CONCURRENT；默认 4，夹在 [1, _SCHED_SLOTS_CAP]。"""
+    raw = os.environ.get("SCHEDULER_MAX_CONCURRENT", "").strip()
+    if not raw:
+        return _DEFAULT_SCHED_SLOTS
+    try:
+        n = int(raw, 10)
+    except ValueError:
+        log.warning(
+            "Invalid SCHEDULER_MAX_CONCURRENT=%r — using default %d",
+            raw, _DEFAULT_SCHED_SLOTS,
+        )
+        return _DEFAULT_SCHED_SLOTS
+    if n < 1:
+        return 1
+    if n > _SCHED_SLOTS_CAP:
+        log.warning(
+            "SCHEDULER_MAX_CONCURRENT=%d capped at %d",
+            n, _SCHED_SLOTS_CAP,
+        )
+        return _SCHED_SLOTS_CAP
+    return n
+
+
 _MAX_RUNS_STORED = 20
-_LOOP_INTERVAL_S = 30          # check every 30 seconds
 _TASK_TIMEOUT_S  = 1800        # max 30 min per task run
+
+# Bound the heap-driven idle wait so we still wake up to re-scan the disk
+# periodically (catches: out-of-band edits, clock jumps, missed wake_event,
+# dropped tasks if a future bug).  Not a polling interval — only used when
+# the heap is empty OR for a sanity re-scan.
+_IDLE_RESCAN_S = 60
+_RESCAN_INTERVAL_S = 600       # safety re-scan every 10 min regardless
+
+# L3 (descendants_summary) configuration — see .cursorrules §"Scheduled task v2"
+_L3_SUMMARY_MAX_CHARS = 1500
+_L3_SUMMARY_LINE_PREVIEW = 80
+
+
+# ── Execution context (set by _run_*_agent_task, read by spawn tool) ─────
+
+@dataclass
+class TaskContext:
+    """Per-execution snapshot consumed by ``spawn_child_task`` and L3 propagation.
+
+    Set via ``_current_task_var`` at the top of every scheduled-task agent run
+    and reset in the matching ``finally`` block.  Read by:
+      * ``app/services/tools.py::create_spawn_child_task_tool`` to determine
+        parent/root/depth and inheritance defaults
+      * L3 ancestor write-back inside this module
+      * Optional logging / observability hooks
+    """
+    scope: Literal["admin", "service"]
+    uid: str                                        # admin user_id (always)
+    service_id: Optional[str]                       # None for admin scope
+    task_id: str
+    root_task_id: str
+    parent_task_id: Optional[str]
+    spawn_chain: List[str]                          # [root, ..., parent]; empty for root tasks
+    depth: int                                      # 0 = root
+    reply_to: Optional[Dict[str, Any]] = None
+    permissions: Optional[Dict[str, Any]] = None
+    capabilities: Optional[List[str]] = field(default_factory=list)
+    tz_offset_hours: float = 8.0
+
+
+_current_task_var: ContextVar[Optional[TaskContext]] = ContextVar(
+    "_current_task_var", default=None
+)
+
+
+def get_current_task_context() -> Optional[TaskContext]:
+    """Public accessor used by ``spawn_child_task`` (avoids private import)."""
+    return _current_task_var.get()
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────
+#
+# v2 storage uses the filesystem-tree layout owned by ``app.services.scheduler_tree``.
+# These thin wrappers exist so call sites stay readable; the heavy lifting
+# (path lookup, lazy migration, walk_tree) lives in scheduler_tree.
 
 def _tasks_dir(user_id: str) -> str:
-    return os.path.join(get_user_dir(user_id), "tasks")
-
-
-def _task_path(user_id: str, task_id: str) -> str:
-    return os.path.join(_tasks_dir(user_id), f"{task_id}.json")
-
-
-def _task_steps_dir(user_id: str, task_id: str) -> str:
-    return os.path.join(_tasks_dir(user_id), f"{task_id}.steps")
-
-
-def _task_steps_path(user_id: str, task_id: str, run_id: str) -> str:
-    return os.path.join(_task_steps_dir(user_id, task_id), f"{run_id}.jsonl")
+    """Root of the v2 admin task tree (also the legacy v1 flat dir)."""
+    return st.scope_root("admin", user_id)
 
 
 def _service_tasks_dir(admin_id: str, service_id: str) -> str:
-    return os.path.join(get_user_dir(admin_id), "services", service_id, "tasks")
+    """Root of the v2 service task tree (also the legacy v1 flat dir)."""
+    return st.scope_root("service", admin_id, service_id)
 
 
-def _service_task_path(admin_id: str, service_id: str, task_id: str) -> str:
-    return os.path.join(_service_tasks_dir(admin_id, service_id), f"{task_id}.json")
+def _task_runs_dir_v2(user_id: str, task_id: str) -> Optional[str]:
+    """Per-task ``runs/`` directory in the v2 tree, or None if task missing."""
+    task_dir = st.task_path_for("admin", user_id, task_id)
+    return st.runs_dir(task_dir) if task_dir else None
 
 
-def _service_task_steps_dir(admin_id: str, service_id: str, task_id: str) -> str:
-    return os.path.join(_service_tasks_dir(admin_id, service_id),
-                        f"{task_id}.steps")
-
-
-def _service_task_steps_path(admin_id: str, service_id: str,
-                             task_id: str, run_id: str) -> str:
-    return os.path.join(_service_task_steps_dir(admin_id, service_id, task_id),
-                        f"{run_id}.jsonl")
+def _service_task_runs_dir_v2(admin_id: str, service_id: str,
+                              task_id: str) -> Optional[str]:
+    task_dir = st.task_path_for("service", admin_id, task_id, service_id)
+    return st.runs_dir(task_dir) if task_dir else None
 
 
 # ── Step externalization (per-run JSONL, written once per run) ────────────
 
-def _externalize_run_steps(steps_dir: str, runs: List[Dict[str, Any]]) -> None:
+def _externalize_run_steps(task_dir: str, runs: List[Dict[str, Any]]) -> None:
     """Move each run's ``steps`` array out of the task dict into a per-run
-    JSONL file.  Mutates ``runs`` in place (drops the ``steps`` key).
+    JSONL file under ``{task_dir}/runs/``.  Mutates ``runs`` in place
+    (drops the ``steps`` key).
 
     Idempotent: if the JSONL already exists we don't overwrite it.  Runs
     without a ``run_id`` (very old shape) are left untouched so we don't
     silently lose data.
     """
+    runs_d = st.runs_dir(task_dir)
     for r in runs:
         steps = r.get("steps")
         if not steps:
@@ -127,10 +202,10 @@ def _externalize_run_steps(steps_dir: str, runs: List[Dict[str, Any]]) -> None:
         run_id = r.get("run_id")
         if not run_id:
             continue
-        path = os.path.join(steps_dir, f"{run_id}.jsonl")
+        path = os.path.join(runs_d, f"{run_id}.jsonl")
         try:
             if not os.path.isfile(path):
-                os.makedirs(steps_dir, exist_ok=True)
+                os.makedirs(runs_d, exist_ok=True)
                 append_jsonl_many(path, steps)
             r.pop("steps", None)
         except OSError:
@@ -138,11 +213,13 @@ def _externalize_run_steps(steps_dir: str, runs: List[Dict[str, Any]]) -> None:
                           run_id, path)
 
 
-def _attach_run_steps(steps_dir: str, runs: List[Dict[str, Any]]
+def _attach_run_steps(task_dir: str, runs: List[Dict[str, Any]]
                       ) -> List[Dict[str, Any]]:
     """For UI / API responses: re-attach steps[] from per-run JSONL files
-    into a copy of the run summaries.  Falls back to the inline ``steps``
-    array if it's still there (un-migrated runs)."""
+    under ``{task_dir}/runs/`` into a copy of the run summaries.  Falls
+    back to the inline ``steps`` array if it's still there (un-migrated
+    runs)."""
+    runs_d = st.runs_dir(task_dir)
     out = []
     for r in runs:
         rec = dict(r)
@@ -151,7 +228,7 @@ def _attach_run_steps(steps_dir: str, runs: List[Dict[str, Any]]
             continue
         run_id = rec.get("run_id")
         if run_id:
-            path = os.path.join(steps_dir, f"{run_id}.jsonl")
+            path = os.path.join(runs_d, f"{run_id}.jsonl")
             if os.path.isfile(path):
                 rec["steps"] = read_jsonl(path)
         out.append(rec)
@@ -304,40 +381,63 @@ def _next_cron(expr: str, after: datetime, tz_offset_hours: float = 0) -> Option
 # ── Task CRUD ─────────────────────────────────────────────────────────────
 
 def _load_task(user_id: str, task_id: str) -> Optional[Dict[str, Any]]:
-    path = _task_path(user_id, task_id)
-    if not os.path.isfile(path):
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    """Load an admin task by id. Auto-migrates v1 → v2 on first hit."""
+    return st.load_task_or_migrate("admin", user_id, task_id)
 
 
 def _save_task(user_id: str, task: Dict[str, Any]) -> None:
-    os.makedirs(_tasks_dir(user_id), exist_ok=True)
+    """Persist an admin task into the v2 tree.
+
+    For root tasks: writes to ``users/{uid}/tasks/{task_id}/_meta.json``.
+    For child tasks: writes to the existing tree path (located via
+    ``task_path_for``); raises ``RuntimeError`` if the directory is missing
+    (caller bug — must use ``create_child_task`` to make the dir first).
+    """
+    task_id = task["id"]
+    task_dir = st.task_path_for("admin", user_id, task_id)
+    if not task_dir:
+        # Root task: create at scope_root/{task_id}/
+        if task.get("parent_task_id"):
+            raise RuntimeError(
+                f"_save_task: child task {task_id} has no on-disk dir; "
+                "create_child_task must run before _save_task")
+        task_dir = st.create_root_dir("admin", user_id, task_id)
+
     runs = task.get("runs") or []
-    _externalize_run_steps(_task_steps_dir(user_id, task["id"]), runs)
+    _externalize_run_steps(task_dir, runs)
     task["runs"] = runs
-    from app.core.fileutil import atomic_json_save
-    atomic_json_save(_task_path(user_id, task["id"]), task, ensure_ascii=False, indent=2)
+    st.save_task_meta(task_dir, task)
+    # New mtime on _meta.json — caller (HeapScheduler.upsert) handles re-heap.
 
 
-def create_task(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Create a new scheduled task and compute next_run_at."""
-    task_id = "task_" + uuid.uuid4().hex[:8]
+def _new_task_meta_v2(scope: Literal["admin", "service"], uid: str,
+                      data: Dict[str, Any], task_id: str,
+                      service_id: Optional[str] = None) -> Dict[str, Any]:
+    """Build a fresh task dict pre-populated with v2 spawn-tree fields.
+
+    Centralises the field defaults so admin / service / spawn paths stay in
+    sync as the schema evolves.
+    """
     now = datetime.now(timezone.utc)
-
     tz_offset = data.get("tz_offset_hours")
     if tz_offset is None:
         from app.services.preferences import get_tz_offset
-        tz_offset = get_tz_offset(user_id)
+        tz_offset = get_tz_offset(uid)
 
-    task: Dict[str, Any] = {
+    parent_task_id = data.get("parent_task_id")
+    spawn_chain = list(data.get("spawn_chain") or [])
+    spawn_depth = int(data.get("spawn_depth", 0))
+    root_task_id = data.get("root_task_id") or (
+        spawn_chain[0] if spawn_chain else task_id
+    )
+
+    meta: Dict[str, Any] = {
         "id": task_id,
-        "user_id": user_id,
         "name": data.get("name", "Unnamed Task"),
         "description": data.get("description", ""),
-        "schedule_type": data.get("schedule_type", "once"),   # cron | once | interval
+        "schedule_type": data.get("schedule_type", "once"),
         "schedule": data.get("schedule", ""),
-        "task_type": data.get("task_type", "script"),         # script | agent
+        "task_type": data.get("task_type", "agent" if scope == "service" else "script"),
         "task_config": data.get("task_config", {}),
         "reply_to": data.get("reply_to"),
         "enabled": data.get("enabled", True),
@@ -346,29 +446,57 @@ def create_task(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         "last_run_at": None,
         "next_run_at": None,
         "runs": [],
+        # v2 spawn-tree fields
+        "parent_task_id": parent_task_id,
+        "root_task_id": root_task_id,
+        "spawn_chain": spawn_chain,
+        "spawn_depth": spawn_depth,
+        "spawn_reason": data.get("spawn_reason", ""),
+        "children_count": 0,
+        "descendants_count": 0,
+        "descendants_summary": "",
     }
-    task["next_run_at"] = _compute_next_run(task, now)
+    if scope == "admin":
+        meta["user_id"] = uid
+    else:
+        meta["admin_id"] = uid
+        meta["service_id"] = service_id
+    return meta
+
+
+def create_task(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a new admin scheduled task (root by default) and compute next_run_at.
+
+    To create a CHILD task under an existing parent, use :func:`create_child_task`
+    which sets up parent linkage and bumps parent counters atomically.
+    """
+    task_id = "task_" + uuid.uuid4().hex[:8]
+    task = _new_task_meta_v2("admin", user_id, data, task_id)
+    task["next_run_at"] = _compute_next_run(task, datetime.now(timezone.utc))
     _save_task(user_id, task)
+    _heap_upsert("admin", user_id, task_id, task.get("next_run_at"))
     return task
 
 
-def list_tasks(user_id: str) -> List[Dict[str, Any]]:
-    d = _tasks_dir(user_id)
-    if not os.path.isdir(d):
-        return []
-    tasks = []
-    for fname in os.listdir(d):
-        if fname.endswith(".json"):
-            fpath = os.path.join(d, fname)
-            try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    t = json.load(f)
-                # Return without full run history for listing
-                t_summary = {k: v for k, v in t.items() if k != "runs"}
-                t_summary["run_count"] = len(t.get("runs", []))
-                tasks.append(t_summary)
-            except Exception:
-                pass
+def list_tasks(user_id: str, *,
+               roots_only: bool = True) -> List[Dict[str, Any]]:
+    """List admin tasks, summary form.
+
+    ``roots_only=True`` (default) hides spawn descendants — keeps the
+    sidebar manageable when many tasks self-spawn children.  Inspect
+    descendants via the pedigree graph (``walk_tree`` / ``/tree`` endpoint).
+    ``roots_only=False`` falls back to the legacy flat-with-descendants
+    list (used by diagnostic / migration callers).
+    """
+    if roots_only:
+        out: List[Dict[str, Any]] = []
+        for m in st.list_root_tasks("admin", user_id):
+            m = {k: v for k, v in m.items() if k != "runs"}
+            m.setdefault("run_count", 0)
+            out.append(m)
+        tasks = out
+    else:
+        tasks = st.list_all_tasks_flat("admin", user_id, include_runs=False)
     tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     return tasks
 
@@ -381,113 +509,107 @@ def update_task(user_id: str, task_id: str, updates: Dict[str, Any]) -> Optional
     task = _load_task(user_id, task_id)
     if not task:
         return None
+    # Protect identity / lineage / lifecycle fields from external override.
+    protected = {"id", "user_id", "created_at", "runs",
+                 "parent_task_id", "root_task_id",
+                 "spawn_chain", "spawn_depth"}
     for k, v in updates.items():
-        if k not in ("id", "user_id", "created_at", "runs"):
+        if k not in protected:
             task[k] = v
-    # Recompute next_run_at if schedule changed
     if any(k in updates for k in ("schedule_type", "schedule", "enabled")):
         now = datetime.now(timezone.utc)
         task["next_run_at"] = _compute_next_run(task, now) if task["enabled"] else None
     _save_task(user_id, task)
+    _heap_upsert("admin", user_id, task_id, task.get("next_run_at"))
     return task
 
 
 def delete_task(user_id: str, task_id: str) -> bool:
-    path = _task_path(user_id, task_id)
-    steps_dir = _task_steps_dir(user_id, task_id)
-    existed = False
-    if os.path.isfile(path):
-        os.remove(path)
-        existed = True
-    if os.path.isdir(steps_dir):
-        import shutil
-        try:
-            shutil.rmtree(steps_dir)
-            existed = True
-        except OSError:
-            pass
-    return existed
+    """Delete an admin task and its **entire** spawn subtree (recursive).
+
+    Also evicts the deleted task ids from the run heap index so the loop
+    doesn't try to fire them after deletion (orphan dispatch bug).
+    """
+    # Snapshot ids BEFORE deletion so we can clean the heap index afterwards.
+    victims = st.list_descendants("admin", user_id, task_id, include_root=True)
+    deleted = st.delete_task_subtree("admin", user_id, task_id)
+    if deleted:
+        for v in victims:
+            _heap_upsert("admin", user_id, v["id"], None)
+    return deleted
 
 
 def get_task_runs(user_id: str, task_id: str) -> List[Dict[str, Any]]:
-    task = _load_task(user_id, task_id)
-    if not task:
-        return []
-    return _attach_run_steps(_task_steps_dir(user_id, task_id),
-                             task.get("runs", []))
+    task_dir = st.task_path_for("admin", user_id, task_id)
+    if not task_dir:
+        # legacy fallback: trigger migration
+        if not _load_task(user_id, task_id):
+            return []
+        task_dir = st.task_path_for("admin", user_id, task_id)
+        if not task_dir:
+            return []
+    meta = st.load_task_meta(task_dir) or {}
+    return _attach_run_steps(task_dir, meta.get("runs", []))
 
 
 # ── Service task CRUD ─────────────────────────────────────────────────────
 
 def _load_service_task(admin_id: str, service_id: str, task_id: str) -> Optional[Dict[str, Any]]:
-    path = _service_task_path(admin_id, service_id, task_id)
-    if not os.path.isfile(path):
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    """Load a service task by id. Auto-migrates v1 → v2 on first hit."""
+    return st.load_task_or_migrate("service", admin_id, task_id, service_id)
 
 
 def _save_service_task(admin_id: str, service_id: str, task: Dict[str, Any]) -> None:
-    d = _service_tasks_dir(admin_id, service_id)
-    os.makedirs(d, exist_ok=True)
+    """Persist a service task into the v2 tree.
+
+    Same root vs child semantics as :func:`_save_task` — see its docstring.
+    """
+    task_id = task["id"]
+    task_dir = st.task_path_for("service", admin_id, task_id, service_id)
+    if not task_dir:
+        if task.get("parent_task_id"):
+            raise RuntimeError(
+                f"_save_service_task: child task {task_id} has no on-disk dir; "
+                "create_child_task must run before _save_service_task")
+        task_dir = st.create_root_dir("service", admin_id, task_id, service_id)
+
     runs = task.get("runs") or []
-    _externalize_run_steps(
-        _service_task_steps_dir(admin_id, service_id, task["id"]), runs,
-    )
+    _externalize_run_steps(task_dir, runs)
     task["runs"] = runs
-    from app.core.fileutil import atomic_json_save
-    atomic_json_save(os.path.join(d, f"{task['id']}.json"), task, ensure_ascii=False, indent=2)
+    st.save_task_meta(task_dir, task)
 
 
 def create_service_task(admin_id: str, service_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Create a scheduled task under a published service."""
+    """Create a scheduled task under a published service (root by default).
+
+    For child tasks within a service tree, use :func:`create_child_task`.
+    """
     task_id = "stask_" + uuid.uuid4().hex[:8]
-    now = datetime.now(timezone.utc)
-
-    tz_offset = data.get("tz_offset_hours")
-    if tz_offset is None:
-        from app.services.preferences import get_tz_offset
-        tz_offset = get_tz_offset(admin_id)
-
-    task: Dict[str, Any] = {
-        "id": task_id,
-        "admin_id": admin_id,
-        "service_id": service_id,
-        "name": data.get("name", "Unnamed Task"),
-        "description": data.get("description", ""),
-        "schedule_type": data.get("schedule_type", "once"),
-        "schedule": data.get("schedule", ""),
-        "task_type": "agent",
-        "task_config": data.get("task_config", {}),
-        "reply_to": data.get("reply_to"),
-        "enabled": data.get("enabled", True),
-        "tz_offset_hours": tz_offset,
-        "created_at": now.isoformat(),
-        "last_run_at": None,
-        "next_run_at": None,
-        "runs": [],
-    }
-    task["next_run_at"] = _compute_next_run(task, now)
+    task = _new_task_meta_v2("service", admin_id, data, task_id, service_id)
+    task["next_run_at"] = _compute_next_run(task, datetime.now(timezone.utc))
     _save_service_task(admin_id, service_id, task)
+    _heap_upsert("service", admin_id, task_id, task.get("next_run_at"),
+                 service_id=service_id)
     return task
 
 
-def list_service_tasks(admin_id: str, service_id: str) -> List[Dict[str, Any]]:
-    d = _service_tasks_dir(admin_id, service_id)
-    if not os.path.isdir(d):
-        return []
-    tasks = []
-    for fname in os.listdir(d):
-        if fname.endswith(".json"):
-            fpath = os.path.join(d, fname)
-            try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    t = json.load(f)
-                t_summary = {k: v for k, v in t.items() if k != "runs"}
-                t_summary["run_count"] = len(t.get("runs", []))
-                tasks.append(t_summary)
-            except Exception:
-                pass
+def list_service_tasks(admin_id: str, service_id: str, *,
+                       roots_only: bool = True) -> List[Dict[str, Any]]:
+    """List service tasks for one service, summary form.
+
+    See :func:`list_tasks` for the ``roots_only`` contract — same semantics,
+    just scoped to ``services/{service_id}/tasks``.
+    """
+    if roots_only:
+        out: List[Dict[str, Any]] = []
+        for m in st.list_root_tasks("service", admin_id, service_id):
+            m = {k: v for k, v in m.items() if k != "runs"}
+            m.setdefault("run_count", 0)
+            out.append(m)
+        tasks = out
+    else:
+        tasks = st.list_all_tasks_flat("service", admin_id, service_id,
+                                       include_runs=False)
     tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     return tasks
 
@@ -502,53 +624,196 @@ def update_service_task(
     task = _load_service_task(admin_id, service_id, task_id)
     if not task:
         return None
+    protected = {"id", "admin_id", "service_id", "created_at", "runs",
+                 "parent_task_id", "root_task_id",
+                 "spawn_chain", "spawn_depth"}
     for k, v in updates.items():
-        if k not in ("id", "admin_id", "service_id", "created_at", "runs"):
+        if k not in protected:
             task[k] = v
     if any(k in updates for k in ("schedule_type", "schedule", "enabled")):
         now = datetime.now(timezone.utc)
         task["next_run_at"] = _compute_next_run(task, now) if task["enabled"] else None
     _save_service_task(admin_id, service_id, task)
+    _heap_upsert("service", admin_id, task_id, task.get("next_run_at"),
+                 service_id=service_id)
     return task
 
 
 def delete_service_task(admin_id: str, service_id: str, task_id: str) -> bool:
-    path = _service_task_path(admin_id, service_id, task_id)
-    steps_dir = _service_task_steps_dir(admin_id, service_id, task_id)
-    existed = False
-    if os.path.isfile(path):
-        os.remove(path)
-        existed = True
-    if os.path.isdir(steps_dir):
-        import shutil
-        try:
-            shutil.rmtree(steps_dir)
-            existed = True
-        except OSError:
-            pass
-    return existed
+    """Delete a service task and its **entire** spawn subtree (recursive).
+
+    Also evicts deleted ids from the run heap (see :func:`delete_task`).
+    """
+    victims = st.list_descendants("service", admin_id, task_id, service_id,
+                                  include_root=True)
+    deleted = st.delete_task_subtree("service", admin_id, task_id, service_id)
+    if deleted:
+        for v in victims:
+            _heap_upsert("service", admin_id, v["id"], None,
+                         service_id=service_id)
+    return deleted
 
 
 def get_service_task_runs(admin_id: str, service_id: str, task_id: str) -> List[Dict[str, Any]]:
-    task = _load_service_task(admin_id, service_id, task_id)
-    if not task:
-        return []
-    return _attach_run_steps(
-        _service_task_steps_dir(admin_id, service_id, task_id),
-        task.get("runs", []),
-    )
+    task_dir = st.task_path_for("service", admin_id, task_id, service_id)
+    if not task_dir:
+        if not _load_service_task(admin_id, service_id, task_id):
+            return []
+        task_dir = st.task_path_for("service", admin_id, task_id, service_id)
+        if not task_dir:
+            return []
+    meta = st.load_task_meta(task_dir) or {}
+    return _attach_run_steps(task_dir, meta.get("runs", []))
 
 
-def list_all_service_tasks(admin_id: str) -> List[Dict[str, Any]]:
-    """List tasks across all services for a given admin."""
+def list_all_service_tasks(admin_id: str, *,
+                           roots_only: bool = True) -> List[Dict[str, Any]]:
+    """List tasks across all services for a given admin.
+
+    Honors ``roots_only`` for the same reason as :func:`list_service_tasks`
+    — used by the cross-service "全部" tab in the scheduler sidebar.
+    """
     services_dir = os.path.join(get_user_dir(admin_id), "services")
     if not os.path.isdir(services_dir):
         return []
     all_tasks = []
     for svc_id in os.listdir(services_dir):
-        all_tasks.extend(list_service_tasks(admin_id, svc_id))
+        all_tasks.extend(list_service_tasks(admin_id, svc_id,
+                                            roots_only=roots_only))
     all_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     return all_tasks
+
+
+# ── B6: Spawn helpers (used by spawn_child_task tool & v2 chain semantics) ─
+
+def create_child_task(parent_ctx: TaskContext,
+                      data: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a child task under the currently-executing parent task.
+
+    Wires the spawn-tree fields (parent_task_id / root_task_id / spawn_chain /
+    spawn_depth) from ``parent_ctx`` and returns the persisted task dict.
+
+    Raises ``RuntimeError`` if the parent's on-disk directory cannot be
+    located — should only happen if parent was deleted mid-execution.
+    """
+    parent_dir = st.task_path_for(parent_ctx.scope, parent_ctx.uid,
+                                  parent_ctx.task_id, parent_ctx.service_id)
+    if not parent_dir:
+        raise RuntimeError(
+            f"create_child_task: parent {parent_ctx.task_id} has no on-disk dir")
+
+    prefix = "task_" if parent_ctx.scope == "admin" else "stask_"
+    child_id = prefix + uuid.uuid4().hex[:8]
+
+    # Compose lineage: child's chain = parent's chain + parent itself
+    child_spawn_chain = parent_ctx.spawn_chain + [parent_ctx.task_id]
+    child_data = dict(data)
+    child_data.update({
+        "parent_task_id": parent_ctx.task_id,
+        "root_task_id": parent_ctx.root_task_id,
+        "spawn_chain": child_spawn_chain,
+        "spawn_depth": parent_ctx.depth + 1,
+        # Inherit defaults from parent if caller didn't override
+        "tz_offset_hours": child_data.get(
+            "tz_offset_hours", parent_ctx.tz_offset_hours),
+    })
+
+    # Build meta then drop it onto disk under parent_dir/{child_id}/
+    child_meta = _new_task_meta_v2(parent_ctx.scope, parent_ctx.uid,
+                                   child_data, child_id,
+                                   parent_ctx.service_id)
+    child_meta["next_run_at"] = _compute_next_run(
+        child_meta, datetime.now(timezone.utc))
+
+    child_dir = st.create_child_dir(parent_dir, child_id)
+    runs = child_meta.get("runs") or []
+    _externalize_run_steps(child_dir, runs)
+    child_meta["runs"] = runs
+    st.save_task_meta(child_dir, child_meta)
+
+    # Bump parent's children_count + invalidate cache so subsequent lookups
+    # see the new child. The path cache was already cleared by create_child_dir.
+    parent_meta = st.load_task_meta(parent_dir) or {}
+    parent_meta["children_count"] = int(parent_meta.get("children_count", 0)) + 1
+    parent_meta["descendants_count"] = int(
+        parent_meta.get("descendants_count", 0)) + 1
+    st.save_task_meta(parent_dir, parent_meta)
+
+    # Bump descendants_count on all higher ancestors (keeps UI counters honest)
+    for ancestor_id in parent_ctx.spawn_chain:
+        a_dir = st.task_path_for(parent_ctx.scope, parent_ctx.uid,
+                                 ancestor_id, parent_ctx.service_id)
+        if not a_dir:
+            continue
+        a_meta = st.load_task_meta(a_dir)
+        if not a_meta:
+            continue
+        a_meta["descendants_count"] = int(
+            a_meta.get("descendants_count", 0)) + 1
+        st.save_task_meta(a_dir, a_meta)
+
+    _heap_upsert(parent_ctx.scope, parent_ctx.uid, child_id,
+                 child_meta.get("next_run_at"),
+                 service_id=parent_ctx.service_id)
+
+    log.info("Spawned child task %s under parent %s (depth=%d, chain=%s)",
+             child_id, parent_ctx.task_id, child_meta["spawn_depth"],
+             "→".join(child_spawn_chain) if child_spawn_chain else "<root>")
+    return child_meta
+
+
+# ── B5: L3 descendants_summary propagation ───────────────────────────────
+
+def _propagate_descendant_summary(scope: Literal["admin", "service"],
+                                  uid: str,
+                                  service_id: Optional[str],
+                                  child_meta: Dict[str, Any],
+                                  run_record: Dict[str, Any]) -> None:
+    """Append a one-line summary of a child's run to every ancestor's
+    ``descendants_summary`` field, LRU-truncated to 1500 chars total.
+
+    Called from execute paths after a child task finishes (success OR error).
+    The ancestors are derived from ``child_meta.spawn_chain``; root tasks
+    (empty chain) are no-ops.
+
+    Concurrency note: multiple descendants may write the same ancestor's
+    ``_meta.json`` simultaneously.  We accept "last writer wins" semantics
+    here — losing one summary line is preferable to introducing a global
+    lock; full run history remains in each child's own ``runs[]``.
+    """
+    chain = child_meta.get("spawn_chain") or []
+    if not chain:
+        return  # root tasks have no ancestors
+
+    status = run_record.get("status", "?")
+    icon = "✓" if status == "success" else ("⌛" if status == "timeout" else "✗")
+    finished = (run_record.get("finished_at") or "")[:16]
+    output = (run_record.get("output") or "").strip().splitlines()
+    snippet = output[0][:_L3_SUMMARY_LINE_PREVIEW] if output else ""
+    line = (
+        f"[{finished}] {icon} {child_meta.get('id')}"
+        f"(d={child_meta.get('spawn_depth', '?')}): "
+        f"{child_meta.get('name', '')} — {snippet}".rstrip(" — ")
+    )
+
+    for ancestor_id in chain:
+        a_dir = st.task_path_for(scope, uid, ancestor_id, service_id)
+        if not a_dir:
+            continue
+        a_meta = st.load_task_meta(a_dir)
+        if not a_meta:
+            continue
+        prior = a_meta.get("descendants_summary") or ""
+        merged = (prior + ("\n" if prior else "") + line)
+        # LRU truncate by line, oldest first
+        while len(merged) > _L3_SUMMARY_MAX_CHARS and "\n" in merged:
+            merged = merged.split("\n", 1)[1]
+        a_meta["descendants_summary"] = merged
+        try:
+            st.save_task_meta(a_dir, a_meta)
+        except Exception:
+            log.exception("L3 propagate: failed to save ancestor %s",
+                          ancestor_id)
 
 
 # ── Schedule helpers ──────────────────────────────────────────────────────
@@ -578,6 +843,12 @@ def _compute_next_run(task: Dict[str, Any], after: datetime) -> Optional[str]:
     tz_offset = _resolve_task_tz_offset(task)
 
     if stype == "once":
+        # v2: empty / "now" schedule on a once-task means "fire ASAP" — chosen
+        # so spawn_child_task's default ergonomics (no schedule arg → run now)
+        # work cleanly.  v1 callers that omitted the time still got None here
+        # and were silently dropped, so this loosening doesn't break old data.
+        if not sched or sched.strip().lower() == "now":
+            return after.isoformat()
         try:
             dt = datetime.fromisoformat(sched)
             if dt.tzinfo is None:
@@ -642,7 +913,7 @@ def _resolve_permission_dirs(user_id: str, dir_names: List[str]) -> List[str]:
 
 async def _run_script_task(user_id: str, config: Dict[str, Any]) -> dict:
     """Returns {"output": str, "success": bool, "steps": list}."""
-    from app.services.script_runner import run_script
+    from app.services.script_runner import run_script, superadmin_script_unrestricted
     from app.core.security import get_user_filesystem_dir
     fs_dir = get_user_filesystem_dir(user_id)
     scripts_dir = os.path.join(fs_dir, "scripts")
@@ -678,6 +949,7 @@ async def _run_script_task(user_id: str, config: Dict[str, Any]) -> dict:
         timeout=min(config.get("timeout", 60), _TASK_TIMEOUT_S),
         allowed_read_dirs=read_dirs,
         allowed_write_dirs=write_dirs,
+        unrestricted=superadmin_script_unrestricted(),
     )
 
     if result["error"]:
@@ -1251,6 +1523,33 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
 
 
 
+def _build_task_context_from_meta(scope: Literal["admin", "service"],
+                                  uid: str,
+                                  task: Dict[str, Any],
+                                  service_id: Optional[str] = None
+                                  ) -> TaskContext:
+    """Build a TaskContext from a freshly-loaded task meta dict.
+
+    Pulls spawn lineage from v2 fields (with safe defaults for legacy/just-
+    migrated tasks that may have missing keys).
+    """
+    cfg = task.get("task_config") or {}
+    return TaskContext(
+        scope=scope,
+        uid=uid,
+        service_id=service_id,
+        task_id=task["id"],
+        root_task_id=task.get("root_task_id") or task["id"],
+        parent_task_id=task.get("parent_task_id"),
+        spawn_chain=list(task.get("spawn_chain") or []),
+        depth=int(task.get("spawn_depth", 0)),
+        reply_to=task.get("reply_to"),
+        permissions=cfg.get("permissions"),
+        capabilities=list(cfg.get("capabilities") or []),
+        tz_offset_hours=_resolve_task_tz_offset(task),
+    )
+
+
 async def _execute_task(user_id: str, task_id: str) -> None:
     task = _load_task(user_id, task_id)
     if not task:
@@ -1270,8 +1569,15 @@ async def _execute_task(user_id: str, task_id: str) -> None:
         "schedule_type": task.get("schedule_type"),
         "scheduled_at": started.isoformat(),
         "scope": "admin",
+        "spawn_depth": task.get("spawn_depth", 0),
+        "parent_task_id": task.get("parent_task_id"),
+        "root_task_id": task.get("root_task_id") or task.get("id"),
     }
 
+    # B4: bind execution context so spawn_child_task / L3 / observability
+    # hooks can read it from anywhere down the call stack.
+    ctx = _build_task_context_from_meta("admin", user_id, task)
+    ctx_token = _current_task_var.set(ctx)
     try:
         ttype = task.get("task_type", "script")
         cfg = task.get("task_config", {})
@@ -1301,6 +1607,11 @@ async def _execute_task(user_id: str, task_id: str) -> None:
         status = "error"
         steps.append(_step("error", output))
         log.exception("Task %s run %s failed", task_id, run_id)
+    finally:
+        # ⚠️ MUST reset — see C3 in design doc.  ContextVar leaks across tasks
+        # if not reset and would cause spawn_child_task to attribute children
+        # to the wrong parent on the next scheduled execution in this loop.
+        _current_task_var.reset(ctx_token)
 
     finished = datetime.now(timezone.utc)
     run_record = {
@@ -1323,6 +1634,14 @@ async def _execute_task(user_id: str, task_id: str) -> None:
     task["last_run_at"] = started.isoformat()
     task["next_run_at"] = _compute_next_run(task, finished)
     _save_task(user_id, task)
+    _heap_upsert("admin", user_id, task_id, task.get("next_run_at"))
+
+    # B5: propagate one-line summary to all ancestors so a parent task's next
+    # run can read its own descendants_summary and reason about its tree.
+    try:
+        _propagate_descendant_summary("admin", user_id, None, task, run_record)
+    except Exception:
+        log.exception("L3 propagate failed for admin task %s", task_id)
 
 
 async def _execute_service_task(admin_id: str, service_id: str, task_id: str) -> None:
@@ -1346,8 +1665,14 @@ async def _execute_service_task(admin_id: str, service_id: str, task_id: str) ->
         "scheduled_at": started.isoformat(),
         "scope": "service",
         "service_id": service_id,
+        "spawn_depth": task.get("spawn_depth", 0),
+        "parent_task_id": task.get("parent_task_id"),
+        "root_task_id": task.get("root_task_id") or task.get("id"),
     }
 
+    ctx = _build_task_context_from_meta("service", admin_id, task,
+                                        service_id=service_id)
+    ctx_token = _current_task_var.set(ctx)
     try:
         cfg = task.get("task_config", {})
         conv_id = reply_to.get("conversation_id", f"sched-{task_id}")
@@ -1371,6 +1696,8 @@ async def _execute_service_task(admin_id: str, service_id: str, task_id: str) ->
         status = "error"
         steps.append(_step("error", output))
         log.exception("Service task %s/%s run %s failed", service_id, task_id, run_id)
+    finally:
+        _current_task_var.reset(ctx_token)
 
     finished = datetime.now(timezone.utc)
     run_record = {
@@ -1393,124 +1720,290 @@ async def _execute_service_task(admin_id: str, service_id: str, task_id: str) ->
     task["last_run_at"] = started.isoformat()
     task["next_run_at"] = _compute_next_run(task, finished)
     _save_service_task(admin_id, service_id, task)
+    _heap_upsert("service", admin_id, task_id, task.get("next_run_at"),
+                 service_id=service_id)
+
+    try:
+        _propagate_descendant_summary("service", admin_id, service_id,
+                                      task, run_record)
+    except Exception:
+        log.exception("L3 propagate failed for service task %s/%s",
+                      service_id, task_id)
 
 
-# ── Scheduler loop ────────────────────────────────────────────────────────
+# ── Scheduler loop (B2: heap-driven) ──────────────────────────────────────
+#
+# Design: a single global min-heap keyed on next_run_at epoch seconds.  CRUD
+# entry points (create_task / update_task / create_child_task / ...) call
+# ``_heap_upsert`` to push new entries; the loop sleeps **exactly** until the
+# soonest entry's fire time (or until woken) instead of the old 30s polling.
+#
+# Stale entries (entry's stamp doesn't match the latest in ``_heap_index``)
+# are discarded lazily on pop, so re-scheduling is O(log n) without needing
+# a heap-remove.  Re-scan still runs every ``_RESCAN_INTERVAL_S`` to recover
+# from any out-of-band edits or dropped wake-ups.
 
-class TaskScheduler:
+# Heap entry: (fire_epoch, seq, scope, uid, task_id, service_id)
+HeapEntry = tuple
+
+_heap: List[HeapEntry] = []
+_heap_index: Dict[str, float] = {}     # composite key → latest fire_epoch
+_heap_lock = asyncio.Lock()             # only used in async context
+_heap_seq = 0                           # monotonic tiebreaker for heap stability
+_wake_event: Optional[asyncio.Event] = None
+_main_loop_ref: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _heap_key(scope: Literal["admin", "service"], uid: str, task_id: str,
+              service_id: Optional[str] = None) -> str:
+    """Composite key used for heap lazy-deletion bookkeeping."""
+    if scope == "admin":
+        return f"admin::{uid}::{task_id}"
+    return f"svc::{uid}::{service_id}::{task_id}"
+
+
+def _parse_next_run_epoch(next_run_iso: Optional[str]) -> Optional[float]:
+    """Parse ISO-8601 → epoch seconds; assume UTC if no tz; return None on bad input."""
+    if not next_run_iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(next_run_iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _heap_upsert(scope: Literal["admin", "service"], uid: str, task_id: str,
+                 next_run_iso: Optional[str],
+                 service_id: Optional[str] = None) -> None:
+    """Re-insert a task into the run heap with its updated next_run_at.
+
+    Safe to call from any thread / sync context.  ``next_run_iso=None``
+    deactivates the task (e.g. once-tasks after firing, disabled tasks).
+    """
+    global _heap_seq
+    key = _heap_key(scope, uid, task_id, service_id)
+    epoch = _parse_next_run_epoch(next_run_iso)
+    if epoch is None:
+        # Deactivate: drop from index, lazy-purge from heap on next pop
+        _heap_index.pop(key, None)
+        _wake()
+        return
+
+    _heap_index[key] = epoch
+    _heap_seq += 1
+    heapq.heappush(_heap, (epoch, _heap_seq, scope, uid, task_id, service_id))
+    _wake()
+
+
+def _wake() -> None:
+    """Signal the loop to re-evaluate the heap top, thread-safe."""
+    if _wake_event is None or _main_loop_ref is None:
+        return
+    if _main_loop_ref.is_running():
+        _main_loop_ref.call_soon_threadsafe(_wake_event.set)
+
+
+class HeapScheduler:
+    """Heap-driven scheduler: O(log n) per task event, exact-time firing.
+
+    Replaces the old polling ``TaskScheduler`` (kept as alias for
+    backward-compat with ``get_scheduler()`` callers).  Public surface is
+    unchanged: ``start / stop / run_now / run_service_task_now``.
+    """
+
     def __init__(self):
         self._task: Optional[asyncio.Task] = None
         self._running_tasks: set = set()
+        self._exec_sem: Optional[asyncio.Semaphore] = None
 
-    def start(self):
+    # ── lifecycle ────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        global _wake_event, _main_loop_ref
         if self._task is None or self._task.done():
+            slots = scheduler_concurrency_slots()
+            self._exec_sem = asyncio.Semaphore(slots)
+            log.info(
+                "HeapScheduler capacity: at most %d task(s) executing at once "
+                "(SCHEDULER_MAX_CONCURRENT)",
+                slots,
+            )
+            _wake_event = asyncio.Event()
+            _main_loop_ref = asyncio.get_running_loop()
+            # Bootstrap the heap from disk so existing tasks are picked up
+            # immediately at server boot — without this, the first wake_event
+            # only happens when the user mutates a task.
+            self._reload_from_disk()
             self._task = asyncio.create_task(self._loop())
-            log.info("Task scheduler started")
+            log.info("HeapScheduler started (heap=%d, idx=%d)",
+                     len(_heap), len(_heap_index))
 
-    async def stop(self):
+    async def stop(self) -> None:
         if self._task and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        log.info("Task scheduler stopped")
+        self._exec_sem = None
+        log.info("HeapScheduler stopped")
 
-    async def _loop(self):
+    # ── core loop ────────────────────────────────────────────────────────
+
+    async def _loop(self) -> None:
+        last_rescan = time.monotonic()
         while True:
             try:
-                await self._check_all_tasks()
-            except Exception:
-                log.exception("Scheduler loop error")
-            await asyncio.sleep(_LOOP_INTERVAL_S)
+                # Periodic safety rescan: catches out-of-band file edits /
+                # dropped wake events / clock jumps.  Cheap (just walks tree).
+                if time.monotonic() - last_rescan > _RESCAN_INTERVAL_S:
+                    self._reload_from_disk()
+                    last_rescan = time.monotonic()
 
-    async def _check_all_tasks(self):
+                wait_s = self._compute_sleep()
+                if wait_s > 0:
+                    try:
+                        assert _wake_event is not None
+                        await asyncio.wait_for(_wake_event.wait(), timeout=wait_s)
+                    except asyncio.TimeoutError:
+                        pass
+                    finally:
+                        if _wake_event is not None:
+                            _wake_event.clear()
+                    continue  # re-evaluate after wake / timeout
+
+                await self._dispatch_due()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("HeapScheduler loop error; sleeping 5s")
+                await asyncio.sleep(5)
+
+    def _compute_sleep(self) -> float:
+        """How long to wait before next pop attempt.
+
+        Returns 0 when something is immediately due, _IDLE_RESCAN_S when the
+        heap is empty.
+        """
+        # Skip stale tops without popping them yet — pop happens in dispatch.
+        while _heap:
+            fire_epoch, seq, scope, uid, task_id, svc_id = _heap[0]
+            key = _heap_key(scope, uid, task_id, svc_id)
+            current = _heap_index.get(key)
+            if current is None or current != fire_epoch:
+                heapq.heappop(_heap)  # discard stale
+                continue
+            now = time.time()
+            return max(0.0, fire_epoch - now)
+        return float(_IDLE_RESCAN_S)
+
+    async def _dispatch_due(self) -> None:
+        """Pop and dispatch every entry whose fire_epoch <= now."""
+        now = time.time()
+        while _heap:
+            fire_epoch, seq, scope, uid, task_id, svc_id = _heap[0]
+            key = _heap_key(scope, uid, task_id, svc_id)
+            current = _heap_index.get(key)
+            if current is None or current != fire_epoch:
+                heapq.heappop(_heap)  # stale, drop
+                continue
+            if fire_epoch > now:
+                return  # nothing else due
+            heapq.heappop(_heap)
+            # Remove from index BEFORE dispatch — _execute_*_task will write
+            # next_run_at again and call _heap_upsert with the new value.
+            _heap_index.pop(key, None)
+            self._fire(scope, uid, task_id, svc_id, key)
+
+    def _fire(self, scope: str, uid: str, task_id: str,
+              service_id: Optional[str], key: str) -> None:
+        if key in self._running_tasks:
+            log.warning("HeapScheduler: %s already running, skipping fire", key)
+            return
+        self._running_tasks.add(key)
+        if scope == "admin":
+            coro = self._run_and_cleanup(key, uid, task_id)
+        else:
+            coro = self._run_service_and_cleanup(key, uid, service_id, task_id)
+        asyncio.create_task(coro)
+
+    # ── disk bootstrap / safety rescan ───────────────────────────────────
+
+    def _reload_from_disk(self) -> None:
+        """Walk every user's task tree and re-insert enabled tasks into heap.
+
+        Called at startup and every _RESCAN_INTERVAL_S as a safety net.
+        Idempotent: re-inserts produce a fresh heap entry; old entries are
+        lazily dropped via the index check.
+        """
         from app.core.security import USERS_DIR
         if not os.path.isdir(USERS_DIR):
             return
-        now = datetime.now(timezone.utc)
+        loaded = 0
         for uid in os.listdir(USERS_DIR):
-            # Admin tasks
-            tasks_dir = os.path.join(USERS_DIR, uid, "tasks")
-            if os.path.isdir(tasks_dir):
-                self._scan_dir(tasks_dir, now, uid)
+            udir = os.path.join(USERS_DIR, uid)
+            if not os.path.isdir(udir):
+                continue
+            try:
+                for t in st.list_all_tasks_flat("admin", uid, include_runs=False):
+                    if t.get("enabled") and t.get("next_run_at"):
+                        _heap_upsert("admin", uid, t["id"], t["next_run_at"])
+                        loaded += 1
+            except Exception:
+                log.exception("rescan: admin uid=%s failed", uid)
 
-            # Service tasks
-            services_dir = os.path.join(USERS_DIR, uid, "services")
+            services_dir = os.path.join(udir, "services")
             if not os.path.isdir(services_dir):
                 continue
             for svc_id in os.listdir(services_dir):
-                svc_tasks = os.path.join(services_dir, svc_id, "tasks")
-                if os.path.isdir(svc_tasks):
-                    self._scan_service_dir(svc_tasks, now, uid, svc_id)
+                try:
+                    for t in st.list_all_tasks_flat("service", uid, svc_id,
+                                                    include_runs=False):
+                        if t.get("enabled") and t.get("next_run_at"):
+                            _heap_upsert("service", uid, t["id"],
+                                         t["next_run_at"], service_id=svc_id)
+                            loaded += 1
+                except Exception:
+                    log.exception("rescan: service %s/%s failed", uid, svc_id)
+        log.debug("HeapScheduler rescan: indexed %d tasks", loaded)
 
-    def _scan_dir(self, tasks_dir: str, now: datetime, uid: str):
-        for fname in os.listdir(tasks_dir):
-            if not fname.endswith(".json"):
-                continue
-            fpath = os.path.join(tasks_dir, fname)
-            try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    task = json.load(f)
-            except Exception:
-                continue
-            if not task.get("enabled"):
-                continue
-            next_run_str = task.get("next_run_at")
-            if not next_run_str:
-                continue
-            try:
-                next_run = datetime.fromisoformat(next_run_str)
-                if next_run.tzinfo is None:
-                    next_run = next_run.replace(tzinfo=timezone.utc)
-            except Exception:
-                continue
-            if next_run <= now:
-                key = f"{uid}::{task['id']}"
-                if key not in self._running_tasks:
-                    self._running_tasks.add(key)
-                    asyncio.create_task(self._run_and_cleanup(key, uid, task["id"]))
+    # ── run wrappers ─────────────────────────────────────────────────────
 
-    def _scan_service_dir(self, tasks_dir: str, now: datetime, admin_id: str, service_id: str):
-        for fname in os.listdir(tasks_dir):
-            if not fname.endswith(".json"):
-                continue
-            fpath = os.path.join(tasks_dir, fname)
-            try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    task = json.load(f)
-            except Exception:
-                continue
-            if not task.get("enabled"):
-                continue
-            next_run_str = task.get("next_run_at")
-            if not next_run_str:
-                continue
-            try:
-                next_run = datetime.fromisoformat(next_run_str)
-                if next_run.tzinfo is None:
-                    next_run = next_run.replace(tzinfo=timezone.utc)
-            except Exception:
-                continue
-            if next_run <= now:
-                key = f"svc::{admin_id}::{service_id}::{task['id']}"
-                if key not in self._running_tasks:
-                    self._running_tasks.add(key)
-                    asyncio.create_task(
-                        self._run_service_and_cleanup(key, admin_id, service_id, task["id"])
-                    )
-
-    async def _run_and_cleanup(self, key: str, user_id: str, task_id: str):
+    async def _run_and_cleanup(self, key: str, user_id: str, task_id: str) -> None:
+        sem = self._exec_sem
+        if sem is None:
+            sem = asyncio.Semaphore(scheduler_concurrency_slots())
+            self._exec_sem = sem
+            log.warning(
+                "HeapScheduler: exec semaphore lazily initialized — "
+                "call start() before run_now when possible",
+            )
         try:
-            await _execute_task(user_id, task_id)
+            async with sem:
+                await _execute_task(user_id, task_id)
         finally:
             self._running_tasks.discard(key)
 
-    async def _run_service_and_cleanup(self, key: str, admin_id: str, service_id: str, task_id: str):
+    async def _run_service_and_cleanup(self, key: str, admin_id: str,
+                                       service_id: str, task_id: str) -> None:
+        sem = self._exec_sem
+        if sem is None:
+            sem = asyncio.Semaphore(scheduler_concurrency_slots())
+            self._exec_sem = sem
+            log.warning(
+                "HeapScheduler: exec semaphore lazily initialized — "
+                "call start() before run_now when possible",
+            )
         try:
-            await _execute_service_task(admin_id, service_id, task_id)
+            async with sem:
+                await _execute_service_task(admin_id, service_id, task_id)
         finally:
             self._running_tasks.discard(key)
+
+    # ── manual trigger (run-now) ─────────────────────────────────────────
 
     def _schedule_coro(self, key: str, coro) -> bool:
         """Schedule a coroutine on the event loop, thread-safe.
@@ -1518,6 +2011,10 @@ class TaskScheduler:
         Works both from async context (main thread) and from sync tools
         running in a thread pool.
         """
+        if key in self._running_tasks:
+            log.info("run_now: %s already running, ignoring duplicate trigger", key)
+            coro.close()  # avoid 'coroutine was never awaited'
+            return False
         self._running_tasks.add(key)
         try:
             loop = asyncio.get_running_loop()
@@ -1530,29 +2027,35 @@ class TaskScheduler:
             asyncio.run_coroutine_threadsafe(coro, _main_loop)
             return True
         self._running_tasks.discard(key)
+        coro.close()
         log.warning("Cannot schedule task %s: no event loop available", key)
         return False
 
     def run_now(self, user_id: str, task_id: str) -> bool:
         """Trigger an admin task immediately (thread-safe)."""
-        key = f"{user_id}::{task_id}"
+        key = _heap_key("admin", user_id, task_id)
         return self._schedule_coro(key, self._run_and_cleanup(key, user_id, task_id))
 
     def run_service_task_now(self, admin_id: str, service_id: str, task_id: str) -> bool:
         """Trigger a service task immediately (thread-safe)."""
-        key = f"svc::{admin_id}::{service_id}::{task_id}"
+        key = _heap_key("service", admin_id, task_id, service_id)
         return self._schedule_coro(
             key, self._run_service_and_cleanup(key, admin_id, service_id, task_id)
         )
 
 
+# Backward-compat alias — older code may still import TaskScheduler by name
+# (routes/scheduler.py, tests, etc.).  Keep the symbol stable.
+TaskScheduler = HeapScheduler
+
+
 # ── Singleton ─────────────────────────────────────────────────────────────
 
-_scheduler: Optional[TaskScheduler] = None
+_scheduler: Optional[HeapScheduler] = None
 
 
-def get_scheduler() -> TaskScheduler:
+def get_scheduler() -> HeapScheduler:
     global _scheduler
     if _scheduler is None:
-        _scheduler = TaskScheduler()
+        _scheduler = HeapScheduler()
     return _scheduler

@@ -1,6 +1,6 @@
 import { memo, type ComponentType } from 'react';
 import type { StreamBlock, ToolBlock } from '../types';
-import { renderMarkdown } from '../markdown';
+import { renderMarkdown, renderStreamingMarkdown } from '../markdown';
 import ThinkingBlockCmp from './ThinkingBlock';
 import ToolIndicator from './ToolIndicator';
 import StreamingFilePreview from './StreamingFilePreview';
@@ -83,16 +83,23 @@ function StreamingMessage({
                   isStreaming={isLast && isStreaming}
                 />
               );
-            case 'text':
+            case 'text': {
+              // 流式中的最后一个文本块走增量渲染（稳定前缀缓存 + 尾部轻量），
+              // 避免超长 response 每帧重解析全文导致的 O(n²) 卡顿；
+              // 非流式 / 非最后块走完整 renderMarkdown（命中缓存、含高亮）。
+              const isStreamingTail = isLast && isStreaming;
               return (
                 <div
                   key={`text-${i}`}
-                  className={`${styles.messageContent} ${styles.agentContent} ${isLast && isStreaming ? styles.streamingCursor : ''}`}
+                  className={`${styles.messageContent} ${styles.agentContent} ${isStreamingTail ? styles.streamingCursor : ''}`}
                   dangerouslySetInnerHTML={{
-                    __html: renderMarkdown(block.content),
+                    __html: isStreamingTail
+                      ? renderStreamingMarkdown(block.content)
+                      : renderMarkdown(block.content),
                   }}
                 />
               );
+            }
             case 'tool':
               // 定时任务卡片：admin/service 都用同一个组件，service-chat 通过自定义
               // toolRenderer 注入 friendlyMode；这里 admin 路径直接渲染默认变体。

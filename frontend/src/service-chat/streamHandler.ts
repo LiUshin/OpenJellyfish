@@ -209,11 +209,23 @@ export function useServiceStream(opts: CallbackOpts = {}): UseServiceStreamRetur
         if (err instanceof AuthError) {
           optsRef.current.onAuthError?.();
         } else if ((err as Error).name === 'AbortError') {
-          // 用户主动取消，不视作错误
+          // 用户主动取消（切换/新建会话）—— 调用方会 reset，不提交、不报错
         } else {
+          // 网络/超时中断：把「已经生成的内容」连同中断提示一起固化为一条消息，
+          // 不能让用户看到的内容凭空消失。后端 _stream_consumer 的 finally 也会
+          // 持久化已生成内容，刷新后仍在。
           const msg = (err as Error).message || String(err);
-          blocksRef.current.push({ type: 'text', content: `❌ 网络错误: ${msg}` });
+          const last = blocksRef.current[blocksRef.current.length - 1];
+          if (last && last.type === 'text') {
+            last.content += '\n\n⚠️ 连接中断，已保留以上内容。';
+          } else if (blocksRef.current.length > 0) {
+            blocksRef.current.push({ type: 'text', content: '⚠️ 连接中断，已保留以上内容。' });
+          } else {
+            blocksRef.current.push({ type: 'text', content: `❌ 网络错误: ${msg}` });
+          }
           flushNow();
+          // 提交已生成内容到消息列表（与正常结束同路径），避免视图里内容消失
+          optsRef.current.onDone?.([...blocksRef.current]);
           optsRef.current.onError?.(msg);
         }
       } finally {

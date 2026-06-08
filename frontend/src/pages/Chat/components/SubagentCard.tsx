@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Robot, CaretDown, CaretRight, Wrench, Brain } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import type { SubagentBlock, SubagentTimelineEntry } from '../types';
 import { renderMarkdown, escapeHtml } from '../markdown';
 import styles from '../chat.module.css';
@@ -15,6 +16,7 @@ interface Props {
 }
 
 function ToolRow({ entry }: { entry: SubagentTimelineEntry }) {
+  const { t } = useTranslation();
   return (
     <div className={`${styles.subagentTool} ${entry.toolDone ? styles.done : ''}`}>
       <span className={styles.subagentToolDot} />
@@ -23,7 +25,7 @@ function ToolRow({ entry }: { entry: SubagentTimelineEntry }) {
         {escapeHtml(entry.toolName || '')}
       </span>
       <span className={styles.subagentToolStatus}>
-        {entry.toolDone ? '✓' : '调用中...'}
+        {entry.toolDone ? '✓' : t('subagentCard.calling')}
       </span>
     </div>
   );
@@ -70,6 +72,7 @@ function TimelineRenderer({ timeline, isStreaming }: { timeline: SubagentTimelin
 }
 
 function LegacyRenderer({ block }: { block: SubagentBlock }) {
+  const { t } = useTranslation();
   return (
     <>
       {block.tools.map((tool, i) => (
@@ -80,7 +83,7 @@ function LegacyRenderer({ block }: { block: SubagentBlock }) {
             {escapeHtml(tool.name)}
           </span>
           <span className={styles.subagentToolStatus}>
-            {tool.done ? '✓' : '调用中...'}
+            {tool.done ? '✓' : t('subagentCard.calling')}
           </span>
         </div>
       ))}
@@ -95,12 +98,13 @@ function LegacyRenderer({ block }: { block: SubagentBlock }) {
 }
 
 export default function SubagentCard({ block }: Props) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(!block.done);
 
   const statusText = {
-    preparing: '准备中...',
-    running: '运行中...',
-    done: '✓ 完成',
+    preparing: t('subagentCard.preparing'),
+    running: t('subagentCard.running'),
+    done: t('subagentCard.done'),
   }[block.status];
 
   const hasTimeline = block.timeline && block.timeline.length > 0;
