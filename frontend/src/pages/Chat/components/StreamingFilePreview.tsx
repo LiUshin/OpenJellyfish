@@ -30,6 +30,7 @@
 import { useMemo } from 'react';
 import hljs from 'highlight.js/lib/core';
 import { FileArrowUp, FileCode, CircleNotch, CheckCircle, XCircle } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import type { ToolBlock } from '../types';
 import { extractStreamingField } from '../../../utils/partialJson';
 import { escapeHtml } from '../markdown';
@@ -185,7 +186,9 @@ export function FilePreviewBody({
   const lineCount = text ? text.split('\n').length : 0;
   const cursorOn = showCursor ?? status === 'streaming';
 
-  let highlighted = highlight(text, lang);
+  // 流式中跳过 hljs 高亮（最贵一环），仅转义——否则每帧对全文重新高亮，
+  // 写大文件时是 O(n²) 卡顿。完成（done/pending/error）后再跑一次完整高亮。
+  let highlighted = status === 'streaming' ? escapeHtml(text) : highlight(text, lang);
   if (cursorOn) highlighted = appendCursor(highlighted);
 
   let statusNode: React.ReactNode;

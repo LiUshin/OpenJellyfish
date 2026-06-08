@@ -1,6 +1,7 @@
 import { useRef, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { message } from 'antd';
 import { X } from '@phosphor-icons/react';
+import i18n from '../../../i18n';
 import styles from '../chat.module.css';
 
 const MAX_IMAGES = 5;
@@ -31,7 +32,7 @@ async function processFiles(
 ): Promise<ImageItem[]> {
   const remaining = MAX_IMAGES - current.length;
   if (remaining <= 0) {
-    message.warning(`最多上传 ${MAX_IMAGES} 张图片`);
+    message.warning(i18n.t('imageAttach.maxImagesWarn', { n: MAX_IMAGES }));
     return current;
   }
 
@@ -46,7 +47,7 @@ async function processFiles(
   );
 
   if (files.length > remaining) {
-    message.warning(`最多上传 ${MAX_IMAGES} 张图片，已忽略多余图片`);
+    message.warning(i18n.t('imageAttach.maxImagesIgnored', { n: MAX_IMAGES }));
   }
 
   return [...current, ...newItems];

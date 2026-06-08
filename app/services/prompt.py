@@ -18,6 +18,13 @@ DEFAULT_USER_PROFILE = {
     "investment_habits": "",
     "user_persona": "",
     "custom_notes": "",
+    # Agent-managed memory: written by the main agent via the
+    # `update_personal_memory` tool. Surfaced in the system prompt as
+    # "## Agent 记忆" alongside the user-authored "## 个性规则" section.
+    # When `agent_notes_locked` is true the tool refuses writes so the
+    # user can pin a snapshot.
+    "agent_notes": "",
+    "agent_notes_locked": False,
 }
 
 DEFAULT_SYSTEM_PROMPT = """现在是 {today}。
@@ -108,6 +115,16 @@ def get_user_profile(user_id: str) -> Dict[str, Any]:
 def set_user_profile(user_id: str, profile: Dict[str, Any], auto_version: bool = True):
     from app.services.agent import clear_agent_cache
     from app.services.consumer_agent import clear_consumer_cache
+    # Dedup: only snapshot a new custom_notes version when it actually
+    # changed vs. last saved profile. Without this, saving any other field
+    # (e.g. agent_notes via the same endpoint) would spam version history
+    # with identical entries.
+    previous_notes = ""
+    try:
+        previous_notes = (get_user_profile(user_id).get("custom_notes") or "").strip()
+    except Exception:
+        previous_notes = ""
+
     user_dir = get_user_dir(user_id)
     os.makedirs(user_dir, exist_ok=True)
     from app.core.fileutil import atomic_json_save
@@ -115,33 +132,83 @@ def set_user_profile(user_id: str, profile: Dict[str, Any], auto_version: bool =
     clear_agent_cache(user_id)
     clear_consumer_cache(admin_id=user_id)
     if auto_version:
-        notes = profile.get("custom_notes", "")
-        if notes.strip():
+        notes = (profile.get("custom_notes", "") or "").strip()
+        if notes and notes != previous_notes:
             save_profile_version(user_id, notes)
 
 
 def build_user_profile_prompt(user_id: str) -> str:
     profile = get_user_profile(user_id)
-    has_content = any(v.strip() for v in profile.values() if isinstance(v, str))
+    string_fields = [v for v in profile.values() if isinstance(v, str)]
+    has_content = any(v.strip() for v in string_fields)
     if not has_content:
         return ""
-    sections = [
-        "## 个性规则",
-        "以下是当前用户定义的个性化规则。你必须根据这些规则定制你的回复风格、内容深度、用语习惯，"
-        "以及生成的语音、文字、视频、图像等所有输出内容。",
-    ]
-    label_map = {
-        "portfolio": ("投资组合 / Portfolio", "用户当前的投资组合和资产配置情况"),
-        "risk_preference": ("风险偏好 / Risk Preference", "用户的风险承受能力和偏好"),
-        "investment_habits": ("投资习惯 / Investment Habits", "用户的投资风格、频率、关注点"),
-        "user_persona": ("用户画像 / User Persona", "用户的身份背景、专业程度、沟通偏好"),
-        "custom_notes": ("其他备注 / Custom Notes", "其他需要注意的个性化信息"),
+    parts: list[str] = []
+
+    # ── 用户手写部分 ────────────────────────────────────
+    user_label_map = {
+        "portfolio": "投资组合 / Portfolio",
+        "risk_preference": "风险偏好 / Risk Preference",
+        "investment_habits": "投资习惯 / Investment Habits",
+        "user_persona": "用户画像 / User Persona",
+        "custom_notes": "其他备注 / Custom Notes",
     }
-    for key, (label, _) in label_map.items():
+    user_sections: list[str] = []
+    for key, label in user_label_map.items():
         value = profile.get(key, "").strip()
         if value:
-            sections.append(f"\n### {label}\n{value}")
-    return "\n".join(sections)
+            user_sections.append(f"\n### {label}\n{value}")
+    if user_sections:
+        parts.append("## 个性规则")
+        parts.append(
+            "以下是当前用户定义的个性化规则。你必须根据这些规则定制你的回复风格、内容深度、用语习惯，"
+            "以及生成的语音、文字、视频、图像等所有输出内容。"
+        )
+        parts.extend(user_sections)
+
+    # ── Agent 自动维护部分 ──────────────────────────────
+    agent_notes = profile.get("agent_notes", "").strip()
+    locked = bool(profile.get("agent_notes_locked", False))
+    parts.append("\n## Agent 记忆")
+    if agent_notes:
+        parts.append(
+            "以下是你在过去对话中通过 `update_personal_memory` 自动记录的关于用户的信息。"
+            "每次需要补充或更新时，调用 `update_personal_memory(content=...)`，content 是替换后的完整文本。"
+        )
+        parts.append(f"\n{agent_notes}")
+    else:
+        parts.append(
+            "（当前为空。当你从对话中识别到用户的长期偏好、身份背景、习惯等值得跨会话记忆的信息时，"
+            "调用 `update_personal_memory(content=...)` 记录。content 会整体替换现有记忆。）"
+        )
+    if locked:
+        parts.append(
+            "\n⚠️ 用户已锁定此区域，`update_personal_memory` 当前会被拒绝。"
+            "请勿反复尝试写入；如有重要发现，可在回复中口头提醒用户解锁。"
+        )
+
+    return "\n".join(parts)
+
+
+# ==================== Agent Notes (agent-managed memory) ====================
+
+def get_agent_notes(user_id: str) -> str:
+    return get_user_profile(user_id).get("agent_notes", "") or ""
+
+
+def is_agent_notes_locked(user_id: str) -> bool:
+    return bool(get_user_profile(user_id).get("agent_notes_locked", False))
+
+
+def set_agent_notes(user_id: str, content: str) -> None:
+    """Overwrite agent-managed memory.
+
+    Bypasses ``custom_notes`` versioning (handled by ``set_user_profile``)
+    because per the design we don't track agent-notes history.
+    """
+    profile = get_user_profile(user_id)
+    profile["agent_notes"] = content
+    set_user_profile(user_id, profile, auto_version=False)
 
 
 # ==================== Profile Versions ====================

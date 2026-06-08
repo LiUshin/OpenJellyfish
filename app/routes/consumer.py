@@ -14,7 +14,7 @@ import time
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Header, Query
 from fastapi.responses import StreamingResponse, FileResponse
 
 from app.core.path_security import ensure_within
@@ -236,10 +236,16 @@ async def _stream_consumer(agent, agent_input, config, ctx, conv_id):
         _saved = True
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
     finally:
-        if not _saved and full_response:
+        # 连接中断（客户端断开 / 代理超时）兜底保存：只要已生成了任何内容
+        # （文本 或 工具块）就持久化，刷新后仍可见，避免「内容消失」。
+        _has_block_content = any(
+            (b.get("content") or b.get("args") or b.get("result"))
+            for b in blocks
+        ) if blocks else False
+        if not _saved and (full_response or _has_block_content):
             _blk_sanitize()
             save_consumer_message(admin_id, service_id, conv_id, "assistant",
-                                  full_response + "\n\n⚠️ [连接中断 — 已保存已生成内容]",
+                                  (full_response or "") + "\n\n⚠️ [连接中断 — 已保存已生成内容]",
                                   tool_calls=tool_records if tool_records else None,
                                   blocks=blocks if blocks else None)
         # Release scheduled-injection guard; drainer picks up any L2 pairs queued
@@ -492,20 +498,75 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
     }
 
 
+def _assert_consumer_conv_exists(admin_id: str, service_id: str, conv_id: str):
+    """会话不存在 → 404，避免拿 service key 探测/访问任意 conv_id 的文件。"""
+    from app.services.published import get_consumer_conversation
+    if not get_consumer_conversation(admin_id, service_id, conv_id):
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+
+@router.get("/conversations/{conv_id}/media-token")
+async def api_get_media_token(conv_id: str, ctx=Depends(get_service_context)):
+    """签发当前会话的短期媒体 token。前端用它构造 <img>/<a download>/<iframe> 的 URL
+    （?token=...），无需把 sk-svc- 主 key 暴露在 URL 里。"""
+    from app.services.consumer_media_token import create_media_token, _DEFAULT_TTL
+    _assert_consumer_conv_exists(ctx["admin_id"], ctx["service_id"], conv_id)
+    token = create_media_token(ctx["admin_id"], ctx["service_id"], conv_id)
+    return {"token": token, "expires_in": _DEFAULT_TTL}
+
+
 @router.get("/conversations/{conv_id}/files")
 async def api_list_generated_files(conv_id: str, ctx=Depends(get_service_context)):
     from app.storage import get_storage_service
+    _assert_consumer_conv_exists(ctx["admin_id"], ctx["service_id"], conv_id)
     storage = get_storage_service()
     return storage.list_consumer_files(ctx["admin_id"], ctx["service_id"], conv_id)
 
 
 @router.get("/conversations/{conv_id}/files/{file_path:path}")
-async def api_get_generated_file(conv_id: str, file_path: str, ctx=Depends(get_service_context)):
+async def api_get_generated_file(
+    conv_id: str,
+    file_path: str,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+    download: bool = Query(False),
+):
+    """下载/内联读取本会话 generated 文件。
+
+    鉴权二选一：
+      - Authorization: Bearer sk-svc-...（API 调用，如前端 fetch）
+      - ?token=...（短期媒体 token，供 <img>/<a download>/<iframe> 等无法带 header 的场景）
+    media token 已绑定 (admin_id, service_id, conv_id)，越权访问其它会话无效。
+    download=1 时强制以附件形式下载（Content-Disposition: attachment）。
+    """
     from app.storage import get_storage_service
+    from app.services.consumer_media_token import verify_media_token
+    from app.services.published import verify_service_key
+
+    admin_id: Optional[str] = None
+    service_id: Optional[str] = None
+
+    if token:
+        payload = verify_media_token(token)
+        if not payload or payload.get("conv_id") != conv_id:
+            raise HTTPException(status_code=401, detail="无效或过期的媒体 token")
+        admin_id, service_id = payload["admin_id"], payload["service_id"]
+    else:
+        key = authorization[7:] if authorization and authorization.startswith("Bearer ") else (authorization or "")
+        svc = verify_service_key(key) if key else None
+        if not svc:
+            raise HTTPException(status_code=401, detail="缺少或无效的凭证")
+        admin_id, service_id = svc["admin_id"], svc["service_id"]
+
+    _assert_consumer_conv_exists(admin_id, service_id, conv_id)
+
     storage = get_storage_service()
-    return storage.consumer_file_response(
-        ctx["admin_id"], ctx["service_id"], conv_id, file_path,
-    )
+    try:
+        return storage.consumer_file_response(
+            admin_id, service_id, conv_id, file_path, download=download,
+        )
+    except (ValueError, FileNotFoundError, PermissionError):
+        raise HTTPException(status_code=404, detail="文件不存在")
 
 
 @router.get("/conversations/{conv_id}/attachments/{file_path:path}")

@@ -164,7 +164,7 @@ def has_provider(provider: str, user_id: Optional[str] = None) -> bool:
     注意：``has_provider("minimax")`` 走严格判定（要求 group_id），用于 TTS/Video 路径；
     若仅判断 LLM 用 ``has_provider_credentials("minimax", capability="llm")`` 即可。
     """
-    if provider in ("kimi", "minimax", "doubao"):
+    if provider in ("kimi", "minimax", "doubao", "bedrock"):
         return has_provider_credentials(provider, user_id=user_id)
 
     user_keys = _get_user_keys(user_id)
@@ -184,6 +184,7 @@ def has_provider(provider: str, user_id: Optional[str] = None) -> bool:
 
 _KIMI_DEFAULT_BASE = "https://api.moonshot.cn/v1"
 _DOUBAO_DEFAULT_REGION = "cn-beijing"
+_BEDROCK_DEFAULT_REGION = "us-east-1"
 
 
 def get_provider_credentials(
@@ -233,6 +234,12 @@ def get_provider_credentials(
             "region":     user_keys.get("doubao_region", "")     or os.getenv("VOLC_REGION", _DOUBAO_DEFAULT_REGION),
         }
 
+    if provider == "bedrock":
+        return {
+            "api_key": user_keys.get("bedrock_api_key", "") or os.getenv("BEDROCK_API_KEY", ""),
+            "region":  user_keys.get("bedrock_region", "")  or os.getenv("BEDROCK_REGION", _BEDROCK_DEFAULT_REGION),
+        }
+
     return {}
 
 
@@ -247,6 +254,8 @@ def has_provider_credentials(
     """
     creds = get_provider_credentials(provider, user_id=user_id, capability=capability)
     if provider in ("openai", "anthropic", "kimi"):
+        return bool(creds.get("api_key"))
+    if provider == "bedrock":
         return bool(creds.get("api_key"))
     if provider == "minimax":
         if capability == "llm":

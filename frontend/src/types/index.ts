@@ -57,6 +57,16 @@ export interface ModelInfo {
   id: string;
   name: string;
   provider?: string;
+  tier?: string;
+}
+
+export interface ModelVisibilityItem extends ModelInfo {
+  enabled: boolean;
+}
+
+export interface ModelVisibilityResponse {
+  models: ModelVisibilityItem[];
+  hidden: string[];
 }
 
 export interface ModelsResponse {
@@ -142,6 +152,10 @@ export interface UserProfile {
   investment_habits?: string;
   user_persona?: string;
   custom_notes?: string;
+  /** Agent-managed memory written by the main agent via `update_personal_memory`. */
+  agent_notes?: string;
+  /** When true, agent writes are refused (user-pinned snapshot). */
+  agent_notes_locked?: boolean;
 }
 
 export interface SSECallbacks {

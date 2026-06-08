@@ -12,13 +12,19 @@ SHARED_TOOL_NAMES = {
     "web_search", "web_fetch",
     "generate_image", "generate_speech", "generate_video",
     "schedule_task", "manage_scheduled_tasks",
+    # v2: self-spawning meta-capability — only fires inside scheduled-task
+    # execution (no-op error otherwise), see create_spawn_child_task_tool.
+    "spawn_child_task",
     "publish_service_task", "send_message",
+    "update_personal_memory",
 }
 
 MEMORY_TOOL_NAMES = {
     "list_conversations", "read_conversation",
     "list_service_conversations", "read_service_conversation",
     "read_inbox",
+    # v2: navigate the spawn-tree to recall what descendants did
+    "list_task_trees", "read_task_tree",
     "soul_list", "soul_read", "soul_write", "soul_delete",
 }
 
@@ -69,6 +75,8 @@ DEFAULT_SUBAGENTS = [
             "list_conversations", "read_conversation",
             "list_service_conversations", "read_service_conversation",
             "read_inbox",
+            # v2: scheduled-task tree navigation
+            "list_task_trees", "read_task_tree",
             "soul_list", "soul_read", "soul_write", "soul_delete",
         ],
         "enabled": True,
@@ -140,8 +148,10 @@ def build_subagent_tools(user_id: str, tool_names: List[str]) -> list:
     from app.services.tools import (
         create_run_script_tool, create_ai_gen_tools, create_web_tools,
         create_schedule_tool, create_manage_scheduled_tasks_tool,
+        create_spawn_child_task_tool,
         create_publish_service_task_tool,
         create_send_message_tool, create_move_file_tool,
+        create_update_personal_memory_tool,
     )
 
     tool_map: Dict[str, Any] = {}
@@ -152,6 +162,9 @@ def build_subagent_tools(user_id: str, tool_names: List[str]) -> list:
 
     if "move_file" in needed:
         tool_map["move_file"] = create_move_file_tool(user_id)
+
+    if "update_personal_memory" in needed:
+        tool_map["update_personal_memory"] = create_update_personal_memory_tool(user_id)
 
     if needed & {"web_search", "web_fetch"}:
         for t in create_web_tools(user_id=user_id):
@@ -168,6 +181,11 @@ def build_subagent_tools(user_id: str, tool_names: List[str]) -> list:
 
     if "manage_scheduled_tasks" in needed:
         tool_map["manage_scheduled_tasks"] = create_manage_scheduled_tasks_tool(user_id)
+
+    if "spawn_child_task" in needed:
+        # No user_id arg — the tool reads execution context from a ContextVar
+        # set by the scheduler at task fire time.
+        tool_map["spawn_child_task"] = create_spawn_child_task_tool()
 
     if "publish_service_task" in needed:
         tool_map["publish_service_task"] = create_publish_service_task_tool(user_id)

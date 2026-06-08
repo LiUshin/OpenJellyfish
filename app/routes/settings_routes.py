@@ -1,11 +1,13 @@
 import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
+
+from app.core.i18n import resolve_lang, t
 
 from app.schemas.requests import (
     SystemPromptRequest, SaveVersionRequest, UpdateVersionMetaRequest,
-    UserProfileRequest, SubagentRequest, SubagentUpdateRequest,
+    UserProfileRequest, AgentNotesRequest, SubagentRequest, SubagentUpdateRequest,
 )
 from app.services.prompt import (
     get_user_system_prompt, set_user_system_prompt, reset_user_system_prompt,
@@ -14,6 +16,7 @@ from app.services.prompt import (
     get_user_profile, set_user_profile,
     list_profile_versions, get_profile_version, update_profile_version_meta,
     delete_profile_version, rollback_profile_version,
+    get_agent_notes, set_agent_notes, is_agent_notes_locked,
 )
 from app.services.subagents import (
     list_user_subagents, get_user_subagent, add_user_subagent,
@@ -41,11 +44,12 @@ async def api_get_system_prompt(user=Depends(get_current_user)):
 
 
 @router.put("/api/system-prompt")
-async def api_update_system_prompt(req: SystemPromptRequest, user=Depends(get_current_user)):
+async def api_update_system_prompt(req: SystemPromptRequest, request: Request, user=Depends(get_current_user)):
+    lang = resolve_lang(request)
     if not req.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt 不能为空")
+        raise HTTPException(status_code=400, detail=t("system_prompt.empty", lang))
     set_user_system_prompt(user["user_id"], req.prompt)
-    return {"success": True, "message": "System prompt 已更新，下次对话将使用新 prompt"}
+    return {"success": True, "message": t("system_prompt.updated", lang)}
 
 
 @router.delete("/api/system-prompt")
@@ -67,34 +71,34 @@ async def api_save_prompt_version(req: SaveVersionRequest, user=Depends(get_curr
 
 
 @router.get("/api/system-prompt/versions/{version_id}")
-async def api_get_prompt_version(version_id: str, user=Depends(get_current_user)):
+async def api_get_prompt_version(version_id: str, request: Request, user=Depends(get_current_user)):
     v = get_prompt_version(user["user_id"], version_id)
     if not v:
-        raise HTTPException(status_code=404, detail="版本不存在")
+        raise HTTPException(status_code=404, detail=t("version.not_found", resolve_lang(request)))
     return v
 
 
 @router.put("/api/system-prompt/versions/{version_id}")
-async def api_update_prompt_version(version_id: str, req: UpdateVersionMetaRequest, user=Depends(get_current_user)):
+async def api_update_prompt_version(version_id: str, req: UpdateVersionMetaRequest, request: Request, user=Depends(get_current_user)):
     ok = update_prompt_version_meta(user["user_id"], version_id, req.label, req.note)
     if not ok:
-        raise HTTPException(status_code=404, detail="版本不存在")
+        raise HTTPException(status_code=404, detail=t("version.not_found", resolve_lang(request)))
     return {"success": True}
 
 
 @router.delete("/api/system-prompt/versions/{version_id}")
-async def api_delete_prompt_version(version_id: str, user=Depends(get_current_user)):
+async def api_delete_prompt_version(version_id: str, request: Request, user=Depends(get_current_user)):
     ok = delete_prompt_version(user["user_id"], version_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="版本不存在")
+        raise HTTPException(status_code=404, detail=t("version.not_found", resolve_lang(request)))
     return {"success": True}
 
 
 @router.post("/api/system-prompt/versions/{version_id}/rollback")
-async def api_rollback_prompt_version(version_id: str, user=Depends(get_current_user)):
+async def api_rollback_prompt_version(version_id: str, request: Request, user=Depends(get_current_user)):
     content = rollback_prompt_version(user["user_id"], version_id)
     if content is None:
-        raise HTTPException(status_code=404, detail="版本不存在")
+        raise HTTPException(status_code=404, detail=t("version.not_found", resolve_lang(request)))
     return {"success": True, "prompt": content}
 
 
@@ -106,16 +110,44 @@ async def api_get_user_profile(user=Depends(get_current_user)):
 
 
 @router.put("/api/user-profile")
-async def api_update_user_profile(req: UserProfileRequest, user=Depends(get_current_user)):
+async def api_update_user_profile(req: UserProfileRequest, request: Request, user=Depends(get_current_user)):
+    # `agent_notes` / `agent_notes_locked` are user-managed here (Edit & Lock).
+    # The agent itself writes via the `update_personal_memory` tool, which
+    # bypasses versioning. Versioning continues to track `custom_notes` only.
     profile = {
         "portfolio": req.portfolio,
         "risk_preference": req.risk_preference,
         "investment_habits": req.investment_habits,
         "user_persona": req.user_persona,
         "custom_notes": req.custom_notes,
+        "agent_notes": req.agent_notes,
+        "agent_notes_locked": req.agent_notes_locked,
     }
     set_user_profile(user["user_id"], profile)
-    return {"success": True, "message": "个性规则已更新，下次对话将根据规则个性化回复"}
+    return {"success": True, "message": t("user_profile.updated", resolve_lang(request))}
+
+
+@router.get("/api/user-profile/agent-notes")
+async def api_get_agent_notes(user=Depends(get_current_user)):
+    """Return the agent-managed memory block (separate from custom_notes).
+
+    Read by the UserProfileEditor's upper "Agent 记忆" pane. Writes go
+    through PUT to keep version history clean (no profile_versions entry).
+    """
+    return {
+        "content": get_agent_notes(user["user_id"]),
+        "locked": is_agent_notes_locked(user["user_id"]),
+    }
+
+
+@router.put("/api/user-profile/agent-notes")
+async def api_update_agent_notes(req: AgentNotesRequest, user=Depends(get_current_user)):
+    profile = get_user_profile(user["user_id"])
+    profile["agent_notes"] = req.content
+    profile["agent_notes_locked"] = bool(req.locked)
+    # auto_version=False: agent-notes edits should not snapshot custom_notes.
+    set_user_profile(user["user_id"], profile, auto_version=False)
+    return {"success": True}
 
 
 @router.get("/api/user-profile/versions")
@@ -124,33 +156,33 @@ async def api_list_profile_versions(user=Depends(get_current_user)):
 
 
 @router.get("/api/user-profile/versions/{version_id}")
-async def api_get_profile_version(version_id: str, user=Depends(get_current_user)):
+async def api_get_profile_version(version_id: str, request: Request, user=Depends(get_current_user)):
     v = get_profile_version(user["user_id"], version_id)
     if not v:
-        raise HTTPException(status_code=404, detail="版本不存在")
+        raise HTTPException(status_code=404, detail=t("version.not_found", resolve_lang(request)))
     return v
 
 
 @router.put("/api/user-profile/versions/{version_id}")
-async def api_update_profile_version(version_id: str, req: UpdateVersionMetaRequest, user=Depends(get_current_user)):
+async def api_update_profile_version(version_id: str, req: UpdateVersionMetaRequest, request: Request, user=Depends(get_current_user)):
     ok = update_profile_version_meta(user["user_id"], version_id, req.label, req.note)
     if not ok:
-        raise HTTPException(status_code=404, detail="版本不存在")
+        raise HTTPException(status_code=404, detail=t("version.not_found", resolve_lang(request)))
     return {"success": True}
 
 
 @router.delete("/api/user-profile/versions/{version_id}")
-async def api_delete_profile_version(version_id: str, user=Depends(get_current_user)):
+async def api_delete_profile_version(version_id: str, request: Request, user=Depends(get_current_user)):
     if not delete_profile_version(user["user_id"], version_id):
-        raise HTTPException(status_code=404, detail="版本不存在")
+        raise HTTPException(status_code=404, detail=t("version.not_found", resolve_lang(request)))
     return {"success": True}
 
 
 @router.post("/api/user-profile/versions/{version_id}/rollback")
-async def api_rollback_profile_version(version_id: str, user=Depends(get_current_user)):
+async def api_rollback_profile_version(version_id: str, request: Request, user=Depends(get_current_user)):
     content = rollback_profile_version(user["user_id"], version_id)
     if content is None:
-        raise HTTPException(status_code=404, detail="版本不存在")
+        raise HTTPException(status_code=404, detail=t("version.not_found", resolve_lang(request)))
     return {"success": True, "content": content}
 
 
@@ -423,6 +455,23 @@ async def api_test_api_keys(req: dict, user=Depends(get_current_user)):
         else:
             results["minimax"] = {"ok": False, "error": "未配置 API Key"}
 
+    if provider in ("bedrock", "all"):
+        # Bedrock Bearer Token 探活：GET /foundation-models（控制平面端点，认 Bearer Token）
+        api_key = keys.get("bedrock_api_key", "") or os.getenv("BEDROCK_API_KEY", "")
+        region = keys.get("bedrock_region", "") or os.getenv("BEDROCK_REGION", "us-east-1")
+        if api_key:
+            try:
+                async with _httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        f"https://bedrock.{region}.amazonaws.com/foundation-models",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+                results["bedrock"] = {"ok": resp.status_code == 200, "status": resp.status_code}
+            except Exception as e:
+                results["bedrock"] = {"ok": False, "error": str(e)[:200]}
+        else:
+            results["bedrock"] = {"ok": False, "error": "未配置 API Key"}
+
     return {"results": results}
 
 
@@ -438,6 +487,7 @@ async def api_keys_status(user=Depends(get_current_user)):
         or has_provider("anthropic", user_id=user_id)
         or has_provider("kimi", user_id=user_id)
         or minimax_llm_ok
+        or has_provider("bedrock", user_id=user_id)
     )
     return {
         "has_llm": has_any_llm,
@@ -447,6 +497,7 @@ async def api_keys_status(user=Depends(get_current_user)):
         # MiniMax LLM 仅需 api_key；TTS/Video 才需要 group_id（has_provider("minimax") 严格版）
         "has_minimax_llm": minimax_llm_ok,
         "has_minimax_full": has_provider("minimax", user_id=user_id),
+        "has_bedrock": has_provider("bedrock", user_id=user_id),
     }
 
 

@@ -7,6 +7,7 @@ import {
   PlusOutlined, EditOutlined, DeleteOutlined,
   RobotOutlined, ToolOutlined,
 } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import type { SubagentConfig } from '../../types';
 import * as api from '../../services/api';
 import { useIsMobile } from '../../hooks/useMediaQuery';
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export default function SubagentManager({ open, onClose, inline }: Props) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [subagents, setSubagents] = useState<SubagentConfig[]>([]);
   const [availableTools, setAvailableTools] = useState<string[]>([]);
@@ -37,11 +39,11 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
       setSubagents(res.subagents);
       setAvailableTools(res.available_tools);
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '加载失败');
+      message.error(e instanceof Error ? e.message : t('subagentMgr.loadFail'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (open) loadSubagents();
@@ -52,17 +54,17 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
       await api.updateSubagent(id, { enabled });
       setSubagents((prev) => prev.map((s) => s.id === id ? { ...s, enabled } : s));
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '操作失败');
+      message.error(e instanceof Error ? e.message : t('subagentMgr.opFail'));
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
       await api.deleteSubagent(id);
-      message.success('已删除');
+      message.success(t('subagentMgr.deleteSuccess'));
       loadSubagents();
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '删除失败');
+      message.error(e instanceof Error ? e.message : t('subagentMgr.deleteFail'));
     }
   };
 
@@ -96,10 +98,10 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
 
       if (editing) {
         await api.updateSubagent(editing.id, config);
-        message.success('已更新');
+        message.success(t('subagentMgr.updated'));
       } else {
         await api.addSubagent(config);
-        message.success('已创建');
+        message.success(t('subagentMgr.created'));
       }
       setEditModalOpen(false);
       loadSubagents();
@@ -120,17 +122,17 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
     <>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <Text style={{ color: 'var(--jf-text-muted)', fontSize: 13 }}>
-          共 {subagents.length} 个 Subagent，{subagents.filter((s) => s.enabled).length} 个启用
+          {t('subagentMgr.summary', { total: subagents.length, enabled: subagents.filter((s) => s.enabled).length })}
         </Text>
         <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => openEdit()}>
-          新建
+          {t('subagentMgr.newBtn')}
         </Button>
       </div>
 
       <Spin spinning={loading}>
         <List
           dataSource={subagents}
-          locale={{ emptyText: <Empty description="暂无 Subagent" /> }}
+          locale={{ emptyText: <Empty description={t('subagentMgr.empty')} /> }}
           renderItem={(agent) => (
             <div
               style={{
@@ -154,7 +156,7 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
                     <Text style={{ color: 'var(--jf-text)', fontWeight: 600, fontSize: 14 }}>
                       {agent.name}
                     </Text>
-                    {agent.builtin && <Tag color="purple" style={{ fontSize: 10 }}>内置</Tag>}
+                    {agent.builtin && <Tag color="purple" style={{ fontSize: 10 }}>{t('subagentMgr.builtin')}</Tag>}
                     {agent.model && <Tag style={{ fontSize: 10 }}>{agent.model}</Tag>}
                   </div>
                   <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>{agent.description}</Text>
@@ -181,10 +183,10 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
                   />
                   {!agent.builtin && (
                     <Popconfirm
-                      title="确定删除此 Subagent？"
+                      title={t('subagentMgr.deleteConfirm')}
                       onConfirm={() => handleDelete(agent.id)}
-                      okText="确定"
-                      cancelText="取消"
+                      okText={t('common.confirm')}
+                      cancelText={t('common.cancel')}
                     >
                       <Button type="text" size="small" danger icon={<DeleteOutlined />} />
                     </Popconfirm>
@@ -199,11 +201,11 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
       {/* Edit/Create Sub-Modal */}
       <Modal
         open={editModalOpen}
-        title={editing ? `编辑: ${editing.name}` : '新建 Subagent'}
+        title={editing ? t('subagentMgr.modalEdit', { name: editing.name }) : t('subagentMgr.modalNew')}
         onCancel={() => setEditModalOpen(false)}
         onOk={handleSave}
-        okText={editing ? '更新' : '创建'}
-        cancelText="取消"
+        okText={editing ? t('common.update') : t('common.create')}
+        cancelText={t('common.cancel')}
         confirmLoading={saving}
         width={isMobile ? '100%' : 600}
         style={isMobile ? { top: 0, paddingBottom: 0, maxWidth: '100%', margin: 0 } : undefined}
@@ -215,26 +217,26 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
       >
         <Form form={form} layout="vertical">
           <Form.Item
-            label={<Text style={{ color: 'var(--jf-text-muted)' }}>名称</Text>}
+            label={<Text style={{ color: 'var(--jf-text-muted)' }}>{t('subagentMgr.fieldName')}</Text>}
             name="name"
-            rules={[{ required: true, message: '请输入名称' }]}
+            rules={[{ required: true, message: t('subagentMgr.fieldNameRequired') }]}
           >
-            <Input style={inputStyle} placeholder="Subagent 名称" />
+            <Input style={inputStyle} placeholder={t('subagentMgr.fieldNamePlaceholder')} />
           </Form.Item>
-          <Form.Item label={<Text style={{ color: 'var(--jf-text-muted)' }}>描述</Text>} name="description">
-            <Input style={inputStyle} placeholder="功能描述" />
+          <Form.Item label={<Text style={{ color: 'var(--jf-text-muted)' }}>{t('subagentMgr.fieldDesc')}</Text>} name="description">
+            <Input style={inputStyle} placeholder={t('subagentMgr.fieldDescPlaceholder')} />
           </Form.Item>
-          <Form.Item label={<Text style={{ color: 'var(--jf-text-muted)' }}>System Prompt</Text>} name="system_prompt">
+          <Form.Item label={<Text style={{ color: 'var(--jf-text-muted)' }}>{t('subagentMgr.fieldSystemPrompt')}</Text>} name="system_prompt">
             <TextArea
               rows={4}
               style={{ ...inputStyle, fontFamily: 'monospace', fontSize: 12 }}
-              placeholder="定义 Subagent 的行为指令"
+              placeholder={t('subagentMgr.fieldSystemPromptPh')}
             />
           </Form.Item>
-          <Form.Item label={<Text style={{ color: 'var(--jf-text-muted)' }}>模型</Text>} name="model">
+          <Form.Item label={<Text style={{ color: 'var(--jf-text-muted)' }}>{t('subagentMgr.fieldModel')}</Text>} name="model">
             <Select
               allowClear
-              placeholder="使用默认模型"
+              placeholder={t('subagentMgr.fieldModelDefault')}
               options={[
                 { label: 'gpt-4o', value: 'gpt-4o' },
                 { label: 'gpt-4o-mini', value: 'gpt-4o-mini' },
@@ -243,7 +245,7 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
               ]}
             />
           </Form.Item>
-          <Form.Item label={<Text style={{ color: 'var(--jf-text-muted)' }}>工具</Text>} name="tools">
+          <Form.Item label={<Text style={{ color: 'var(--jf-text-muted)' }}>{t('subagentMgr.fieldTools')}</Text>} name="tools">
             <Checkbox.Group style={{ width: '100%' }}>
               <div style={{
                 display: 'grid',
@@ -286,7 +288,7 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
       title={
         <Space>
           <RobotOutlined style={{ color: 'var(--jf-legacy)' }} />
-          <span>Subagent 管理</span>
+          <span>{t('subagentMgr.title')}</span>
         </Space>
       }
       width={720}

@@ -4,6 +4,7 @@ import { Layout, Button, Avatar, Tooltip, Drawer } from 'antd';
 import {
   SignOut, GearSix, ArrowLeft, Sun, Moon, List as ListIcon, X,
 } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '../stores/authContext';
 import { useTheme } from '../stores/themeContext';
 import { useFileWorkspace } from '../stores/fileWorkspaceContext';
@@ -11,6 +12,9 @@ import { useIsMobile } from '../hooks/useMediaQuery';
 import FilePanel from '../components/FilePanel';
 import FilePreview from '../components/FilePreview';
 import ApiKeyWarning from '../components/ApiKeyWarning';
+import LanguageSwitcher from '../components/LanguageSwitcher';
+import * as api from '../services/api';
+import { setLanguage, currentLang, type SupportedLang } from '../i18n';
 
 const { Sider, Content } = Layout;
 
@@ -29,9 +33,35 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const isSettings = location.pathname.startsWith('/settings');
+
+  // Reconcile UI language with the user's stored preference once after sign-in.
+  // The local UI may already be set (localStorage / navigator); if backend
+  // disagrees we adopt the backend value (more authoritative across devices).
+  // First-ever login (empty backend pref) pushes the local pick up so other
+  // devices see it on next sign-in.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const prefs = await api.getPreferences();
+        if (cancelled) return;
+        const stored = (prefs.language || '').trim() as SupportedLang | '';
+        if (stored && stored !== currentLang()) {
+          await setLanguage(stored);
+        } else if (!stored) {
+          try { await api.updatePreferences({ language: currentLang() }); } catch { /* best-effort */ }
+        }
+      } catch {
+        // Ignore — we already have a working language from localStorage.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user]);
 
   // On mobile the FilePreview is a full-screen Drawer, not an inline split.
   const showPreview = !isSettings && !!editingFile && splitMode !== 'chat';
@@ -137,11 +167,14 @@ export default function AppLayout() {
               minWidth: 0,
             }}
           >
-            {user?.username || '用户'}
+            {user?.username || t('login.username')}
           </span>
         )}
+        {/* Language switcher sits to the left of the Settings/Back button so
+            it's always visible from the chat sidebar (per UX requirement). */}
+        <LanguageSwitcher variant="icon" placement="bottom" />
         {isSettings ? (
-          <Tooltip title="返回对话" placement="right">
+          <Tooltip title={t('common.back')} placement="right">
             <Button
               type="text"
               icon={<ArrowLeft size={20} />}
@@ -150,7 +183,7 @@ export default function AppLayout() {
             />
           </Tooltip>
         ) : (
-          <Tooltip title="设置" placement="right">
+          <Tooltip title={t('settings.title')} placement="right">
             <Button
               type="text"
               icon={<GearSix size={20} />}
@@ -198,7 +231,7 @@ export default function AppLayout() {
             JellyfishBot
           </span>
         )}
-        <Tooltip title={isDark ? '切换浅色' : '切换深色'} placement="top">
+        <Tooltip title={isDark ? t('header.switchToLight') : t('header.switchToDark')} placement="top">
           <Button
             type="text"
             size="small"
@@ -217,14 +250,14 @@ export default function AppLayout() {
         </Tooltip>
       </div>
       <div style={{ flexShrink: 0, padding: '0 16px 12px' }}>
-        <Tooltip title="退出登录" placement="right">
+        <Tooltip title={t('common.logout')} placement="right">
           <Button
             type="text"
             icon={<SignOut size={18} />}
             style={{ color: 'var(--jf-text-muted)', width: '100%', justifyContent: isCollapsed ? 'center' : 'flex-start' }}
             onClick={logout}
           >
-            {!isCollapsed && '退出登录'}
+            {!isCollapsed && t('common.logout')}
           </Button>
         </Tooltip>
       </div>
@@ -299,7 +332,7 @@ export default function AppLayout() {
             type="text"
             icon={<ListIcon size={22} weight="bold" />}
             onClick={() => setNavDrawerOpen(true)}
-            aria-label="打开菜单"
+            aria-label={t('header.openMenu')}
             style={{
               position: 'absolute',
               top: 'calc(6px + env(safe-area-inset-top, 0px))',

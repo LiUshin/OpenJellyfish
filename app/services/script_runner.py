@@ -220,6 +220,27 @@ def get_script_runtime_stats() -> Dict[str, int]:
         }
 
 
+# ==================== 超管免限制开关 ====================
+#
+# 部署级（运维/超管在服务器上设置）环境变量。开启后，**admin 侧**脚本执行解除：
+#   - AST 静态分析（允许 subprocess/socket/os.system/eval 等）
+#   - 环境变量白名单（透传完整 os.environ，脚本可读取 API 密钥等）
+#   - 资源限制（内存 1GB / NPROC 256 / BLAS 线程上限）
+#   - 超时上限（不再 clamp 到 MAX_TIMEOUT）
+# **保留**沙箱路径白名单（脚本仍受 --allowed-read/--allowed-write 约束）。
+#
+# 该开关只在 admin 侧调用方显式传入（主 agent/subagent/S2S/batch/手动运行/定时任务）；
+# consumer/service 路径**绝不**传入该标志（始终 unrestricted=False），保持完整限制。
+_UNRESTRICTED_ENV = "SUPERADMIN_SCRIPT_UNRESTRICTED"
+
+
+def superadmin_script_unrestricted() -> bool:
+    """读取部署级超管免限制开关。默认关闭（保持现有全部限制）。"""
+    return os.environ.get(_UNRESTRICTED_ENV, "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 # ==================== AST 静态分析 ====================
 
 def _check_script_safety(file_path: str) -> Optional[str]:
@@ -320,8 +341,17 @@ def _resolve_attr_chain(node: ast.Attribute) -> Optional[str]:
 
 # ==================== 环境变量构建 ====================
 
-def _build_safe_env() -> Dict[str, str]:
-    """构建安全的环境变量字典，只包含白名单中的 key。"""
+def _build_safe_env(unrestricted: bool = False) -> Dict[str, str]:
+    """构建子进程环境变量字典。
+
+    默认只透传白名单 key（屏蔽 API 密钥等敏感变量）并强制注入 BLAS 线程上限。
+    unrestricted=True（超管开关）时透传完整 os.environ、不注入 BLAS 上限，
+    仅强制 UTF-8 编码（保证输出可正确解码，非能力限制）。
+    """
+    if unrestricted:
+        env = dict(os.environ)
+        env["PYTHONIOENCODING"] = "utf-8"
+        return env
     safe_env: Dict[str, str] = {}
     for key in _ENV_WHITELIST:
         val = os.environ.get(key)
@@ -336,12 +366,13 @@ def _build_safe_env() -> Dict[str, str]:
 
 # ==================== 资源限制 ====================
 
-def _get_preexec_fn():
+def _get_preexec_fn(unrestricted: bool = False):
     """
     返回 preexec_fn，用于在子进程启动前设置资源限制。
     仅在 Linux/macOS 上有效；Windows 上返回 None。
+    unrestricted=True（超管开关）时不设置任何 RLIMIT。
     """
-    if platform.system() == "Windows":
+    if platform.system() == "Windows" or unrestricted:
         return None
 
     def _set_limits():
@@ -390,6 +421,7 @@ def run_script(
     allowed_read_dirs: Optional[List[str]] = None,
     allowed_write_dirs: Optional[List[str]] = None,
     python_executable: Optional[str] = None,
+    unrestricted: bool = False,
 ) -> Dict[str, Any]:
     """
     执行 Python 脚本（安全加固版）
@@ -402,6 +434,9 @@ def run_script(
         timeout: 超时时间（秒），最大 120s
         allowed_read_dirs: 额外允许读取的目录列表（scripts_dir 自动包含）
         allowed_write_dirs: 额外允许写入的目录列表（默认仅 scripts_dir）
+        unrestricted: 超管免限制（仅 admin 侧传 True）。解除 AST 静态分析、
+            环境变量白名单、资源限制与超时上限；**仍保留**路径白名单、符号链接
+            拒绝、.py 限制与沙箱 wrapper。consumer/service 路径**绝不**传 True。
 
     Returns:
         {
@@ -412,8 +447,14 @@ def run_script(
             "error": str | None
         }
     """
-    # 1. 安全检查：限制超时
-    timeout = min(timeout, MAX_TIMEOUT)
+    # 1. 安全检查：限制超时（超管免限制时honor传入值，不 clamp）
+    if not unrestricted:
+        timeout = min(timeout, MAX_TIMEOUT)
+    if unrestricted:
+        _log.warning(
+            "[script_runner] UNRESTRICTED 模式（%s）— 已解除 AST/env/资源/超时限制 "
+            "（保留路径白名单）script=%s", _UNRESTRICTED_ENV, script_path,
+        )
 
     # 2. 路径解析：用 realpath 解析符号链接，防止路径穿越
     clean_path = script_path.replace("\\", "/").lstrip("/")
@@ -440,10 +481,11 @@ def run_script(
     if not os.path.isfile(full_path):
         return _error_result(f"脚本不存在: {clean_path}")
 
-    # 7. AST 静态分析：检查脚本内容是否包含危险调用
-    safety_issue = _check_script_safety(full_path)
-    if safety_issue:
-        return _error_result(f"脚本安全检查未通过: {safety_issue}")
+    # 7. AST 静态分析：检查脚本内容是否包含危险调用（超管免限制时跳过）
+    if not unrestricted:
+        safety_issue = _check_script_safety(full_path)
+        if safety_issue:
+            return _error_result(f"脚本安全检查未通过: {safety_issue}")
 
     # 8. 构建允许的目录列表
     read_dirs = [abs_scripts_dir]
@@ -517,8 +559,8 @@ def run_script(
             errors="replace",
             timeout=timeout,
             cwd=scripts_dir,
-            env=_build_safe_env(),
-            preexec_fn=_get_preexec_fn(),
+            env=_build_safe_env(unrestricted),
+            preexec_fn=_get_preexec_fn(unrestricted),
         )
 
         stdout = result.stdout[:MAX_OUTPUT_LENGTH] if result.stdout else ""

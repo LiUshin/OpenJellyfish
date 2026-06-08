@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Tabs, Tag } from 'antd';
+import { useTranslation } from 'react-i18next';
 import UserProfileEditor from '../../components/modals/UserProfileEditor';
 import SystemPromptEditor from '../../components/modals/SystemPromptEditor';
 import SoulSettings from '../../components/modals/SoulSettings';
@@ -9,6 +10,7 @@ const ADV_SYSTEM_KEY = 'show_advanced_system';
 const ADV_SOUL_KEY = 'show_advanced_soul';
 
 export default function PromptPage() {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [tab, setTab] = useState<'profile' | 'system' | 'soul'>('profile');
   const [showSystem, setShowSystem] = useState(localStorage.getItem(ADV_SYSTEM_KEY) === '1');
@@ -30,14 +32,14 @@ export default function PromptPage() {
 
   const tabItems = useMemo(() => {
     const items: { key: string; label: React.ReactNode }[] = [
-      { key: 'profile', label: '个性规则' },
+      { key: 'profile', label: t('promptPage.tabRules') },
     ];
     if (showSystem) {
       items.push({
         key: 'system',
         label: (
           <span>
-            操作规则
+            {t('promptPage.tabOpsRules')}
             <Tag color="purple" style={{ marginLeft: 6, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
               Advanced
             </Tag>
@@ -50,7 +52,7 @@ export default function PromptPage() {
         key: 'soul',
         label: (
           <span>
-            Memory & Soul
+            {t('promptPage.tabMemorySoul')}
             <Tag color="purple" style={{ marginLeft: 6, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
               Advanced
             </Tag>
@@ -59,7 +61,7 @@ export default function PromptPage() {
       });
     }
     return items;
-  }, [showSystem, showSoul]);
+  }, [showSystem, showSoul, t]);
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>

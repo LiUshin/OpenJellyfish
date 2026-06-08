@@ -18,6 +18,8 @@
 
 import { useState } from 'react';
 import { Calendar, CheckCircle, WarningCircle, Bell, CaretDown } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
+import i18n from '../../../i18n';
 import type { ToolBlock } from '../types';
 import { renderMarkdown } from '../markdown';
 import styles from '../chat.module.css';
@@ -52,7 +54,7 @@ function formatTime(iso?: string): string {
     const sameDay = d.toDateString() === now.toDateString();
     const hh = String(d.getHours()).padStart(2, '0');
     const mm = String(d.getMinutes()).padStart(2, '0');
-    if (sameDay) return `今天 ${hh}:${mm}`;
+    if (sameDay) return i18n.t('scheduledTaskCard.today', { time: `${hh}:${mm}` });
     const mo = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${mo}-${day} ${hh}:${mm}`;
@@ -61,12 +63,12 @@ function formatTime(iso?: string): string {
   }
 }
 
-function scheduleLabel(t?: string): string {
-  switch (t) {
-    case 'cron': return '周期任务';
-    case 'once': return '一次性';
-    case 'interval': return '间隔任务';
-    default: return '定时任务';
+function scheduleLabel(type?: string): string {
+  switch (type) {
+    case 'cron': return i18n.t('scheduledTaskCard.scheduleCron');
+    case 'once': return i18n.t('scheduledTaskCard.scheduleOnce');
+    case 'interval': return i18n.t('scheduledTaskCard.scheduleInterval');
+    default: return i18n.t('scheduledTaskCard.scheduleDefault');
   }
 }
 
@@ -77,14 +79,14 @@ interface Props {
 }
 
 export default function ScheduledTaskCard({ block, friendlyMode = false }: Props) {
-  // 默认展开：定时任务结果用户多半想直接看到
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   const meta = parseMeta(block.args);
   const isError = meta.status === 'error';
   const result = block.result || '';
 
   const headerLabel = friendlyMode
-    ? '系统通知'
+    ? t('scheduledTaskCard.systemNotice')
     : (meta.task_name || scheduleLabel(meta.schedule_type));
   const timeStr = formatTime(meta.scheduled_at);
 
@@ -113,7 +115,7 @@ export default function ScheduledTaskCard({ block, friendlyMode = false }: Props
             )}
             <span
               className={`${styles.scheduledTaskStatus} ${isError ? styles.scheduledTaskStatusError : ''}`}
-              aria-label={isError ? '失败' : '成功'}
+              aria-label={isError ? t('scheduledTaskCard.statusError') : t('scheduledTaskCard.statusSuccess')}
             >
               <StatusIcon size={13} weight="fill" />
             </span>

@@ -15,7 +15,10 @@ from app.deps import get_current_user
 from app.services.model_catalog import (
     list_models, get_default_model, find_model, CAPABILITIES,
 )
-from app.services.preferences import get_preferences, update_preferences
+from app.services.preferences import (
+    get_preferences, update_preferences,
+    get_hidden_models, set_hidden_models,
+)
 
 router = APIRouter(tags=["models"])
 
@@ -25,19 +28,67 @@ _CAPS_FOR_DEFAULTS = {"llm", "image", "tts", "video", "stt", "s2s"}
 
 @router.get("/api/models")
 async def api_list_models(user=Depends(get_current_user)):
-    """LLM 列表（按已配置凭据过滤）+ 当前默认 LLM。"""
+    """LLM 列表（按已配置凭据过滤，再过滤用户隐藏模型）+ 当前默认 LLM。"""
     user_id = user["user_id"]
     items = list_models("llm", user_id=user_id, only_available=True)
+    hidden = set(get_hidden_models(user_id))
     models = [
         {"id": m["id"], "name": m.get("display_name") or m["id"],
          "provider": m.get("provider", ""), "tier": m.get("tier", "")}
         for m in items
+        if m["id"] not in hidden
     ]
     default_model = get_default_model("llm", user_id=user_id)
     if default_model and not any(m["id"] == default_model for m in models):
-        # 用户偏好或仓库默认已被禁用/缺凭据，回退到首项
+        # 用户偏好或仓库默认已被隐藏/缺凭据，回退到首项
         default_model = models[0]["id"] if models else ""
     return {"models": models, "default": default_model}
+
+
+@router.get("/api/models/visibility")
+async def api_get_model_visibility(user=Depends(get_current_user)):
+    """返回所有有凭据的 LLM，以及每个模型的可见状态（enabled=True 表示出现在对话框）。"""
+    user_id = user["user_id"]
+    items = list_models("llm", user_id=user_id, only_available=True)
+    hidden = set(get_hidden_models(user_id))
+    models = [
+        {
+            "id": m["id"],
+            "name": m.get("display_name") or m["id"],
+            "provider": m.get("provider", ""),
+            "tier": m.get("tier", ""),
+            "enabled": m["id"] not in hidden,
+        }
+        for m in items
+    ]
+    return {"models": models, "hidden": list(hidden)}
+
+
+@router.put("/api/models/visibility")
+async def api_update_model_visibility(req: dict, user=Depends(get_current_user)):
+    """更新模型可见性。
+    
+    Body: {"hidden": ["model:id1", "model:id2"]}  — 设置完整隐藏列表
+    或:   {"toggle": {"id": "model:id", "enabled": true/false}}  — 切换单个模型
+    """
+    user_id = user["user_id"]
+    current_hidden = set(get_hidden_models(user_id))
+
+    if "hidden" in req and isinstance(req["hidden"], list):
+        new_hidden = [m for m in req["hidden"] if isinstance(m, str)]
+        set_hidden_models(user_id, new_hidden)
+        current_hidden = set(new_hidden)
+    elif "toggle" in req and isinstance(req["toggle"], dict):
+        model_id = req["toggle"].get("id", "")
+        enabled = req["toggle"].get("enabled", True)
+        if model_id:
+            if enabled:
+                current_hidden.discard(model_id)
+            else:
+                current_hidden.add(model_id)
+            set_hidden_models(user_id, list(current_hidden))
+
+    return {"success": True, "hidden": list(current_hidden)}
 
 
 @router.get("/api/capabilities/{capability}/models")

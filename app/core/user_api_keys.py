@@ -29,6 +29,8 @@ _SECRET_FIELDS = {
     "minimax_api_key",
     "doubao_access_key",
     "doubao_secret_key",
+    # AWS Bedrock (Bearer Token auth)
+    "bedrock_api_key",
 }
 
 _URL_FIELDS = {
@@ -43,6 +45,8 @@ _URL_FIELDS = {
     # MiniMax / 豆包除 key 外的辅助字段（非 URL 也走 plaintext 槽位）
     "minimax_group_id",
     "doubao_region",
+    # AWS Bedrock region
+    "bedrock_region",
 }
 
 ALL_FIELDS = _SECRET_FIELDS | _URL_FIELDS

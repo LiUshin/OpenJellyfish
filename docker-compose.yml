@@ -52,6 +52,7 @@ services:
     env_file:
       - ./.env
     environment:
+      # 必须保持 1：多 worker 会重复启动 HeapScheduler / venv 恢复，内存与 CPU 翻倍
       - UVICORN_WORKERS=${UVICORN_WORKERS:-1}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - NODE_ENV=production

@@ -1,13 +1,13 @@
 import { useState, useEffect, useMemo } from 'react';
 import {
   App, Tabs, Button, Tag, Modal, Form, Input, Select, Checkbox,
-  Space, Typography, Empty, Spin, Popconfirm, Pagination,
+  Space, Typography, Empty, Spin, Popconfirm, Pagination, Segmented,
 } from 'antd';
 import {
   Plus, PencilSimple, Trash, PlayCircle,
   ArrowsClockwise, CaretRight, Info, Clock,
   GearSix, ListDashes, CheckCircle, XCircle,
-  ArrowLeft,
+  ArrowLeft, TreeStructure, ChartLine,
 } from '@phosphor-icons/react';
 import {
   listSchedulerTasks, getSchedulerTask, createSchedulerTask,
@@ -16,75 +16,18 @@ import {
 } from '../../services/api';
 import { fmtUserTime, getTzOffset } from '../../utils/timezone';
 import { useIsMobile } from '../../hooks/useMediaQuery';
+import GraphView from './GraphView';
+import TimelineView from './TimelineView';
+import type { TaskData, RunData, StepData } from './types';
 
 const { TextArea } = Input;
 
-/* ────────────────────── Types ────────────────────── */
+/* ────────────────────── Types ──────────────────────
+ * Shared types live in ./types.ts so GraphView / TimelineView consume the
+ * same shape.  See that file for the full v2 spawn-tree-aware definitions.
+ */
 
-interface TaskPermissions {
-  read_dirs?: string[];
-  write_dirs?: string[];
-}
-
-interface TaskConfig {
-  script_path?: string;
-  script_args?: string[];
-  prompt?: string;
-  doc_path?: string | string[];
-  capabilities?: string[];
-  permissions?: TaskPermissions;
-}
-
-interface ReplyTo {
-  channel?: string;
-  session_id?: string;
-}
-
-interface StepData {
-  type: string;
-  ts?: string;
-  content?: string;
-  tool?: string;
-  args_preview?: string;
-  result_preview?: string;
-  actions?: unknown[];
-  prompt?: string;
-  args?: string[];
-  doc_paths?: string[];
-  capabilities?: string[];
-  read_dirs?: string[];
-  write_dirs?: string[];
-  resolved_write_dirs?: unknown;
-  scripts_dir?: string;
-  fs_dir?: string;
-}
-
-interface RunData {
-  status: string;
-  started_at?: string;
-  finished_at?: string;
-  steps?: StepData[];
-  output?: string;
-}
-
-interface TaskData {
-  id: string;
-  name: string;
-  description?: string;
-  task_type: string;
-  schedule_type: string;
-  schedule?: string;
-  enabled?: boolean;
-  created_at?: string;
-  last_run_at?: string;
-  next_run_at?: string;
-  run_count?: number;
-  reply_to?: ReplyTo;
-  task_config?: TaskConfig;
-  runs?: RunData[];
-  service_id?: string;
-  _scope?: 'admin' | 'service';
-}
+type DetailMode = 'detail' | 'graph' | 'timeline';
 
 /* ────────────────────── Constants ────────────────────── */
 
@@ -434,6 +377,15 @@ export default function SchedulerPage() {
   const [svcPage, setSvcPage] = useState(1);
   const SVC_PAGE_SIZE = 20;
 
+  // v2: view mode for the right pane (detail / spawn graph / timeline).
+  // Persists across selectTask so the user can browse the same view across
+  // siblings.  Reset to 'detail' if a freshly-selected task has no spawn-tree
+  // context (no children + no parents) since the alternate views would be empty.
+  const [viewMode, setViewMode] = useState<DetailMode>('detail');
+  // External nonce to force GraphView/TimelineView to refetch after run-now /
+  // edit / delete actions.  Bumped in handleRunNow / handleSave / handleDelete.
+  const [treeRefreshNonce, setTreeRefreshNonce] = useState(0);
+
   useEffect(() => {
     listServices()
       .then((svcs) => setAvailableServices((svcs as { id: string; name: string; published?: boolean }[]).filter((s) => s.published !== false)))
@@ -476,12 +428,26 @@ export default function SchedulerPage() {
 
   /* ── Task selection ── */
 
+  /** Reset to detail view if the new task has no spawn family — graph and
+   *  timeline would be a single dot, which is more confusing than useful.
+   *
+   *  ``descendants_count`` is included so we don't accidentally hide the
+   *  switcher when a root's ``children_count`` field wasn't bumped (older
+   *  records / v1 migration gaps). */
+  const _resetViewIfFlat = (t: TaskData) => {
+    const hasFamily = (t.children_count || 0) > 0
+      || (t.descendants_count || 0) > 0
+      || (t.spawn_chain && t.spawn_chain.length > 0);
+    if (!hasFamily) setViewMode('detail');
+  };
+
   const selectTask = async (id: string) => {
     setDetailLoading(true);
     try {
       const t = await getSchedulerTask(id) as TaskData;
       t._scope = 'admin';
       setCurrentTask(t);
+      _resetViewIfFlat(t);
     } catch (e: unknown) { msg.error((e as Error).message); }
     finally { setDetailLoading(false); }
   };
@@ -492,6 +458,7 @@ export default function SchedulerPage() {
       const t = await svcRequest<TaskData>('GET', `/scheduler/services/${svcId}/${taskId}`);
       t._scope = 'service';
       setCurrentTask(t);
+      _resetViewIfFlat(t);
     } catch (e: unknown) { msg.error((e as Error).message); }
     finally { setDetailLoading(false); }
   };
@@ -601,6 +568,7 @@ export default function SchedulerPage() {
       if (activeTab === 'service') await loadServiceTasks();
       else await loadTasks();
       if (savedId && activeTab === 'admin') selectTask(savedId);
+      setTreeRefreshNonce(n => n + 1);
     } catch (e: unknown) {
       msg.error((e as Error).message);
     } finally { setSaving(false); }
@@ -618,6 +586,7 @@ export default function SchedulerPage() {
       setCurrentTask(null);
       if (activeTab === 'service') await loadServiceTasks();
       else await loadTasks();
+      setTreeRefreshNonce(n => n + 1);
     } catch (e: unknown) { msg.error((e as Error).message); }
   };
 
@@ -630,6 +599,7 @@ export default function SchedulerPage() {
         await runSchedulerTaskNow(currentTask.id);
       }
       msg.success('任务已触发，稍后可在运行记录中查看结果');
+      setTreeRefreshNonce(n => n + 1);
     } catch (e: unknown) { msg.error((e as Error).message); }
   };
 
@@ -684,6 +654,12 @@ export default function SchedulerPage() {
     }
     return visibleTasks.map(t => {
       const active = currentTask?.id === t.id;
+      // v2: depth-aware indent (root = 0, child = 1, …) so the spawn lineage
+      // is visually obvious in the flat list.  Cap visual indent at 4 levels
+      // so deep chains don't push the title off-screen.
+      const depth = Math.min(t.spawn_depth ?? 0, 4);
+      const isChild = depth > 0;
+      const childCount = t.children_count ?? 0;
       return (
         <div
           key={t.id + (t.service_id || '')}
@@ -693,8 +669,13 @@ export default function SchedulerPage() {
               : selectTask(t.id)
           }
           style={{
-            padding: 12, borderRadius: 'var(--jf-radius-lg)', cursor: 'pointer', marginBottom: 4,
+            padding: 12,
+            paddingLeft: 12 + depth * 14,
+            borderRadius: 'var(--jf-radius-lg)', cursor: 'pointer', marginBottom: 4,
             background: active ? C.bgActive : 'transparent',
+            // Subtle left border for non-root tasks so the chain reads as a tree
+            borderLeft: isChild
+              ? `2px solid var(--jf-border-strong)` : '2px solid transparent',
             transition: 'background 0.2s',
           }}
           onMouseEnter={e => {
@@ -714,11 +695,23 @@ export default function SchedulerPage() {
             >
               {t.enabled !== false ? '启用' : '停用'}
             </Tag>
+            {isChild && (
+              <span style={{
+                fontSize: 10, color: C.textMuted, fontFamily: C.mono,
+              }} title={`派生层级 d=${t.spawn_depth}`}>↳</span>
+            )}
             <span style={{
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>
               {t.name}
             </span>
+            {childCount > 0 && (
+              <Tag color="processing" style={{
+                margin: 0, fontSize: 10, lineHeight: '16px', padding: '0 4px',
+              }} title={`包含 ${childCount} 个直接子任务`}>
+                +{childCount}
+              </Tag>
+            )}
           </div>
           <div style={{
             fontSize: 12, color: C.textSecondary,
@@ -1087,7 +1080,95 @@ export default function SchedulerPage() {
                 </Button>
               </div>
             )}
-            {renderDetail()}
+            {/* v2: View switcher (detail / graph / timeline). Graph & timeline
+                only become useful when the task has a spawn family — but we
+                always render the switcher so the user knows the modes exist.
+                ``descendants_count`` covers stale-meta cases where
+                ``children_count`` wasn't bumped after a v1→v2 migration. */}
+            {(() => {
+              const hasFamily = (currentTask.children_count || 0) > 0
+                || (currentTask.descendants_count || 0) > 0
+                || ((currentTask.spawn_chain?.length || 0) > 0);
+              if (!hasFamily) return null;
+              return (
+                <div style={{
+                  padding: '10px 16px',
+                  borderBottom: `1px solid ${C.border}`,
+                  background: C.bgSecondary,
+                  display: 'flex', justifyContent: 'center',
+                }}>
+                  <Segmented
+                    value={viewMode}
+                    onChange={(v) => setViewMode(v as DetailMode)}
+                    options={[
+                      { label: <Space size={4}><Info size={14} /> 详情</Space>,           value: 'detail' },
+                      { label: <Space size={4}><TreeStructure size={14} /> 谱系图</Space>, value: 'graph'  },
+                      { label: <Space size={4}><ChartLine size={14} /> 时间轴</Space>,    value: 'timeline' },
+                    ]}
+                  />
+                </div>
+              );
+            })()}
+            {viewMode === 'detail' && renderDetail()}
+            {(() => {
+              // Resolve which task to use as the tree root for the graph/timeline.
+              // For root tasks (no parents in spawn_chain) we must use the
+              // current id directly — relying on ``root_task_id`` would yield
+              // wrong results when that field is stale / missing after a
+              // v1→v2 migration. For spawn children, ``root_task_id`` points
+              // to the real ancestor (or, as fallback, the chain's head).
+              const isSpawnChild = (currentTask.spawn_chain?.length || 0) > 0;
+              const rootId = isSpawnChild
+                ? (currentTask.root_task_id
+                   || currentTask.spawn_chain?.[0]
+                   || currentTask.id)
+                : currentTask.id;
+              const svcId = currentTask._scope === 'service'
+                ? currentTask.service_id : undefined;
+              const handleSelect = (id: string) => {
+                if (currentTask._scope === 'service' && currentTask.service_id) {
+                  selectServiceTask(currentTask.service_id, id);
+                } else {
+                  selectTask(id);
+                }
+              };
+              if (viewMode !== 'graph' && viewMode !== 'timeline') return null;
+              // GraphView / TimelineView root divs are width/height: 100%
+              // (ReactFlow + SVG demand a sized parent). The main panel is a
+              // column flex container, so without an explicit flex:1 +
+              // minHeight:0 wrapper, height:100% collapses to 0 and the only
+              // thing that renders is the absolutely-positioned info bar
+              // inside the child (the "谱系图 · root=... · 30 个节点"
+              // symptom). Keep the wrapper as a plain block (not flex) so the
+              // child's `height: 100%` resolves predictably across browsers.
+              return (
+                <div style={{
+                  flex: 1,
+                  minHeight: 0,
+                  position: 'relative',
+                  overflow: 'hidden',
+                }}>
+                  {viewMode === 'graph' && (
+                    <GraphView
+                      rootTaskId={rootId}
+                      serviceId={svcId}
+                      selectedTaskId={currentTask.id}
+                      onSelectTask={handleSelect}
+                      refreshNonce={treeRefreshNonce}
+                    />
+                  )}
+                  {viewMode === 'timeline' && (
+                    <TimelineView
+                      rootTaskId={rootId}
+                      serviceId={svcId}
+                      selectedTaskId={currentTask.id}
+                      onSelectTask={handleSelect}
+                      refreshNonce={treeRefreshNonce}
+                    />
+                  )}
+                </div>
+              );
+            })()}
           </>
         ) : (
           <div style={{

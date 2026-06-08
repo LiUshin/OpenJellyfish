@@ -26,6 +26,34 @@ VENV_DIR_NAME = "venv"
 REQUIREMENTS_FILE = "requirements.txt"
 _VENV_CREATION_LOCK: Dict[str, asyncio.Lock] = {}
 
+# 启动时若每个用户都 parallel pip install -r，多用户会把 CPU/IO 打满；
+# 用有界并发（默认 1 = 顺序恢复）。
+_DEFAULT_RESTORE_CONCURRENCY = 1
+_RESTORE_CONCURRENCY_CAP = 8
+
+
+def restore_venvs_concurrency_slots() -> int:
+    raw = os.environ.get("RESTORE_VENVS_CONCURRENCY", "").strip()
+    if not raw:
+        return _DEFAULT_RESTORE_CONCURRENCY
+    try:
+        n = int(raw, 10)
+    except ValueError:
+        log.warning(
+            "Invalid RESTORE_VENVS_CONCURRENCY=%r — using %d",
+            raw, _DEFAULT_RESTORE_CONCURRENCY,
+        )
+        return _DEFAULT_RESTORE_CONCURRENCY
+    return max(1, min(_RESTORE_CONCURRENCY_CAP, n))
+
+
+def restore_venvs_on_startup_enabled() -> bool:
+    """RESTORE_VENVS_ON_STARTUP 空=启用；0/false/no/off 则跳过。"""
+    v = os.environ.get("RESTORE_VENVS_ON_STARTUP", "").strip().lower()
+    if not v:
+        return True
+    return v not in ("0", "false", "no", "off")
+
 
 def _venv_dir(user_id: str) -> str:
     return os.path.join(get_user_dir(user_id), VENV_DIR_NAME)
@@ -233,25 +261,43 @@ async def restore_venv(user_id: str) -> bool:
 async def restore_all_venvs():
     """Scan all user directories and restore venvs that have requirements.txt.
 
-    Called during application startup.
+    Called during application startup. Uses bounded concurrency — by default
+    one user at a time — to avoid N parallel ``pip install`` storms on small VMs.
     """
+    if not restore_venvs_on_startup_enabled():
+        log.info("Skipping venv restore on startup (RESTORE_VENVS_ON_STARTUP=off)")
+        return
+
     from app.core.settings import ROOT_DIR
     users_dir = os.path.join(ROOT_DIR, "users")
     if not os.path.isdir(users_dir):
         return
 
-    tasks = []
+    user_ids: List[str] = []
     for entry in os.listdir(users_dir):
         user_dir = os.path.join(users_dir, entry)
         if not os.path.isdir(user_dir):
             continue
         req_path = os.path.join(user_dir, VENV_DIR_NAME, REQUIREMENTS_FILE)
         if os.path.isfile(req_path):
-            tasks.append(restore_venv(entry))
+            user_ids.append(entry)
 
-    if tasks:
-        log.info("Restoring venvs for %d users...", len(tasks))
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        restored = sum(1 for r in results if r is True)
-        errors = sum(1 for r in results if isinstance(r, Exception))
-        log.info("Venv restore complete: %d restored, %d errors", restored, errors)
+    if not user_ids:
+        return
+
+    slots = restore_venvs_concurrency_slots()
+    sem = asyncio.Semaphore(slots)
+    log.info(
+        "Restoring venvs for %d user(s), concurrency=%d (RESTORE_VENVS_CONCURRENCY)",
+        len(user_ids),
+        slots,
+    )
+
+    async def _one(uid: str):
+        async with sem:
+            return await restore_venv(uid)
+
+    results = await asyncio.gather(*(_one(uid) for uid in user_ids), return_exceptions=True)
+    restored = sum(1 for r in results if r is True)
+    errors = sum(1 for r in results if isinstance(r, Exception))
+    log.info("Venv restore complete: %d restored, %d errors", restored, errors)

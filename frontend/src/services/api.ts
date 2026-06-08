@@ -5,6 +5,7 @@ import type {
   ConversationDetail,
   FileItem,
   ModelsResponse,
+  ModelVisibilityResponse,
   SystemPromptResponse,
   PromptVersion,
   SubagentListResponse,
@@ -31,6 +32,19 @@ export function clearToken(): void {
   localStorage.removeItem('token');
 }
 
+function currentAcceptLanguage(): string {
+  // Prefer the i18n-resolved language so backend messages match the UI
+  // even before the user has clicked the switcher (i18n picks from
+  // localStorage / navigator on init). Falls back to navigator.language
+  // for ultra-early callers (rare) and finally 'zh'.
+  try {
+    const stored = localStorage.getItem('jf-lang');
+    if (stored) return stored.toLowerCase().startsWith('en') ? 'en' : 'zh';
+  } catch { /* private mode */ }
+  const nav = (typeof navigator !== 'undefined' && navigator.language) || 'zh';
+  return nav.toLowerCase().startsWith('en') ? 'en' : 'zh';
+}
+
 export async function request<T = unknown>(
   method: string,
   path: string,
@@ -39,6 +53,7 @@ export async function request<T = unknown>(
 ): Promise<T> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${getToken()}`,
+    'Accept-Language': currentAcceptLanguage(),
   };
 
   if (body && !(body instanceof FormData)) {
@@ -571,6 +586,14 @@ export async function updateUserProfile(profile: UserProfile): Promise<void> {
   return request('PUT', '/user-profile', profile);
 }
 
+export async function getAgentNotes(): Promise<{ content: string; locked: boolean }> {
+  return request('GET', '/user-profile/agent-notes');
+}
+
+export async function updateAgentNotes(content: string, locked: boolean): Promise<void> {
+  return request('PUT', '/user-profile/agent-notes', { content, locked });
+}
+
 export async function listProfileVersions(): Promise<PromptVersion[]> {
   return request('GET', '/user-profile/versions');
 }
@@ -615,6 +638,14 @@ export async function runScript(
 
 export async function getModels(): Promise<ModelsResponse> {
   return request('GET', '/models');
+}
+
+export async function getModelVisibility(): Promise<ModelVisibilityResponse> {
+  return request('GET', '/models/visibility');
+}
+
+export async function toggleModelVisibility(modelId: string, enabled: boolean): Promise<{ success: boolean; hidden: string[] }> {
+  return request('PUT', '/models/visibility', { toggle: { id: modelId, enabled } });
 }
 
 // ===== Audio =====
@@ -787,6 +818,51 @@ export async function getSchedulerRuns(taskId: string): Promise<unknown[]> {
 
 export async function runSchedulerTaskNow(taskId: string): Promise<void> {
   return request('POST', `/scheduler/${taskId}/run-now`);
+}
+
+// v2 spawn-tree endpoints (admin scope)
+// `service_id` switches to the matching `/services/{service_id}/...` mirror.
+export async function getSchedulerTaskTree(
+  taskId: string, opts?: { maxDepth?: number; serviceId?: string },
+): Promise<unknown> {
+  const max = opts?.maxDepth ?? 5;
+  const base = opts?.serviceId
+    ? `/scheduler/services/${opts.serviceId}/${taskId}/tree`
+    : `/scheduler/${taskId}/tree`;
+  return request('GET', `${base}?max_depth=${max}`);
+}
+
+export async function getSchedulerTaskChildren(
+  taskId: string, opts?: { serviceId?: string },
+): Promise<unknown[]> {
+  const base = opts?.serviceId
+    ? `/scheduler/services/${opts.serviceId}/${taskId}/children`
+    : `/scheduler/${taskId}/children`;
+  return request('GET', base);
+}
+
+export async function getSchedulerTaskAncestors(
+  taskId: string, opts?: { serviceId?: string },
+): Promise<unknown[]> {
+  const base = opts?.serviceId
+    ? `/scheduler/services/${opts.serviceId}/${taskId}/ancestors`
+    : `/scheduler/${taskId}/ancestors`;
+  return request('GET', base);
+}
+
+export async function getSchedulerChainQuota(
+  rootTaskId: string, opts?: { serviceId?: string },
+): Promise<unknown> {
+  const base = opts?.serviceId
+    ? `/scheduler/services/${opts.serviceId}/quotas/${rootTaskId}`
+    : `/scheduler/quotas/${rootTaskId}`;
+  return request('GET', base);
+}
+
+export async function migrateAdminTasksV1ToV2(
+  dryRun: boolean,
+): Promise<unknown> {
+  return request('POST', '/scheduler/admin/migrate', { dry_run: dryRun });
 }
 
 // ===== Services =====
@@ -974,6 +1050,8 @@ export async function getApiKeysStatus(): Promise<ApiKeysStatus> {
 
 export interface UserPreferences {
   tz_offset_hours: number;
+  /** UI/messages language. ``""`` means "follow Accept-Language" (auto). */
+  language?: '' | 'zh' | 'en';
 }
 
 export async function getPreferences(): Promise<UserPreferences> {

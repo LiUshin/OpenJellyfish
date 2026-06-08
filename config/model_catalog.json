@@ -40,11 +40,26 @@
     {"id": "minimax:MiniMax-M2.7-highspeed",       "provider": "minimax",   "display_name": "MiniMax M2.7 HighSpeed",       "tier": "fast"},
     {"id": "minimax:MiniMax-M2.5",                 "provider": "minimax",   "display_name": "MiniMax M2.5",                 "tier": "high"},
     {"id": "minimax:MiniMax-M2.5-highspeed",       "provider": "minimax",   "display_name": "MiniMax M2.5 HighSpeed",       "tier": "fast"},
-    {"id": "minimax:MiniMax-M2",                   "provider": "minimax",   "display_name": "MiniMax M2",                   "tier": "high"}
+    {"id": "minimax:MiniMax-M2",                   "provider": "minimax",   "display_name": "MiniMax M2",                   "tier": "high"},
+    {"id": "bedrock:claude-opus-4-7-thinking",     "provider": "bedrock",   "display_name": "Bedrock Opus 4.7 (Thinking)",  "tier": "thinking"},
+    {"id": "bedrock:claude-opus-4-6-thinking",     "provider": "bedrock",   "display_name": "Bedrock Opus 4.6 (Thinking)",  "tier": "thinking"},
+    {"id": "bedrock:claude-sonnet-4-6-thinking",   "provider": "bedrock",   "display_name": "Bedrock Sonnet 4.6 (Thinking)","tier": "thinking"},
+    {"id": "bedrock:claude-opus-4-7",              "provider": "bedrock",   "display_name": "Bedrock Opus 4.7",             "tier": "high"},
+    {"id": "bedrock:claude-opus-4-6",              "provider": "bedrock",   "display_name": "Bedrock Opus 4.6",             "tier": "high"},
+    {"id": "bedrock:claude-opus-4-5",              "provider": "bedrock",   "display_name": "Bedrock Opus 4.5",             "tier": "high"},
+    {"id": "bedrock:claude-sonnet-4-6",            "provider": "bedrock",   "display_name": "Bedrock Sonnet 4.6",           "tier": "high"},
+    {"id": "bedrock:claude-sonnet-4-5",            "provider": "bedrock",   "display_name": "Bedrock Sonnet 4.5",           "tier": "high"},
+    {"id": "bedrock:claude-haiku-4-5",             "provider": "bedrock",   "display_name": "Bedrock Haiku 4.5",            "tier": "fast"}
   ],
 
   "image": [
     {"id": "openai:gpt-image-1", "provider": "openai", "display_name": "GPT-Image-1",
+     "default_params": {"size": "1024x1024", "quality": "auto"},
+     "params_schema": {
+       "size":    {"type": "enum", "options": ["1024x1024", "1536x1024", "1024x1536", "auto"]},
+       "quality": {"type": "enum", "options": ["low", "medium", "high", "auto"]}
+     }},
+    {"id": "openai:gpt-image-2", "provider": "openai", "display_name": "GPT-Image-2",
      "default_params": {"size": "1024x1024", "quality": "auto"},
      "params_schema": {
        "size":    {"type": "enum", "options": ["1024x1024", "1536x1024", "1024x1536", "auto"]},

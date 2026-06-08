@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { File as FileIcon, Folder as FolderIcon } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import type { FuzzyResult } from '../../../utils/fuzzyMatch';
 import { fuzzyMatch, highlightMatches } from '../../../utils/fuzzyMatch';
 import type { FileIndexEntry } from '../../../services/api';
@@ -40,6 +41,7 @@ export default function MentionPicker({
   onSelect,
   visible,
 }: MentionPickerProps) {
+  const { t } = useTranslation();
   const candidates: FuzzyResult<FileIndexEntry>[] = useMemo(
     () => fuzzyMatch(items, query, recentPaths, MAX_CANDIDATES),
     [items, query, recentPaths],
@@ -60,7 +62,7 @@ export default function MentionPicker({
   if (candidates.length === 0) {
     return (
       <div className={styles.mentionPicker}>
-        <div className={styles.mentionEmpty}>没有匹配的文件</div>
+        <div className={styles.mentionEmpty}>{t('mention.noMatch')}</div>
       </div>
     );
   }
@@ -68,8 +70,8 @@ export default function MentionPicker({
   return (
     <div className={styles.mentionPicker} role="listbox">
       <div className={styles.mentionHeader}>
-        <span>选择文件 / 文件夹</span>
-        <span className={styles.mentionHint}>↑↓ 选择 · Enter / Tab 插入 · Esc 取消</span>
+        <span>{t('mention.header')}</span>
+        <span className={styles.mentionHint}>{t('mention.hint')}</span>
       </div>
       <div ref={listRef} className={styles.mentionList}>
         {candidates.map((c, idx) => {

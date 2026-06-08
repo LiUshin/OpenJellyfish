@@ -75,3 +75,4 @@ tauri-launcher/bundle-resources/
 wechatskill/
 docs/CONSUMER_API_INTEGRATION.md
 scripts/test_consumer_api.py
+test_bedrock.py

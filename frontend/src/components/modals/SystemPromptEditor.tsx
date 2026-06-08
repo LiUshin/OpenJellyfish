@@ -9,6 +9,7 @@ import {
   SwapOutlined, RollbackOutlined,
 } from '@ant-design/icons';
 import { Lightning, FloppyDisk, ArrowCounterClockwise } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import type { PromptVersion } from '../../types';
 import * as api from '../../services/api';
 import type { CapabilityPromptItem } from '../../services/api';
@@ -32,20 +33,22 @@ const panelStyle: React.CSSProperties = {
 };
 
 const SOUL_KEYS = new Set(['memory_subagent', 'soul_edit']);
-const CAP_LABELS: Record<string, string> = {
-  web: '联网工具',
-  image: 'AI 图片生成',
-  speech: 'AI 语音生成',
-  video: 'AI 视频生成',
-  scheduler: '定时任务',
-  service_scheduler: 'Service 定时任务',
-  service_broadcast: 'Service 广播',
-  contact_admin: '联系管理员',
-  humanchat: 'HumanChat 模式',
+// Capability label keys; raw key falls back when no translation exists.
+const CAP_LABEL_KEYS: Record<string, string> = {
+  web: 'capabilities.web',
+  image: 'capabilities.image',
+  speech: 'capabilities.speech',
+  video: 'capabilities.video',
+  scheduler: 'capabilities.scheduler',
+  service_scheduler: 'capabilities.service_scheduler',
+  service_broadcast: 'capabilities.service_broadcast',
+  contact_admin: 'capabilities.contact_admin',
+  humanchat: 'capabilities.humanchat',
 };
 
 export default function SystemPromptEditor({ open, onClose, inline }: Props) {
   const isMobile = useIsMobile();
+  const { t } = useTranslation();
   const [prompt, setPrompt] = useState('');
   const [originalPrompt, setOriginalPrompt] = useState('');
   const [loading, setLoading] = useState(false);
@@ -71,11 +74,11 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
       setPrompt(res.prompt);
       setOriginalPrompt(res.prompt);
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '加载失败');
+      message.error(e instanceof Error ? e.message : t('common.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const loadVersions = useCallback(async () => {
     setVersionsLoading(true);
@@ -114,10 +117,10 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
     try {
       await api.updateSystemPrompt(prompt);
       setOriginalPrompt(prompt);
-      message.success('已保存');
+      message.success(t('prompt.saveSuccess'));
       loadVersions();
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '保存失败');
+      message.error(e instanceof Error ? e.message : t('prompt.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -128,10 +131,10 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
       const res = await api.resetSystemPrompt();
       setPrompt(res.prompt);
       setOriginalPrompt(res.prompt);
-      message.success('已恢复默认');
+      message.success(t('prompt.resetSuccess'));
       loadVersions();
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '操作失败');
+      message.error(e instanceof Error ? e.message : t('common.saveFailed'));
     }
   };
 
@@ -141,7 +144,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
       setPreviewContent(ver.content ?? '');
       setPreviewLabel(ver.label || ver.id);
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '加载版本失败');
+      message.error(e instanceof Error ? e.message : t('prompt.loadVersionFailed'));
     }
   };
 
@@ -150,20 +153,20 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
       const res = await api.rollbackPromptVersion(id);
       setPrompt(res.prompt);
       setOriginalPrompt(res.prompt);
-      message.success('已回滚');
+      message.success(t('prompt.rolledBack'));
       loadVersions();
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '回滚失败');
+      message.error(e instanceof Error ? e.message : t('prompt.rollbackFailed'));
     }
   };
 
   const handleDeleteVersion = async (id: string) => {
     try {
       await api.deletePromptVersion(id);
-      message.success('已删除');
+      message.success(t('prompt.deleted'));
       loadVersions();
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '删除失败');
+      message.error(e instanceof Error ? e.message : t('prompt.deleteFailed'));
     }
   };
 
@@ -171,11 +174,11 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
     if (!editingMeta) return;
     try {
       await api.updatePromptVersionMeta(editingMeta.id, editingMeta.label, editingMeta.note);
-      message.success('备注已更新');
+      message.success(t('prompt.renameSaved'));
       setEditingMeta(null);
       loadVersions();
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '更新失败');
+      message.error(e instanceof Error ? e.message : t('prompt.metaUpdateFailed'));
     }
   };
 
@@ -198,7 +201,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
       ]);
       setDiffTexts([verA.content ?? '', verB.content ?? '']);
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '获取版本失败');
+      message.error(e instanceof Error ? e.message : t('prompt.loadVersionFailed'));
     }
   };
 
@@ -221,10 +224,10 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
     setCapSaving(key);
     try {
       await api.updateCapabilityPrompt(key, capEdits[key] || '');
-      message.success('提示词已保存');
+      message.success(t('prompt.capPromptSaveSuccess'));
       setCapPrompts(prev => prev.map(p => p.key === key ? { ...p, custom: capEdits[key] || null } : p));
     } catch {
-      message.error('保存失败');
+      message.error(t('prompt.capPromptSaveFailed'));
     } finally {
       setCapSaving(null);
     }
@@ -239,9 +242,9 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
         setCapEdits(prev => ({ ...prev, [key]: item.default }));
         setCapPrompts(prev => prev.map(p => p.key === key ? { ...p, custom: null } : p));
       }
-      message.success('已恢复默认');
+      message.success(t('prompt.capPromptResetSuccess'));
     } catch {
-      message.error('重置失败');
+      message.error(t('prompt.capPromptResetFailed'));
     } finally {
       setCapSaving(null);
     }
@@ -275,11 +278,11 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
               <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>
-                {prompt.length} 字符 {hasChanges && <Tag color="orange" style={{ marginLeft: 6 }}>未保存</Tag>}
+                {t('profile.charsCount', { count: prompt.length })} {hasChanges && <Tag color="orange" style={{ marginLeft: 6 }}>{t('common.unsaved')}</Tag>}
               </Text>
               <Space>
-                <Popconfirm title="确定恢复默认 Prompt？" onConfirm={handleReset} okText="确定" cancelText="取消">
-                  <Button icon={<UndoOutlined />} size="small">恢复默认</Button>
+                <Popconfirm title={t('prompt.resetConfirm')} onConfirm={handleReset} okText={t('common.confirm')} cancelText={t('common.cancel')}>
+                  <Button icon={<UndoOutlined />} size="small">{t('prompt.resetDefault')}</Button>
                 </Popconfirm>
                 <Button
                   type="primary"
@@ -289,7 +292,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
                   disabled={!hasChanges}
                   onClick={handleSave}
                 >
-                  保存
+                  {t('common.save')}
                 </Button>
               </Space>
             </div>
@@ -305,7 +308,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
                   label: (
                     <Space>
                       <HistoryOutlined />
-                      <span style={{ color: 'var(--jf-text)' }}>版本历史</span>
+                      <span style={{ color: 'var(--jf-text)' }}>{t('common.history')}</span>
                       <Tag>{versions.length}</Tag>
                     </Space>
                   ),
@@ -319,14 +322,14 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
                             disabled={!diffPair[0] || !diffPair[1]}
                             onClick={handleDiffCompare}
                           >
-                            对比选中版本
+                            {t('prompt.diffCompare')}
                           </Button>
                         </div>
                       )}
                       <List
                         dataSource={versions}
                         size="small"
-                        locale={{ emptyText: '暂无版本' }}
+                        locale={{ emptyText: t('profile.emptyHistory') }}
                         renderItem={(v) => (
                           <List.Item
                             style={{
@@ -339,23 +342,23 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
                             <div style={{ width: '100%' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <Text style={{ color: 'var(--jf-text)', fontSize: 12, fontWeight: 500 }} ellipsis>
-                                  {v.label || '未命名'}
+                                  {v.label || t('profile.emptyHistory')}
                                 </Text>
-                                <Tag style={{ fontSize: 10 }}>{v.char_count} 字</Tag>
+                                <Tag style={{ fontSize: 10 }}>{t('profile.charsCount', { count: v.char_count })}</Tag>
                               </div>
                               <Text style={{ color: 'var(--jf-text-muted)', fontSize: 11 }}>
                                 {fmtUserTime(v.timestamp, 'datetime')}
                               </Text>
                               <div style={{ marginTop: 6, display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                                <Tooltip title="预览">
+                                <Tooltip title={t('common.preview')}>
                                   <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => handlePreview(v.id)} />
                                 </Tooltip>
-                                <Tooltip title="回滚到此版本">
-                                  <Popconfirm title="确定回滚？" onConfirm={() => handleRollback(v.id)} okText="确定" cancelText="取消">
+                                <Tooltip title={t('profile.rollbackTip')}>
+                                  <Popconfirm title={t('prompt.rollbackConfirm')} onConfirm={() => handleRollback(v.id)} okText={t('common.confirm')} cancelText={t('common.cancel')}>
                                     <Button size="small" type="text" icon={<RollbackOutlined />} />
                                   </Popconfirm>
                                 </Tooltip>
-                                <Tooltip title="编辑备注">
+                                <Tooltip title={t('common.edit')}>
                                   <Button
                                     size="small"
                                     type="text"
@@ -363,7 +366,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
                                     onClick={() => setEditingMeta({ id: v.id, label: v.label, note: v.note })}
                                   />
                                 </Tooltip>
-                                <Tooltip title="选择对比">
+                                <Tooltip title={t('prompt.selectForCompare')}>
                                   <Button
                                     size="small"
                                     type={diffPair.includes(v.id) ? 'primary' : 'text'}
@@ -371,8 +374,8 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
                                     onClick={() => toggleDiff(v.id)}
                                   />
                                 </Tooltip>
-                                <Tooltip title="删除">
-                                  <Popconfirm title="确定删除此版本？" onConfirm={() => handleDeleteVersion(v.id)} okText="确定" cancelText="取消">
+                                <Tooltip title={t('common.delete')}>
+                                  <Popconfirm title={t('prompt.deleteVersionConfirm')} onConfirm={() => handleDeleteVersion(v.id)} okText={t('common.confirm')} cancelText={t('common.cancel')}>
                                     <Button size="small" type="text" danger icon={<DeleteOutlined />} />
                                   </Popconfirm>
                                 </Tooltip>
@@ -388,7 +391,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
             </div>
           )}
 
-          <Tooltip title={showHistory ? '收起版本' : '展开版本'}>
+          <Tooltip title={showHistory ? t('profile.collapseHistory') : t('profile.expandHistory')}>
             <Button
               type="text"
               size="small"
@@ -409,11 +412,11 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
               label: (
                 <Space>
                   <Lightning size={16} weight="duotone" color="var(--jf-secondary)" />
-                  <span style={{ color: 'var(--jf-text)' }}>能力提示词</span>
+                  <span style={{ color: 'var(--jf-text)' }}>{t('prompt.capPromptsTitle')}</span>
                   <Tag>{capPrompts.length}</Tag>
                   {capPrompts.some(p => p.custom !== null) && (
                     <Tag color="orange" style={{ fontSize: 10 }}>
-                      {capPrompts.filter(p => p.custom !== null).length} 已自定义
+                      {t('prompt.capPromptCustomizedCount', { count: capPrompts.filter(p => p.custom !== null).length })}
                     </Tag>
                   )}
                 </Space>
@@ -424,6 +427,8 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
                     const expanded = capExpanded === item.key;
                     const isCustom = item.custom !== null;
                     const isModified = (capEdits[item.key] ?? '') !== (item.custom ?? item.default);
+                    const labelKey = CAP_LABEL_KEYS[item.key];
+                    const localisedLabel = labelKey ? t(labelKey) : item.key;
                     return (
                       <div
                         key={item.key}
@@ -438,16 +443,16 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
                         >
                           <Space size={6}>
                             <Text style={{ color: 'var(--jf-text)', fontSize: 13 }}>
-                              {CAP_LABELS[item.key] || item.key}
+                              {localisedLabel}
                             </Text>
                             {isCustom && (
                               <Tag color="orange" style={{ fontSize: 10, lineHeight: '14px', padding: '0 4px' }}>
-                                已自定义
+                                {t('prompt.capPromptCustomized')}
                               </Tag>
                             )}
                           </Space>
                           <Text style={{ color: 'var(--jf-text-dim)', fontSize: 11 }}>
-                            {expanded ? '收起' : '展开'}
+                            {expanded ? t('prompt.collapse') : t('prompt.expand')}
                           </Text>
                         </div>
                         {expanded && (
@@ -463,14 +468,14 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
                             />
                             <div style={{ marginTop: 6, display: 'flex', justifyContent: 'flex-end', gap: 4 }}>
                               {isCustom && (
-                                <Popconfirm title="恢复默认？" onConfirm={() => resetCapPrompt(item.key)} okText="确定" cancelText="取消">
+                                <Popconfirm title={t('prompt.capPromptResetConfirm')} onConfirm={() => resetCapPrompt(item.key)} okText={t('common.confirm')} cancelText={t('common.cancel')}>
                                   <Button
                                     size="small" type="text"
                                     icon={<ArrowCounterClockwise size={14} />}
                                     loading={capSaving === item.key}
                                     style={{ color: 'var(--jf-text-muted)' }}
                                   >
-                                    恢复默认
+                                    {t('prompt.resetDefault')}
                                   </Button>
                                 </Popconfirm>
                               )}
@@ -482,7 +487,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
                                 onClick={() => saveCapPrompt(item.key)}
                                 style={{ color: isModified ? 'var(--jf-primary)' : 'var(--jf-text-muted)' }}
                               >
-                                保存
+                                {t('common.save')}
                               </Button>
                             </div>
                           </div>
@@ -499,17 +504,17 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
 
       <Modal
         open={previewContent !== null}
-        title={`预览: ${previewLabel}`}
+        title={t('prompt.previewTitle', { label: previewLabel })}
         onCancel={() => setPreviewContent(null)}
         footer={
           <Button onClick={() => {
             if (previewContent !== null) {
               setPrompt(previewContent);
               setPreviewContent(null);
-              message.info('已加载到编辑器，需手动保存');
+              message.info(t('prompt.loadedToEditor'));
             }
           }}>
-            加载到编辑器
+            {t('prompt.loadIntoEditor')}
           </Button>
         }
         width={600}
@@ -537,11 +542,11 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
 
       <Modal
         open={editingMeta !== null}
-        title="编辑版本备注"
+        title={t('prompt.renameTitle')}
         onCancel={() => setEditingMeta(null)}
         onOk={handleSaveMeta}
-        okText="保存"
-        cancelText="取消"
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
         styles={{
           header: { background: 'var(--jf-bg-panel)', borderBottom: '1px solid var(--jf-border)' },
           content: { background: 'var(--jf-bg-panel)' },
@@ -550,7 +555,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
         {editingMeta && (
           <Space direction="vertical" style={{ width: '100%' }}>
             <div>
-              <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>标签</Text>
+              <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>{t('prompt.renameNameLabel')}</Text>
               <Input
                 value={editingMeta.label}
                 onChange={(e) => setEditingMeta({ ...editingMeta, label: e.target.value })}
@@ -558,7 +563,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
               />
             </div>
             <div>
-              <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>备注</Text>
+              <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>{t('prompt.renameNoteLabel')}</Text>
               <TextArea
                 value={editingMeta.note}
                 onChange={(e) => setEditingMeta({ ...editingMeta, note: e.target.value })}
@@ -572,7 +577,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
 
       <Modal
         open={diffLines !== null}
-        title="版本对比"
+        title={t('prompt.diffTitle')}
         onCancel={() => { setDiffTexts(null); setDiffPair([null, null]); }}
         footer={null}
         width={800}
@@ -630,7 +635,7 @@ export default function SystemPromptEditor({ open, onClose, inline }: Props) {
       title={
         <Space>
           <EditOutlined style={{ color: 'var(--jf-legacy)' }} />
-          <span>System Prompt 编辑器</span>
+          <span>{t('prompt.modalTitle')}</span>
         </Space>
       }
       width={900}

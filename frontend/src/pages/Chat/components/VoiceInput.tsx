@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Button, Tooltip, message } from 'antd';
 import { AudioOutlined, LoadingOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import * as api from '../../../services/api';
 import styles from '../chat.module.css';
 
@@ -13,6 +14,7 @@ interface VoiceInputProps {
 }
 
 export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) {
+  const { t } = useTranslation();
   const [recording, setRecording] = useState(false);
   const [duration, setDuration] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
@@ -63,9 +65,9 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
         setDuration(Math.floor((Date.now() - startTimeRef.current) / 1000));
       }, 200);
     } catch {
-      message.error('无法访问麦克风，请检查权限设置');
+      message.error(t('voice.permissionFail'));
     }
-  }, [recording, disabled, transcribing]);
+  }, [recording, disabled, transcribing, t]);
 
   const stopRecording = useCallback(async () => {
     if (!recording || !mediaRecorderRef.current) return;
@@ -77,7 +79,7 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
 
     if (elapsed < MIN_DURATION_MS) {
       cleanup();
-      if (!cancelled) message.info('录音太短，再说一次吧');
+      if (!cancelled) message.info(t('voice.tooShort'));
       return;
     }
 
@@ -95,7 +97,7 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
 
     if (cancelled) {
       cleanup();
-      message.info('已取消录音');
+      message.info(t('voice.cancelled'));
       return;
     }
 
@@ -105,15 +107,15 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
       if (text.trim()) {
         onTranscript(text.trim());
       } else {
-        message.info('未识别到语音内容');
+        message.info(t('voice.noVoice'));
       }
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : '语音识别失败');
+      message.error(e instanceof Error ? e.message : t('voice.transcribeFail'));
     } finally {
       setTranscribing(false);
       cleanup();
     }
-  }, [recording, cleanup, onTranscript]);
+  }, [recording, cleanup, onTranscript, t]);
 
   const cancelRecording = useCallback(() => {
     if (!recording) return;
@@ -163,8 +165,8 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
   }
 
   const tooltipText = recording
-    ? '点击结束并发送，按 Esc 取消'
-    : '点击开始录音';
+    ? t('voice.tipRecording')
+    : t('voice.tipStart');
 
   return (
     <Tooltip title={tooltipText} mouseEnterDelay={0.4}>
@@ -174,7 +176,7 @@ export default function VoiceInput({ onTranscript, disabled }: VoiceInputProps) 
         className={`${styles.voiceBtn} ${recording ? styles.voiceBtnActive : ''}`}
         onClick={toggleRecording}
         disabled={disabled}
-        aria-label={recording ? '停止录音' : '开始录音'}
+        aria-label={recording ? t('voice.ariaStop') : t('voice.ariaStart')}
         aria-pressed={recording}
         icon={
           recording ? (

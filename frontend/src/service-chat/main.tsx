@@ -11,6 +11,11 @@ import { createRoot } from 'react-dom/client';
 import ServiceChatApp, { type ServiceConfig } from './ServiceChatApp';
 import '../styles/global.css';
 import 'highlight.js/styles/github-dark.css';
+// service-chat shares the i18n bundle with the admin app — both load only zh+en
+// so the additional cost here is the i18next runtime (~15 KB gz). The detector
+// resolves browser language on first visit; consumers usually don't have a
+// preferences API to query, so localStorage-based persistence is sufficient.
+import '../i18n';
 
 declare global {
   interface Window {

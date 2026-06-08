@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   ListChecks, Check, X, CaretDown, MinusCircle, Lightning,
 } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
 import type { PlanStep } from '../../../stores/streamContext';
 import styles from '../chat.module.css';
 
@@ -20,6 +21,7 @@ function StepIcon({ status, index }: { status: string; index: number }) {
 }
 
 export default function PlanTracker({ steps, defaultCollapsed = false }: PlanTrackerProps) {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
 
   if (steps.length === 0) return null;
@@ -37,11 +39,11 @@ export default function PlanTracker({ steps, defaultCollapsed = false }: PlanTra
         </div>
         <div className={styles.planTrackerTitleArea}>
           <div className={styles.planTrackerTitle}>
-            {allDone ? '计划已完成' : '执行计划'}
+            {allDone ? t('plan.completed') : t('plan.running')}
           </div>
           <div className={styles.planTrackerSubtitle}>
             <span className={styles.planTrackerFraction}>{doneCount}/{total}</span>
-            <span>步骤完成</span>
+            <span>{t('plan.stepsDone')}</span>
             <div className={styles.planProgressMini}>
               <div className={styles.planProgressMiniFill} style={{ width: `${pct}%` }} />
             </div>
@@ -83,6 +85,7 @@ export function PlanCompactBar({
   steps: PlanStep[];
   onClick?: () => void;
 }) {
+  const { t } = useTranslation();
   if (steps.length === 0) return null;
 
   const doneCount = steps.filter(s => DONE_STATUSES.has(s.status)).length;
@@ -98,7 +101,7 @@ export function PlanCompactBar({
       </div>
       <div className={styles.planCompactInfo}>
         <span className={styles.planCompactLabel}>
-          {allDone ? '计划已完成' : '执行计划'}
+          {allDone ? t('plan.completed') : t('plan.running')}
         </span>
         {current && (
           <span className={styles.planCompactStep}>{current.content}</span>

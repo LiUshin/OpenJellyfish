@@ -27,6 +27,17 @@ export function setFileRevealEnabled(enabled: boolean): void {
   _fileRevealEnabled = enabled;
 }
 
+// ── 文件「直接下载」模式（consumer / service-chat 专用）────────────────
+// admin 端非媒体 <<FILE:>> 渲染成「在文件浏览器定位」pill（依赖 FilePanel）；
+// consumer 端没有 FilePanel，开启此模式后：
+//   - 非媒体 <<FILE:>> 渲染成 <a href=mediaUrl download> 直接下载链接
+//   - 媒体 caption 的小按钮渲染成「⬇ 下载」而非「📁 定位」
+// mediaUrl builder 已带会话级 token，故下载链接自带鉴权。
+let _fileDownloadMode = false;
+export function setFileDownloadMode(enabled: boolean): void {
+  _fileDownloadMode = enabled;
+}
+
 import javascript from 'highlight.js/lib/languages/javascript';
 import typescript from 'highlight.js/lib/languages/typescript';
 import python from 'highlight.js/lib/languages/python';
@@ -73,9 +84,22 @@ hljs.registerLanguage('dockerfile', dockerfile);
 hljs.registerLanguage('ini', ini);
 hljs.registerLanguage('toml', ini);
 
+// 流式渲染「未完成尾部」时关掉 hljs 高亮（最贵的一环），仅做转义；
+// 块完成进入「稳定前缀」后再由带缓存的 renderMarkdown 跑一次完整高亮。
+let _highlightEnabled = true;
+
+function _escapeForCode(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function highlightCode(this: unknown, { text, lang }: { text: string; lang?: string }): string {
   let out: string;
-  if (lang && hljs.getLanguage(lang)) {
+  if (!_highlightEnabled) {
+    out = _escapeForCode(text);
+  } else if (lang && hljs.getLanguage(lang)) {
     out = hljs.highlight(text, { language: lang }).value;
   } else {
     out = hljs.highlightAuto(text).value;
@@ -164,6 +188,11 @@ function getMediaType(filePath: string): string | null {
  *  anchor: 可选的章节锚点（markdown heading 文本/id 或 PDF 的 page=N），通过
  *  data-jf-anchor 透传给 revealInBrowser 处理深链跳转。 */
 function buildRevealAction(filePath: string, anchor?: string): string {
+  if (_fileDownloadMode) {
+    const url = mediaUrl(filePath);
+    const dlName = escapeHtml(filePath.split('/').pop() || 'download');
+    return ` <a href="${url}" download="${dlName}" class="jf-media-download" title="下载">⬇</a>`;
+  }
   if (!_fileRevealEnabled) return '';
   const safe = escapeHtml(filePath);
   const anchorAttr = anchor ? ` data-jf-anchor="${escapeHtml(anchor)}"` : '';
@@ -234,6 +263,11 @@ function filePathToHtml(filePath: string, anchor?: string): string | null {
 function nonMediaFileToHtml(filePath: string, anchor?: string): string {
   const safePath = escapeHtml(filePath);
   const name = escapeHtml(filePath.split('/').pop() || filePath);
+  if (_fileDownloadMode) {
+    // consumer：渲染成直接下载链接（mediaUrl 已带会话级 token）
+    const url = mediaUrl(filePath);
+    return `<a href="${url}" download="${name}" class="jf-file-link" title="下载 ${safePath}"><span class="jf-file-link-icon">📄</span><span class="jf-file-link-name">${name}</span></a>`;
+  }
   if (!_fileRevealEnabled) {
     return anchor ? `&lt;FILE:${safePath}#${escapeHtml(anchor)}&gt;` : `&lt;FILE:${safePath}&gt;`;
   }
@@ -326,7 +360,7 @@ const SANITIZE_OPTS = {
   ADD_TAGS: ['iframe', 'audio', 'video', 'source'],
   ADD_ATTR: [
     'target', 'sandbox', 'loading', 'frameborder', 'allowfullscreen',
-    'controls', 'preload', 'src', 'autoplay', 'onclick', 'title',
+    'controls', 'preload', 'src', 'autoplay', 'onclick', 'title', 'download',
     // data-* attrs DOMPurify keeps by default; listing here for clarity.
     'data-jf-file', 'data-jf-anchor',
   ],
@@ -358,6 +392,17 @@ function _mdCacheSet(key: string, value: string): void {
   _mdCache.set(key, value);
 }
 
+function _renderCore(text: string): string {
+  // Reset heading-id dedup PER call so dedup is scoped to one document
+  // (otherwise long sessions accumulate "title-2", "title-3" suffixes
+  // across unrelated messages, breaking copyable fragment links).
+  _resetHeadingIds();
+  const preprocessed = preProcessMediaTags(text);
+  const html = String(marked.parse(preprocessed));
+  const postProcessed = postProcessInlinePaths(postProcessMediaSrc(html));
+  return DOMPurify.sanitize(postProcessed, SANITIZE_OPTS) as string;
+}
+
 export function renderMarkdown(text: string): string {
   // 极短或空文本不缓存（避免 cache 噪音 + key 冲突收益小）。
   const cacheable = text.length > 16 && text.length < 200_000;
@@ -368,19 +413,98 @@ export function renderMarkdown(text: string): string {
   }
   let result: string;
   try {
-    // Reset heading-id dedup PER call so dedup is scoped to one document
-    // (otherwise long sessions accumulate "title-2", "title-3" suffixes
-    // across unrelated messages, breaking copyable fragment links).
-    _resetHeadingIds();
-    const preprocessed = preProcessMediaTags(text);
-    const html = String(marked.parse(preprocessed));
-    const postProcessed = postProcessInlinePaths(postProcessMediaSrc(html));
-    result = DOMPurify.sanitize(postProcessed, SANITIZE_OPTS) as string;
+    result = _renderCore(text);
   } catch {
     result = DOMPurify.sanitize(text.replace(/\n/g, '<br>')) as string;
   }
   if (cacheable) _mdCacheSet(key, result);
   return result;
+}
+
+// ── 增量流式渲染（避免超长 response 的 O(n²) 重解析）──────────────────
+//
+// 流式中那个不断增长的文本块若每帧都对累积全文跑 marked+hljs+DOMPurify，
+// 总体是 O(n²)，超长 response 会明显卡顿。这里把文本拆成：
+//   - 「已稳定前缀」：到最后一个顶层段落边界（空行，且不在代码块内）为止的
+//     完整块。它在新段落完成前内容不变 → 走带缓存的 renderMarkdown，命中缓存，
+//     完整高亮只在每个块「完成那一刻」跑一次。
+//   - 「未完成尾部」：当前正在生成的块。体量小，每帧渲染但关掉 hljs 高亮；
+//     若尾部是一个未闭合的代码围栏（```），直接转义输出 <pre><code>，
+//     连 marked/DOMPurify 都跳过，使「超长单代码块」也保持线性成本。
+// 每帧成本因此被限制在「当前未完成块」大小，而非整篇文档。
+
+interface StreamSplit {
+  stable: string;
+  tail: string;
+  openFenceLang: string | null;
+  fenceCode: string;
+}
+
+function _splitStreaming(text: string): StreamSplit {
+  const lines = text.split('\n');
+  let inFence = false;
+  let fenceLang = '';
+  let fenceStartOffset = 0;
+  let lastBoundaryOffset = 0;
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+    const isFence = trimmed.startsWith('```') || trimmed.startsWith('~~~');
+    if (isFence) {
+      if (!inFence) {
+        inFence = true;
+        fenceStartOffset = offset;
+        fenceLang = trimmed.replace(/^[`~]+/, '').trim();
+      } else {
+        inFence = false;
+      }
+    } else if (!inFence && line.trim() === '') {
+      lastBoundaryOffset = offset + line.length + 1;
+    }
+    offset += line.length + 1;
+  }
+  if (inFence) {
+    const stable = text.slice(0, fenceStartOffset);
+    const tail = text.slice(fenceStartOffset);
+    const nl = tail.indexOf('\n');
+    const fenceCode = nl >= 0 ? tail.slice(nl + 1) : '';
+    return { stable, tail, openFenceLang: fenceLang || '', fenceCode };
+  }
+  return {
+    stable: text.slice(0, lastBoundaryOffset),
+    tail: text.slice(lastBoundaryOffset),
+    openFenceLang: null,
+    fenceCode: '',
+  };
+}
+
+function _renderTail(split: StreamSplit): string {
+  if (split.openFenceLang !== null) {
+    // 未闭合代码块：直接转义，跳过 marked/hljs/DOMPurify（内容已转义，安全）。
+    const lang = split.openFenceLang.replace(/[^\w+-]/g, '');
+    const cls = lang ? 'hljs language-' + lang : 'hljs';
+    return '<pre><code class="' + cls + '">' + _escapeForCode(split.fenceCode) + '</code></pre>';
+  }
+  if (!split.tail) return '';
+  // 普通尾部（当前未完成段落）：用 marked 渲染但关高亮，体量小、成本有界。
+  _highlightEnabled = false;
+  try {
+    return _renderCore(split.tail);
+  } catch {
+    return DOMPurify.sanitize(split.tail.replace(/\n/g, '<br>')) as string;
+  } finally {
+    _highlightEnabled = true;
+  }
+}
+
+/** 流式（未完成）文本块的渲染：稳定前缀走缓存（含高亮），未完成尾部轻量渲染。
+ *  流结束后由 StreamingMessage 改调 renderMarkdown 做一次完整高质量渲染。 */
+export function renderStreamingMarkdown(text: string): string {
+  if (!text) return '';
+  const split = _splitStreaming(text);
+  const stableHtml = split.stable ? renderMarkdown(split.stable) : '';
+  return stableHtml + _renderTail(split);
 }
 
 export function escapeHtml(str: string): string {
