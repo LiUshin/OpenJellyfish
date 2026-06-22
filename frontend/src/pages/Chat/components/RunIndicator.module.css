@@ -1,0 +1,80 @@
+/* ===== 会话运行状态指示器 ===== */
+
+/* 进行中:3×3 点阵涟漪(bloom ripple) */
+.running {
+  display: inline-grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 2px;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.running i {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--jf-accent);
+  transform: scale(0.5);
+  opacity: 0.28;
+  animation: dmxRipple 1.5s ease-in-out infinite;
+  /* 按距中心的环序错开,形成由内向外的涟漪 */
+  animation-delay: calc(var(--dmx-ring, 0) * 0.16s);
+}
+
+@keyframes dmxRipple {
+  0%,
+  70%,
+  100% {
+    transform: scale(0.5);
+    opacity: 0.28;
+  }
+  30% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* 等待审批:竖排 3 点,琥珀黄,中间深、两头浅,静止 */
+.approval {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.approval i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--jf-warning, #faad14);
+}
+
+/* 中间点深(强) */
+.approval i:nth-child(2) {
+  opacity: 1;
+}
+
+/* 上下两头浅(弱) */
+.approval i:nth-child(1),
+.approval i:nth-child(3) {
+  opacity: 0.4;
+}
+
+/* 减动偏好:涟漪停成静态淡显,避免眩晕 */
+@media (prefers-reduced-motion: reduce) {
+  .running i {
+    animation: none;
+    transform: scale(0.72);
+    opacity: 0.6;
+  }
+}

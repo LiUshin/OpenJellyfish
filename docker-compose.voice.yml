@@ -1,0 +1,67 @@
+# ============================================================
+# JellyfishBot 语音插件 —— Docker Compose 叠加层(可选)
+#
+# 作为「额外插件」单独成文件,与主 compose 解耦。启用方式:
+#   docker compose -f docker-compose.yml -f docker-compose.voice.yml up -d --build
+#
+# 组件:
+#   livekit-server  自托管 SFU(媒体中转)
+#   voice-worker    语音前台 Worker(本仓库 plugins/voice)
+#   redis           仅在需要横向扩多 worker / 多区域时启用(profile: scale)
+#
+# 需要在 .env 配置(与主 Core 共享):
+#   VOICE_BRIDGE_SECRET   Core 与 Worker 共享的桥接令牌密钥(务必改掉默认值)
+#   LIVEKIT_URL           浏览器连接 SFU 的公网 wss 地址(经反代);Core 据此签发令牌
+#   LIVEKIT_API_KEY/SECRET  与 livekit-server 的 keys 一致
+# ============================================================
+
+services:
+
+  # ==================== LiveKit Server (SFU) ====================
+  livekit-server:
+    image: livekit/livekit-server:latest
+    container_name: jellyfishbot-livekit
+    restart: unless-stopped
+    # 用配置文件而非 --dev:EC2/NAT 后面需要 use_external_ip 才能让媒体连通。
+    # 见 ./livekit/livekit.yaml(含安全组放行说明)。
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"            # 信令(ws/http)
+      - "7881:7881"            # RTC over TCP(回退)
+      - "50000-50100:50000-50100/udp"   # RTC 媒体(UDP)
+
+  # ==================== 语音前台 Worker ====================
+  voice-worker:
+    build:
+      context: ./plugins/voice
+      dockerfile: Dockerfile
+    container_name: jellyfishbot-voice-worker
+    restart: unless-stopped
+    environment:
+      # 连 SFU(容器内网名)+ 注册 worker。这对 key/secret 必须与 livekit-server
+      # 及 Core 三方一致(dev 模式 SFU 内置 devkey/secret)。
+      - LIVEKIT_URL=ws://livekit-server:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+      # Core 内网基址(主 compose 的服务名)
+      - JELLYFISH_API_BASE=http://jellyfishbot:8000
+      # Fish Audio TTS 兜底(凭据正常由 Core 经 /session 下发;此处作为 env 回退)
+      - FISH_API_KEY=${FISH_API_KEY:-}
+      - FISH_REFERENCE_ID=${FISH_REFERENCE_ID:-}
+      - FISH_MODEL=${FISH_MODEL:-s1}
+      # 注:VOICE_BRIDGE_SECRET 仅 Core 需要(Core 签发+校验桥接令牌)。
+      # Worker 只从参与者 metadata 透传该令牌,自己不签不验,故此处无需配置。
+    depends_on:
+      - livekit-server
+
+  # ==================== Redis(横向扩展时启用)====================
+  # 单机够用时无需 Redis;多 worker / 多区域时 LiveKit 用它做共享总线。
+  # 启用:docker compose --profile scale -f ... up -d
+  redis:
+    image: redis:7-alpine
+    container_name: jellyfishbot-redis
+    restart: unless-stopped
+    profiles: ["scale"]
+    command: redis-server --save "" --appendonly no

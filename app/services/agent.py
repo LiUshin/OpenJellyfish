@@ -128,6 +128,83 @@ def _get_llm_config(model_id: str, user_id: Optional[str] = None):
     return "", None
 
 
+# ── 空流兜底 ──────────────────────────────────────────────────────────────
+# Anthropic(及 Anthropic-compat，如 MiniMax)偶发返回「零 chunk 空补全」(只有
+# message_start/stop、无 content block)，会让 LangChain generate_from_stream 抛
+# "No generations found in stream" 把整轮 abort。给 ChatAnthropic 实例热替换为带
+# 「空流重试 1 次 + 仍空产出空 AIMessage 优雅收尾」的子类。
+# (Bedrock 走自有 ChatBedrockInvoke，已在该类内置同样兜底，无需此处理。)
+_GUARDED_ANTHROPIC_CLS = None
+
+
+def _get_guarded_anthropic_cls():
+    """惰性构建并缓存 ChatAnthropic 的空流兜底子类。"""
+    global _GUARDED_ANTHROPIC_CLS
+    if _GUARDED_ANTHROPIC_CLS is not None:
+        return _GUARDED_ANTHROPIC_CLS
+
+    from langchain_anthropic import ChatAnthropic
+    from langchain_core.outputs import ChatGenerationChunk
+    from langchain_core.messages import AIMessageChunk
+
+    class _GuardedChatAnthropic(ChatAnthropic):
+        """ChatAnthropic 子类：空流(零 chunk)重试 1 次，仍空则产出空 AIMessage 优雅收尾。
+
+        仅覆写 _astream/_stream，不新增字段——故 __class__ 热替换对 pydantic 安全，
+        且 isinstance(model, ChatAnthropic) 仍为真，不影响 deepagents 的
+        AnthropicPromptCachingMiddleware 识别。
+        """
+
+        async def _astream(self, *args, **kwargs):
+            yielded = 0
+            async for c in super()._astream(*args, **kwargs):
+                yielded += 1
+                yield c
+            if yielded == 0:
+                log.warning(
+                    "Anthropic 空流(async, model=%s)，重试 1 次",
+                    getattr(self, "model", "?"),
+                )
+                async for c in super()._astream(*args, **kwargs):
+                    yielded += 1
+                    yield c
+            if yielded == 0:
+                log.warning("Anthropic 重试后仍空流(async)，产出空 turn 优雅收尾")
+                yield ChatGenerationChunk(message=AIMessageChunk(content=""))
+
+        def _stream(self, *args, **kwargs):
+            yielded = 0
+            for c in super()._stream(*args, **kwargs):
+                yielded += 1
+                yield c
+            if yielded == 0:
+                log.warning(
+                    "Anthropic 空流(sync, model=%s)，重试 1 次",
+                    getattr(self, "model", "?"),
+                )
+                for c in super()._stream(*args, **kwargs):
+                    yielded += 1
+                    yield c
+            if yielded == 0:
+                log.warning("Anthropic 重试后仍空流(sync)，产出空 turn 优雅收尾")
+                yield ChatGenerationChunk(message=AIMessageChunk(content=""))
+
+    _GUARDED_ANTHROPIC_CLS = _GuardedChatAnthropic
+    return _GUARDED_ANTHROPIC_CLS
+
+
+def _apply_empty_stream_guard(model):
+    """若 model 是原生 ChatAnthropic 实例，热替换 __class__ 加空流兜底；其余原样返回。"""
+    try:
+        from langchain_anthropic import ChatAnthropic
+
+        if isinstance(model, ChatAnthropic) and model.__class__ is ChatAnthropic:
+            model.__class__ = _get_guarded_anthropic_cls()
+    except Exception as e:  # noqa: BLE001
+        log.debug("空流兜底未应用(非致命): %s", e)
+    return model
+
+
 def _resolve_model(model_id: str, user_id: Optional[str] = None):
     # Kimi（Moonshot）走 OpenAI-compat：去掉 kimi: 前缀，强制 model_provider=openai，
     # api_key/base_url 来自 get_provider_credentials("kimi")。
@@ -152,12 +229,12 @@ def _resolve_model(model_id: str, user_id: Optional[str] = None):
         if not creds.get("api_key"):
             raise RuntimeError("未配置 MiniMax API Key（设置页 → MiniMax）")
         bare_model = model_id.split(":", 1)[1]
-        return init_chat_model(
+        return _apply_empty_stream_guard(init_chat_model(
             model=bare_model,
             model_provider="anthropic",
             api_key=creds["api_key"],
             base_url="https://api.minimax.io/anthropic",
-        )
+        ))
 
     # AWS Bedrock（Bearer Token + InvokeModel REST）。
     # 支持 Anthropic Claude 4.5+ 系列模型，使用 bedrock-runtime 端点。
@@ -206,11 +283,13 @@ def _resolve_model(model_id: str, user_id: Optional[str] = None):
         cfg = THINKING_MODEL_CONFIG[model_id]
         base_model = cfg["base_model"]
         params = cfg["params"]
-        return init_chat_model(model=base_model, **params, **extra_kwargs)
+        return _apply_empty_stream_guard(init_chat_model(model=base_model, **params, **extra_kwargs))
 
     if extra_kwargs:
-        return init_chat_model(model=model_id, **extra_kwargs)
-    return model_id
+        return _apply_empty_stream_guard(init_chat_model(model=model_id, **extra_kwargs))
+    # 之前直接返回 model_id 字符串(由 deepagents 内部 init_chat_model 构建)；
+    # 改为在此构建并套空流兜底，覆盖「api_key 走环境变量」的 anthropic 路径。
+    return _apply_empty_stream_guard(init_chat_model(model=model_id))
 
 
 # ==================== Agent cache (LRU, bounded) ====================

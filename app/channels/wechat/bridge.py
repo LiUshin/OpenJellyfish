@@ -445,6 +445,7 @@ async def _run_agent_and_reply(
     sent_via_tool = False
     tool_records = []
     cur_tool_name = None
+    delivered_texts: list = []  # send_message 投递的文案，用于持久化助手回复
 
     stamped_content = stamp_message(user_content, session.admin_id)
     input_payload = {"messages": [{"role": "user", "content": stamped_content}]}
@@ -452,96 +453,115 @@ async def _run_agent_and_reply(
     _MAX_HITL_LOOPS = 10
 
     async with scheduled_inject.thread_active(thread_id, agent=agent):
-        for _loop_i in range(_MAX_HITL_LOOPS):
-            async for event in agent.astream(
-                input_payload,
-                config=config,
-                stream_mode="messages",
-                subgraphs=True,
-            ):
-                if not isinstance(event, tuple) or len(event) != 2:
-                    continue
-                ns, chunk = event
-                if isinstance(chunk, tuple) and len(chunk) == 2:
-                    msg, metadata = chunk
-                elif hasattr(ns, '__class__') and 'Message' in ns.__class__.__name__:
-                    msg, metadata = ns, chunk
-                    ns = ()
-                else:
-                    continue
+        try:
+            for _loop_i in range(_MAX_HITL_LOOPS):
+                async for event in agent.astream(
+                    input_payload,
+                    config=config,
+                    stream_mode="messages",
+                    subgraphs=True,
+                ):
+                    if not isinstance(event, tuple) or len(event) != 2:
+                        continue
+                    ns, chunk = event
+                    if isinstance(chunk, tuple) and len(chunk) == 2:
+                        msg, metadata = chunk
+                    elif hasattr(ns, '__class__') and 'Message' in ns.__class__.__name__:
+                        msg, metadata = ns, chunk
+                        ns = ()
+                    else:
+                        continue
 
-                msg_type = msg.__class__.__name__
+                    msg_type = msg.__class__.__name__
 
-                if msg_type == "AIMessageChunk":
-                    tool_call_chunks = getattr(msg, "tool_call_chunks", None) or []
-                    tool_calls = getattr(msg, "tool_calls", None) or []
-                    for tc in (tool_call_chunks or tool_calls):
-                        name = tc.get("name", "")
-                        if name:
-                            cur_tool_name = name
+                    if msg_type == "AIMessageChunk":
+                        tool_call_chunks = getattr(msg, "tool_call_chunks", None) or []
+                        tool_calls = getattr(msg, "tool_calls", None) or []
+                        for tc in (tool_call_chunks or tool_calls):
+                            name = tc.get("name", "")
+                            if name:
+                                cur_tool_name = name
 
-                    content = msg.content
-                    if isinstance(content, str) and content:
-                        full_response += content
-                    elif isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text = block.get("text", "")
-                                if text:
-                                    full_response += text
+                        content = msg.content
+                        if isinstance(content, str) and content:
+                            full_response += content
+                        elif isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text = block.get("text", "")
+                                    if text:
+                                        full_response += text
 
-                elif msg_type == "ToolMessage":
-                    tool_name = getattr(msg, "name", "tool")
-                    content = msg.content if isinstance(msg.content, str) else str(msg.content)
-                    tool_records.append({"name": tool_name, "result": content[:500]})
+                    elif msg_type == "ToolMessage":
+                        tool_name = getattr(msg, "name", "tool")
+                        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                        tool_records.append({"name": tool_name, "result": content[:500]})
 
-                    if tool_name == "send_message":
-                        from app.channels.wechat.delivery import deliver_tool_message
-                        try:
-                            if await deliver_tool_message(content, session, client):
-                                sent_via_tool = True
-                        except Exception:
-                            log.exception("Failed to send tool message via iLink")
+                        if tool_name == "send_message":
+                            from app.channels.wechat.delivery import (
+                                deliver_tool_message, extract_media_tags,
+                            )
+                            try:
+                                if await deliver_tool_message(content, session, client):
+                                    sent_via_tool = True
+                            except Exception:
+                                log.exception("Failed to send tool message via iLink")
+                            # 把投递文案累积进助手消息内容——微信走 send_message 工具投递时
+                            # full_response 往往为空，不存这个 admin 端就看不到回复(只剩用户消息)。
+                            try:
+                                _payload = json.loads(content)
+                                _txt, _ = extract_media_tags(_payload.get("text", "") or "")
+                                if _txt.strip():
+                                    delivered_texts.append(_txt.strip())
+                            except Exception:
+                                pass
 
-                    cur_tool_name = None
+                        cur_tool_name = None
 
-            # Check for HITL interrupts and auto-approve
-            state = await agent.aget_state(config)
-            has_interrupt = False
-            if state and hasattr(state, "tasks") and state.tasks:
+                # Check for HITL interrupts and auto-approve
+                state = await agent.aget_state(config)
+                has_interrupt = False
+                if state and hasattr(state, "tasks") and state.tasks:
+                    for task in state.tasks:
+                        if hasattr(task, "interrupts") and task.interrupts:
+                            has_interrupt = True
+                            break
+
+                if not has_interrupt:
+                    break
+
+                decisions = []
                 for task in state.tasks:
                     if hasattr(task, "interrupts") and task.interrupts:
-                        has_interrupt = True
-                        break
+                        for intr in task.interrupts:
+                            val = intr.value if hasattr(intr, "value") else {}
+                            if isinstance(val, dict) and "action_requests" in val:
+                                for ar in val["action_requests"]:
+                                    # langchain HITL middleware expects {"type": "approve"} after upgrade
+                                    decisions.append({"type": "approve"})
 
-            if not has_interrupt:
-                break
+                if not decisions:
+                    break
 
-            decisions = []
-            for task in state.tasks:
-                if hasattr(task, "interrupts") and task.interrupts:
-                    for intr in task.interrupts:
-                        val = intr.value if hasattr(intr, "value") else {}
-                        if isinstance(val, dict) and "action_requests" in val:
-                            for ar in val["action_requests"]:
-                                # langchain HITL middleware expects {"type": "approve"} after upgrade
-                                decisions.append({"type": "approve"})
+                log.info("WeChat consumer bridge: auto-approving %d HITL actions (loop %d)",
+                         len(decisions), _loop_i + 1)
+                input_payload = Command(resume={"decisions": decisions})
 
-            if not decisions:
-                break
-
-            log.info("WeChat consumer bridge: auto-approving %d HITL actions (loop %d)",
-                     len(decisions), _loop_i + 1)
-            input_payload = Command(resume={"decisions": decisions})
-
-        if not sent_via_tool and full_response.strip():
-            await client.send_text(to_user, full_response.strip(), ctx_token)
-            log.info("Sent direct response: %s", full_response[:50])
-
-        save_consumer_message(
-            session.admin_id, session.service_id,
-            session.conversation_id, "assistant", full_response,
-            tool_calls=tool_records if tool_records else None,
-        )
+            if not sent_via_tool and full_response.strip():
+                await client.send_text(to_user, full_response.strip(), ctx_token)
+                log.info("Sent direct response: %s", full_response[:50])
+        finally:
+            # 助手消息持久化放进 finally：即使流式中途异常(如空流报错)也把已产出内容
+            # 存下，否则 admin 端只剩用户消息、看不到回复。优先用直接流式文本，
+            # 其次用 send_message 投递文案(微信渠道主路径，full_response 常为空)。
+            _assistant_content = full_response.strip()
+            if not _assistant_content and delivered_texts:
+                _assistant_content = "\n\n".join(delivered_texts).strip()
+            if _assistant_content or tool_records:
+                save_consumer_message(
+                    session.admin_id, session.service_id,
+                    session.conversation_id, "assistant", _assistant_content,
+                    tool_calls=tool_records if tool_records else None,
+                )
 
 

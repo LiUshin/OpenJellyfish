@@ -140,65 +140,8 @@
   opacity: 1 !important;
 }
 
-/* Streaming indicator — bouncing dots */
-.streamingDots {
-  display: inline-flex;
-  gap: 1px;
-  flex-shrink: 0;
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--jf-accent);
-}
-
-.streamingDots span {
-  display: inline-block;
-  animation: dotBounce 1.4s ease-in-out infinite;
-}
-
-.streamingDots span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.streamingDots span:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-@keyframes dotBounce {
-  0%, 80%, 100% {
-    transform: translateY(0);
-    opacity: 0.4;
-  }
-  40% {
-    transform: translateY(-4px);
-    opacity: 1;
-  }
-}
-
-/* HITL badge — waiting for approval */
-.hitlBadge {
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: rgba(250, 173, 20, 0.15);
-  color: var(--jf-warning);
-  font-size: 12px;
-  font-weight: 700;
-  animation: hitlPulse 2s ease-in-out infinite;
-}
-
-@keyframes hitlPulse {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(var(--jf-warning-rgb), 0.3);
-  }
-  50% {
-    box-shadow: 0 0 0 4px rgba(250, 173, 20, 0);
-  }
-}
+/* 会话运行状态指示器(进行中点阵涟漪 / 待审批竖点)已迁移到独立组件
+   components/RunIndicator.tsx + RunIndicator.module.css。 */
 
 .chatArea {
   flex: 1;

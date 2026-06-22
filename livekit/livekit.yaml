@@ -1,0 +1,34 @@
+# ============================================================
+# LiveKit Server 配置 —— 自托管 SFU(适配 EC2 / NAT 环境)
+#
+# 为什么需要它(而不是 --dev):
+#   EC2 实例只看到私网 IP(172.31.x.x),公网 IP 由 IGW 做 1:1 NAT。
+#   --dev 模式会把私网 IP 作为 ICE candidate 广播给浏览器,浏览器无法
+#   直连 → 即使信令(7880)连上,媒体也建不起来、听不到声音。
+#   use_external_ip: true 让 server 通过 STUN 自动发现公网 IP 并广播。
+#
+# 安全组(EC2 Security Group)入站需放行:
+#   TCP  7880            信令(ws/http)
+#   TCP  7881            RTC over TCP(UDP 不通时回退)
+#   UDP  50000-50100     RTC 媒体
+#   (出站需能到公网 UDP 3478 做 STUN 自检,默认允许)
+#
+# keys 必须与 Core / voice-worker 的 LIVEKIT_API_KEY / LIVEKIT_API_SECRET 一致。
+# ============================================================
+
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  # 通过 STUN 自动发现并广播公网 IP(EC2/NAT 必需)。
+  # 若自检失败(出站 UDP 3478 被封),可改为显式 node_ip: <EC2公网IP>。
+  use_external_ip: true
+
+keys:
+  # devkey: secret —— 起步默认值,生产务必改为强随机串并同步到 .env
+  devkey: secret
+
+logging:
+  level: info

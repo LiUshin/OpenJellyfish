@@ -26,6 +26,7 @@ import VoiceInput from './components/VoiceInput';
 import MessageList from './components/MessageList';
 import type { MessageListHandle } from './components/MessageList';
 import MentionPicker, { MAX_CANDIDATES as MENTION_MAX } from './components/MentionPicker';
+import RunIndicator from './components/RunIndicator';
 import FileTokenInput from './components/FileTokenInput';
 import type { FileTokenInputHandle } from './components/FileTokenInput';
 import { useStream } from '../../stores/streamContext';
@@ -615,15 +616,17 @@ export default function ChatPage() {
               className={`${styles.convItem} ${conv.id === currentConvId ? styles.active : ''}`}
               onClick={() => loadMessages(conv.id)}
             >
-              <span className={styles.convTitle}>{conv.title}</span>
               {isConvStreaming && (
-                <span className={styles.streamingDots} title={t('chat.streamingTitle')}>
-                  <span>.</span><span>.</span><span>.</span>
+                <span title={t('chat.streamingTitle')} style={{ display: 'inline-flex' }}>
+                  <RunIndicator state="running" label={t('chat.streamingTitle')} />
                 </span>
               )}
               {isConvHitl && (
-                <span className={styles.hitlBadge} title={t('chat.hitlBadge')}>?</span>
+                <span title={t('chat.hitlBadge')} style={{ display: 'inline-flex' }}>
+                  <RunIndicator state="approval" label={t('chat.hitlBadge')} />
+                </span>
               )}
+              <span className={styles.convTitle}>{conv.title}</span>
               <Button
                 type="text"
                 size="small"
@@ -747,7 +750,10 @@ export default function ChatPage() {
         {(isStreaming || interruptData) && !isViewingStream && (
           <div className={styles.streamElsewhereBanner}>
             <span className={styles.streamElsewhereText}>
-              {interruptData ? '⏸' : '⏳'}{' '}
+              <RunIndicator
+                state={interruptData ? 'approval' : 'running'}
+                label={interruptData ? t('chat.runStateAwaiting') : t('chat.runStateRunning')}
+              />
               「{conversations.find((c) => c.id === streamingConvId)?.title || t('chat.conversationFallback')}」
               {interruptData ? t('chat.runStateAwaiting') : t('chat.runStateRunning')}
             </span>

@@ -12,6 +12,7 @@ import {
   Package,
   GearSix,
   Archive,
+  Microphone,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import * as api from '../../services/api';
@@ -39,6 +40,7 @@ export default function SettingsLayout() {
     { key: '/settings/services', icon: <Stack size={18} />, label: t('settings.services') },
     { key: '/settings/scheduler', icon: <Timer size={18} />, label: t('settings.scheduler') },
     { key: '/settings/wechat', icon: <ChatTeardropDots size={18} />, label: t('settings.wechat') },
+    { key: '/settings/voice', icon: <Microphone size={18} />, label: t('settings.voice') },
     {
       key: '/settings/inbox',
       icon: <Tray size={18} />,
