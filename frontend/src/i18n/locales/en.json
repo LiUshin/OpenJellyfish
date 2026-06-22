@@ -99,7 +99,8 @@
     "inbox": "Inbox",
     "services": "Services",
     "scheduler": "Scheduler",
-    "wechat": "WeChat"
+    "wechat": "WeChat",
+    "voice": "Voice"
   },
   "general": {
     "pageTitle": "General Settings",

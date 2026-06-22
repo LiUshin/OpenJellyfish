@@ -99,7 +99,8 @@
     "inbox": "收件箱",
     "services": "Service 管理",
     "scheduler": "定时任务",
-    "wechat": "微信接入"
+    "wechat": "微信接入",
+    "voice": "语音前台"
   },
   "general": {
     "pageTitle": "通用设置",

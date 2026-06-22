@@ -467,10 +467,11 @@ def _convert_messages(messages: List[BaseMessage]) -> tuple[Optional[str], List[
                     "input": tc.get("args") or {},
                 })
 
-            # Anthropic 要求 assistant content 非空。即使 blocks 空也要给一个占位 text，
-            # 否则 400。但实际场景里既无文字又无工具调用的 AIMessage 极少。
+            # Anthropic 要求 assistant content 非空且 text block 不可为空字符串。
+            # 既无文字又无工具调用的空 assistant turn(如模型返回空补全时我们兜底产出的
+            # 空 turn)直接跳过——若塞 {"type":"text","text":""} 反而会让下一轮 400。
             if not blocks:
-                blocks = [{"type": "text", "text": ""}]
+                continue
             api_messages.append({"role": "assistant", "content": blocks})
             continue
 
@@ -780,24 +781,15 @@ class ChatBedrockInvoke(BaseChatModel):
 
         return None
 
-    def _stream(
-        self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
-        **kwargs: Any,
+    def _stream_once(
+        self, body: Dict[str, Any], state: Dict[str, Any]
     ) -> Iterator[ChatGenerationChunk]:
-        """同步真流式：调 invoke-with-response-stream，逐帧解码 Anthropic 事件。"""
-        system, api_messages = _convert_messages(messages)
-        body = self._build_body(system, api_messages, **kwargs)
-        if stop:
-            body["stop_sequences"] = stop
+        """单次同步流式调用：调 invoke-with-response-stream，逐帧解码 Anthropic 事件。
 
+        把每次 HTTP 调用抽成独立生成器，便于上层在「零 chunk 空流」时安全重试。
+        """
         url = self._build_url(stream=True)
         headers = self._build_headers(stream=True)
-
-        log.debug("Bedrock stream (sync): %s model=%s", url, self.model_name)
-
         client = httpx.Client(timeout=self.timeout)
         try:
             with client.stream("POST", url, headers=headers, json=body) as resp:
@@ -806,7 +798,6 @@ class ChatBedrockInvoke(BaseChatModel):
                     raise RuntimeError(
                         f"Bedrock InvokeModelWithResponseStream failed ({resp.status_code}): {err_body}"
                     )
-                state: Dict[str, Any] = {}
                 buf = bytearray()
                 for chunk in resp.iter_bytes():
                     if not chunk:
@@ -849,24 +840,56 @@ class ChatBedrockInvoke(BaseChatModel):
         finally:
             client.close()
 
-    async def _astream(
+    def _stream(
         self,
         messages: List[BaseMessage],
         stop: Optional[List[str]] = None,
-        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
-    ) -> AsyncIterator[ChatGenerationChunk]:
-        """异步真流式：调 invoke-with-response-stream，逐帧解码 Anthropic 事件。"""
+    ) -> Iterator[ChatGenerationChunk]:
+        """同步真流式 + 空流兜底。
+
+        Bedrock(尤其 thinking 模型 + 长上下文截断)偶发返回「只有 message_start/stop、
+        无任何 content block」的空补全 → 0 chunk → LangChain ``generate_from_stream`` 抛
+        ``No generations found in stream`` 把整轮 abort。这里：零 chunk 自动重试 1 次，
+        仍空则产出一个空 AIMessage 让 agent 优雅收尾(不崩、不抛 traceback)。
+        """
         system, api_messages = _convert_messages(messages)
         body = self._build_body(system, api_messages, **kwargs)
         if stop:
             body["stop_sequences"] = stop
 
+        log.debug("Bedrock stream (sync): model=%s", self.model_name)
+
+        yielded = 0
+        state: Dict[str, Any] = {}
+        for out in self._stream_once(body, state):
+            yielded += 1
+            yield out
+
+        if yielded == 0:
+            log.warning(
+                "Bedrock 空流(sync, model=%s, stop_reason=%s)，重试 1 次",
+                self.model_name, state.get("stop_reason"),
+            )
+            state = {}
+            for out in self._stream_once(body, state):
+                yielded += 1
+                yield out
+
+        if yielded == 0:
+            log.warning(
+                "Bedrock 重试后仍空流(sync, model=%s)，产出空 turn 优雅收尾",
+                self.model_name,
+            )
+            yield ChatGenerationChunk(message=AIMessageChunk(content=""))
+
+    async def _astream_once(
+        self, body: Dict[str, Any], state: Dict[str, Any]
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """单次异步流式调用(抽出便于零 chunk 时安全重试)。"""
         url = self._build_url(stream=True)
         headers = self._build_headers(stream=True)
-
-        log.debug("Bedrock stream (async): %s model=%s", url, self.model_name)
-
         client = self._get_aclient()
         async with client.stream("POST", url, headers=headers, json=body) as resp:
             if resp.status_code != 200:
@@ -874,11 +897,48 @@ class ChatBedrockInvoke(BaseChatModel):
                 raise RuntimeError(
                     f"Bedrock InvokeModelWithResponseStream failed ({resp.status_code}): {err_body}"
                 )
-            state: Dict[str, Any] = {}
             async for event in _iter_bedrock_stream_events(resp):
                 out = self._anthropic_event_to_chunk(event, state)
                 if out is not None:
                     yield out
+
+    async def _astream(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """异步真流式 + 空流兜底(语义同 ``_stream``：空流重试 1 次→仍空产出空 turn)。"""
+        system, api_messages = _convert_messages(messages)
+        body = self._build_body(system, api_messages, **kwargs)
+        if stop:
+            body["stop_sequences"] = stop
+
+        log.debug("Bedrock stream (async): model=%s", self.model_name)
+
+        yielded = 0
+        state: Dict[str, Any] = {}
+        async for out in self._astream_once(body, state):
+            yielded += 1
+            yield out
+
+        if yielded == 0:
+            log.warning(
+                "Bedrock 空流(async, model=%s, stop_reason=%s)，重试 1 次",
+                self.model_name, state.get("stop_reason"),
+            )
+            state = {}
+            async for out in self._astream_once(body, state):
+                yielded += 1
+                yield out
+
+        if yielded == 0:
+            log.warning(
+                "Bedrock 重试后仍空流(async, model=%s)，产出空 turn 优雅收尾",
+                self.model_name,
+            )
+            yield ChatGenerationChunk(message=AIMessageChunk(content=""))
 
     def _parse_response(self, data: Dict[str, Any]) -> ChatResult:
         """Parse Anthropic Messages API response into ChatResult.

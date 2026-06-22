@@ -1166,3 +1166,69 @@ export async function importBackup(opts: {
   if (opts.modules && opts.modules.length) fd.append('modules', opts.modules.join(','));
   return request('POST', '/backup/import', fd);
 }
+
+// ── LiveKit 实时语音前台 ────────────────────────────────────────────
+
+export interface VoiceLiveStatus {
+  configured: boolean;
+  url: string;
+}
+
+export interface VoiceLiveToken {
+  url: string;
+  token: string;
+  room: string;
+  identity: string;
+}
+
+export interface VoiceAgentConfig {
+  enabled: boolean;
+  greeting: string;
+  system_prompt: string;
+  routing_policy: string;
+  fillers: Record<string, string[]>;
+  interruption: { allow_interruptions: boolean; min_interruption_words: number };
+  providers: {
+    stt: string;
+    stt_model: string;
+    aliyun_vocabulary_id?: string;
+    llm?: string;
+    llm_model: string;
+    tts: string;
+    tts_model?: string;
+    tts_voice: string;
+    fish_reference_id?: string;
+    fish_voices?: Array<{ id: string; label: string }>;
+    aliyun_tts_voice?: string;
+  };
+}
+
+export async function getVoiceLiveStatus(): Promise<VoiceLiveStatus> {
+  return request('GET', '/voice/live/status');
+}
+
+export async function getVoiceLiveToken(
+  conversationId: string,
+  model?: string,
+  capabilities?: string[],
+): Promise<VoiceLiveToken> {
+  return request('POST', '/voice/live/token', {
+    conversation_id: conversationId,
+    model,
+    capabilities: capabilities || [],
+  });
+}
+
+export async function getVoiceAgentConfig(): Promise<VoiceAgentConfig> {
+  return request('GET', '/voice/live/config');
+}
+
+export async function updateVoiceAgentConfig(
+  updates: Partial<VoiceAgentConfig>,
+): Promise<VoiceAgentConfig> {
+  return request('PUT', '/voice/live/config', updates);
+}
+
+export async function resetVoiceAgentConfig(): Promise<VoiceAgentConfig> {
+  return request('DELETE', '/voice/live/config');
+}
