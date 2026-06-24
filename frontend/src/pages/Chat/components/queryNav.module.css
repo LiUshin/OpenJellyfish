@@ -1,0 +1,110 @@
+/* 用户 query 左侧快速导航标记 */
+
+.marker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-height: 28px;
+  padding: 4px 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: var(--jf-radius-sm, 4px);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.marker:hover,
+.marker:focus-visible {
+  transform: scale(1.18);
+  outline: none;
+}
+
+.marker:focus-visible {
+  box-shadow: 0 0 0 2px rgba(var(--jf-primary-rgb, 232, 159, 217), 0.45);
+}
+
+.dash {
+  display: block;
+  width: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--jf-text-dim, rgba(255, 255, 255, 0.35));
+  transition:
+    width 0.15s ease,
+    height 0.15s ease,
+    background 0.15s ease;
+}
+
+.marker:hover .dash,
+.marker:focus-visible .dash {
+  width: 18px;
+  height: 3px;
+  background: var(--jf-primary, #e89fd9);
+}
+
+/* active：滚动到对应 query 时常驻高亮（比 hover 更醒目，带发光）。 */
+.markerActive .dash {
+  width: 20px;
+  height: 3px;
+  background: var(--jf-primary, #e89fd9);
+  box-shadow: 0 0 6px rgba(var(--jf-primary-rgb, 232, 159, 217), 0.6);
+}
+
+.preview {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  z-index: 20;
+  transform: translateY(-50%);
+  max-width: min(320px, 42vw);
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--jf-text, #e8e8ef);
+  background: var(--jf-bg-raised, #252532);
+  border: 1px solid var(--jf-border, rgba(255, 255, 255, 0.08));
+  border-radius: var(--jf-radius-md, 8px);
+  box-shadow: var(--jf-shadow-float, 0 4px 16px rgba(0, 0, 0, 0.35));
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.12s ease,
+    visibility 0.12s ease;
+}
+
+.marker:hover .preview,
+.marker:focus-visible .preview {
+  opacity: 1;
+  visibility: visible;
+}
+
+@media (max-width: 767px) {
+  .marker {
+    width: 22px;
+  }
+
+  .preview {
+    max-width: min(240px, 55vw);
+    font-size: 11px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marker,
+  .dash,
+  .preview {
+    transition: none;
+  }
+
+  .marker:hover,
+  .marker:focus-visible {
+    transform: none;
+  }
+}

@@ -17,6 +17,7 @@ export interface TaskConfig {
   doc_path?: string | string[];
   capabilities?: string[];
   permissions?: TaskPermissions;
+  model?: string;
 }
 
 export interface ReplyTo {

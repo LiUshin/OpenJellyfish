@@ -712,6 +712,7 @@ def create_consumer_agent(
     wechat_session_id: Optional[str] = None,
     extra_capabilities: Optional[List[str]] = None,
     channel: str = "web",
+    model_override: Optional[str] = None,
 ) -> Any:
     """Create (or return cached) agent for a consumer conversation.
 
@@ -733,10 +734,15 @@ def create_consumer_agent(
     if not svc_config:
         raise ValueError(f"Service {service_id} not found")
 
+    # 当前 service agent 使用的模型：优先 model_override（定时任务可指定），
+    # 否则服务配置里的 model（默认 sonnet 4.5）。
+    model_id = model_override or svc_config.get("model", "anthropic:claude-sonnet-4-5-20250929")
+
     extra_suffix = f"::+{','.join(sorted(extra_capabilities))}" if extra_capabilities else ""
     ws_suffix = f"::{wechat_session_id}" if wechat_session_id else ""
     ch_suffix = f"::ch={channel}" if channel and channel != "web" else ""
-    cache_key = f"consumer::{admin_id}::{service_id}::{conv_id}{ws_suffix}{extra_suffix}{ch_suffix}"
+    mdl_suffix = f"::m={model_override}" if model_override else ""
+    cache_key = f"consumer::{admin_id}::{service_id}::{conv_id}{ws_suffix}{extra_suffix}{ch_suffix}{mdl_suffix}"
     if cache_key in _consumer_agent_cache:
         _touch_consumer_agent_cache(cache_key)
         return _consumer_agent_cache[cache_key]
@@ -782,6 +788,7 @@ def create_consumer_agent(
         tools.append(create_service_schedule_tool(
             admin_id, service_id, conv_id,
             wechat_session_id=wechat_session_id,
+            default_model=model_id,
         ))
         tools.append(create_service_manage_tasks_tool(
             admin_id, service_id, conv_id,
@@ -832,7 +839,6 @@ def create_consumer_agent(
         },
     ]
 
-    model_id = svc_config.get("model", "anthropic:claude-sonnet-4-5-20250929")
     resolved_model = _resolve_model(model_id, user_id=admin_id)
 
     agent = create_deep_agent(

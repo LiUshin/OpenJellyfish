@@ -423,7 +423,7 @@ def create_user_agent(
         tools.append(create_send_message_tool())
 
     tools.extend(create_web_tools(user_id=user_id))
-    tools.append(create_schedule_tool(user_id))
+    tools.append(create_schedule_tool(user_id, default_model=model))
     tools.append(create_manage_scheduled_tasks_tool(user_id))
     # v2: self-spawning meta-capability. The tool is always-injected (no
     # capabilities gate) but only fires when called inside a scheduled-task

@@ -149,6 +149,10 @@
   display: flex;
   flex-direction: column;
   background: var(--jf-bg-deep);
+  /* 为左侧悬浮 query 导航列（.queryNavRail，position:absolute）提供定位上下文。
+     注意：必须挂在不滚动的 chatArea 上，而不是滚动容器 .messagesContainer 内，
+     否则 absolute 子元素会随内容滚走（旧 bug：bar 在顶部、滚动即消失）。 */
+  position: relative;
 }
 
 .chatHeader {
@@ -190,10 +194,48 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 20px 24px;
+  /* 左 padding 留 38px gutter：给悬浮 query 导航列（.queryNavRail）让位，
+     消息正文不被横线/高亮遮挡。右侧保持 24px。 */
+  padding: 20px 24px 20px 38px;
   scroll-behavior: auto;
   position: relative;
   background: var(--jf-bg-deep);
+}
+
+/* 滚动到对应消息时的对齐余量（scrollToIndex align:start 用）。 */
+.messagesContainer [data-jf-msg-index] {
+  scroll-margin-top: 12px;
+}
+
+/* 左侧 query 快速导航列：悬浮在 .chatArea 左侧垂直居中，脱离滚动容器，
+   不随消息滚动消失。bar 多到放不下时列内自身滚动（overflow-y:auto + 居中）。 */
+.queryNavRail {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 6;
+  width: 28px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 0;
+  overflow-y: auto;
+  overflow-x: visible;
+  scrollbar-width: none;
+}
+
+.queryNavRail::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.queryNavRailItem {
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 /* 间距用 padding-bottom 而非 margin-bottom：react-virtuoso v4 用 offsetHeight 测量
@@ -2857,7 +2899,14 @@
   }
 
   .messagesContainer {
-    padding: 14px 14px 24px;
+    /* 移动端左 gutter 收到 30px（悬浮导航列收窄到 24px）。 */
+    padding: 14px 14px 24px 30px;
+  }
+
+  .queryNavRail {
+    left: 2px;
+    width: 24px;
+    max-height: 60vh;
   }
 
   .messageBubble,

@@ -142,6 +142,7 @@ class TaskContext:
     permissions: Optional[Dict[str, Any]] = None
     capabilities: Optional[List[str]] = field(default_factory=list)
     tz_offset_hours: float = 8.0
+    model: Optional[str] = None                     # 父任务执行用的 LLM model id（spawn 默认继承）
 
 
 _current_task_var: ContextVar[Optional[TaskContext]] = ContextVar(
@@ -1444,9 +1445,13 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
     )
 
     extra_caps = ["humanchat"] if reply_to and reply_to.get("channel") == "wechat" else None
+    task_model = config.get("model") or None
+    if task_model:
+        steps.append(_step("model", f"使用指定模型: {task_model}"))
     agent = create_consumer_agent(admin_id, service_id, conversation_id,
                                   extra_capabilities=extra_caps,
-                                  channel="scheduler")
+                                  channel="scheduler",
+                                  model_override=task_model)
     thread_id = f"svc-scheduled-{uuid.uuid4().hex[:8]}"
     agent_config = {"configurable": {"thread_id": thread_id}}
     output_parts: List[str] = []
@@ -1547,6 +1552,7 @@ def _build_task_context_from_meta(scope: Literal["admin", "service"],
         permissions=cfg.get("permissions"),
         capabilities=list(cfg.get("capabilities") or []),
         tz_offset_hours=_resolve_task_tz_offset(task),
+        model=cfg.get("model") or None,
     )
 
 

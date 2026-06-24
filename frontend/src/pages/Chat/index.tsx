@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, Select, Tooltip, App } from 'antd';
 import {
@@ -27,6 +27,8 @@ import MessageList from './components/MessageList';
 import type { MessageListHandle } from './components/MessageList';
 import MentionPicker, { MAX_CANDIDATES as MENTION_MAX } from './components/MentionPicker';
 import RunIndicator from './components/RunIndicator';
+import QueryNavMarker from './components/QueryNavMarker';
+import { userQueryPreview } from './utils/userQueryPreview';
 import FileTokenInput from './components/FileTokenInput';
 import type { FileTokenInputHandle } from './components/FileTokenInput';
 import { useStream } from '../../stores/streamContext';
@@ -177,6 +179,72 @@ export default function ChatPage() {
   // 不会随用户滚动而重算更新。MessageList 内部仍用 ref 做 follow-tail 判断，
   // 不会因这个 state 频繁 re-render（只在跨阈值时变化）。
   const [isAtBottom, setIsAtBottom] = useState(true);
+
+  // ===== 左侧 query 快速导航（悬浮在 .chatArea 左侧中部，脱离滚动容器） =====
+  // 每条用户 query 一根短横，bar 数 = q 数；滚动到对应 QA 时高亮，点击跳转。
+  const queryNavRailRef = useRef<HTMLElement | null>(null);
+  const [activeQueryIndex, setActiveQueryIndex] = useState(-1);
+  const userMarkers = useMemo(
+    () =>
+      messages
+        .map((msg, index) => ({ index, role: msg.role, preview: userQueryPreview(msg) }))
+        .filter((m) => m.role === 'user'),
+    [messages],
+  );
+  // 滚动联动 active：取「当前视口基准线之上、最靠近基准线的那条用户消息」。
+  // 直接查滚动容器内 DOM（Virtuoso 已挂载行带 data-jf-msg-*）。
+  useEffect(() => {
+    const el = scrollParentEl;
+    if (!el) return;
+    let raf = 0;
+    const recompute = () => {
+      raf = 0;
+      const rows = el.querySelectorAll<HTMLElement>(
+        '[data-jf-msg-index][data-jf-msg-role="user"]',
+      );
+      if (!rows.length) {
+        setActiveQueryIndex((p) => (p === -1 ? p : -1));
+        return;
+      }
+      const lineY = el.getBoundingClientRect().top + 96;
+      let active = Number(rows[0].getAttribute('data-jf-msg-index'));
+      rows.forEach((row) => {
+        if (row.getBoundingClientRect().top <= lineY) {
+          active = Number(row.getAttribute('data-jf-msg-index'));
+        }
+      });
+      setActiveQueryIndex((p) => (p === active ? p : active));
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(recompute);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    raf = requestAnimationFrame(recompute);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [scrollParentEl, messages]);
+  // active 变化时把对应标记滚入导航列可视区——仅当导航列自身溢出时才滚，
+  // 否则 scrollIntoView 会向上冒泡去滚动消息容器，把用户「拉回」（旧 bug 根因）。
+  useEffect(() => {
+    if (activeQueryIndex < 0) return;
+    const rail = queryNavRailRef.current;
+    if (!rail) return;
+    if (rail.scrollHeight <= rail.clientHeight + 1) return;
+    const node = rail.querySelector<HTMLElement>(`[data-jf-nav-index="${activeQueryIndex}"]`);
+    if (!node) return;
+    const rTop = rail.scrollTop;
+    const rBottom = rTop + rail.clientHeight;
+    const nTop = node.offsetTop;
+    const nBottom = nTop + node.offsetHeight;
+    if (nTop < rTop) rail.scrollTop = nTop - 8;
+    else if (nBottom > rBottom) rail.scrollTop = nBottom - rail.clientHeight + 8;
+  }, [activeQueryIndex]);
+  const jumpToQuery = useCallback((index: number) => {
+    messageListRef.current?.scrollToMessage(index);
+  }, []);
+
   // 流式追尾：优先用 MessageList 内部的 scrollFooterIntoView（messages.length>0 时），
   // messages 还为空时（新会话、首条消息流式中）MessageList 没挂，直接拉外层容器贴底。
   const scrollToBottom = useCallback(() => {
@@ -656,6 +724,29 @@ export default function ChatPage() {
 
       {/* ===== Chat Area ===== */}
       <div className={styles.chatArea}>
+        {/* 左侧 query 快速导航：悬浮在 chatArea 左侧垂直居中，脱离滚动容器，
+            不随消息滚动消失；bar 数 = q 数，active 高亮，点击跳转。 */}
+        {userMarkers.length > 0 && (
+          <nav
+            ref={queryNavRailRef}
+            className={styles.queryNavRail}
+            aria-label="Jump to your messages"
+          >
+            {userMarkers.map((m) => (
+              <span
+                key={m.index}
+                data-jf-nav-index={m.index}
+                className={styles.queryNavRailItem}
+              >
+                <QueryNavMarker
+                  preview={m.preview}
+                  active={m.index === activeQueryIndex}
+                  onClick={() => jumpToQuery(m.index)}
+                />
+              </span>
+            ))}
+          </nav>
+        )}
         {/* Header */}
         <div className={styles.chatHeader}>
           <span className={styles.chatTitle}>{currentTitle}</span>

@@ -1,9 +1,4 @@
-import {
-  forwardRef,
-  useCallback,
-  useImperativeHandle,
-  useRef,
-} from 'react';
+import { forwardRef, useCallback, useImperativeHandle, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import type { Message } from '../../../types';
 import MessageBubble from './MessageBubble';
@@ -36,6 +31,9 @@ export interface MessageListHandle {
   /** 切换对话 / 首次挂载用：双步走（先 Virtuoso 把 LAST 测进来，再外层 scrollTop 把 footer 带进来）。 */
   resetScroll: () => void;
   isScrolledUp: () => boolean;
+  /** 跳到指定下标的消息（左侧导航列点击用）。虚拟化下目标行可能未挂载，
+   *  必须走 Virtuoso scrollToIndex 而非 DOM scrollIntoView。 */
+  scrollToMessage: (index: number) => void;
 }
 
 interface Props {
@@ -105,6 +103,14 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
         scrollToAbsoluteBottom();
       },
       isScrolledUp: () => !atBottomRef.current,
+      // 左侧导航列点击：虚拟化下目标行可能未挂载，走 Virtuoso scrollToIndex。
+      scrollToMessage: (index: number) => {
+        virtuosoRef.current?.scrollToIndex({
+          index,
+          align: 'start',
+          behavior: 'smooth',
+        });
+      },
     }),
     [scrollFooterIntoView, scrollToAbsoluteBottom],
   );
@@ -116,16 +122,20 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
   }, []);
 
   const itemContent = useCallback(
-    (_idx: number, msg: Message) => (
-      <MessageBubble
-        role={msg.role}
-        content={msg.content}
-        toolCalls={msg.tool_calls}
-        attachments={msg.attachments}
-        conversationId={conversationId || undefined}
-        blocks={msg.blocks}
-      />
-    ),
+    (idx: number, msg: Message) => {
+      return (
+        <div data-jf-msg-index={idx} data-jf-msg-role={msg.role}>
+          <MessageBubble
+            role={msg.role}
+            content={msg.content}
+            toolCalls={msg.tool_calls}
+            attachments={msg.attachments}
+            conversationId={conversationId || undefined}
+            blocks={msg.blocks}
+          />
+        </div>
+      );
+    },
     [conversationId],
   );
 
