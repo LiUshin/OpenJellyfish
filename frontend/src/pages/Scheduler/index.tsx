@@ -12,8 +12,9 @@ import {
 import {
   listSchedulerTasks, getSchedulerTask, createSchedulerTask,
   updateSchedulerTask, deleteSchedulerTask, runSchedulerTaskNow,
-  listServices, getToken,
+  listServices, getToken, getModels,
 } from '../../services/api';
+import type { ModelInfo } from '../../types';
 import { fmtUserTime, getTzOffset } from '../../utils/timezone';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import GraphView from './GraphView';
@@ -373,6 +374,8 @@ export default function SchedulerPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [availableServices, setAvailableServices] = useState<{ id: string; name: string }[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [defaultModel, setDefaultModel] = useState('');
   const [taskSearch, setTaskSearch] = useState('');
   const [svcPage, setSvcPage] = useState(1);
   const SVC_PAGE_SIZE = 20;
@@ -389,6 +392,9 @@ export default function SchedulerPage() {
   useEffect(() => {
     listServices()
       .then((svcs) => setAvailableServices((svcs as { id: string; name: string; published?: boolean }[]).filter((s) => s.published !== false)))
+      .catch(() => {});
+    getModels()
+      .then((res) => { setModels(res.models || []); setDefaultModel(res.default || ''); })
       .catch(() => {});
   }, []);
 
@@ -492,6 +498,7 @@ export default function SchedulerPage() {
       script_path: cfg.script_path,
       script_args: (cfg.script_args || []).join(','),
       agent_prompt: cfg.prompt,
+      model: cfg.model || undefined,
       doc_paths: Array.isArray(dp) ? dp.join(',') : (dp || ''),
       capabilities: cfg.capabilities || [],
       read_dirs: perms.read_dirs || [],
@@ -523,6 +530,7 @@ export default function SchedulerPage() {
         if (docs.length) tc.doc_path = docs;
         if ((values.capabilities as string[])?.length)
           tc.capabilities = values.capabilities;
+        if (values.model) tc.model = values.model;
       }
       const rd = values.read_dirs as string[] | undefined;
       const wd = values.write_dirs as string[] | undefined;
@@ -904,6 +912,9 @@ export default function SchedulerPage() {
               {t.task_type === 'agent' && (
                 <>
                   {infoRow('指令', cfg.prompt || '—')}
+                  {infoRow('模型', cfg.model
+                    ? codeSpan(cfg.model)
+                    : <span style={{ color: C.textMuted }}>默认模型</span>)}
                   {docPaths.length > 0 && docPaths[0] &&
                     infoRow('参考文档', docPaths.map((p, i) => (
                       <code key={i} style={{ fontFamily: C.mono, fontSize: 12, marginRight: 6 }}>
@@ -1286,6 +1297,19 @@ export default function SchedulerPage() {
                 extra="给 Agent 的任务描述"
               >
                 <TextArea placeholder="搜索最新 AI 新闻并生成语音摘要" rows={3} />
+              </Form.Item>
+              <Form.Item
+                name="model"
+                label="执行模型"
+                extra={defaultModel ? `留空使用默认模型（${defaultModel}）` : '留空使用默认模型'}
+              >
+                <Select
+                  allowClear
+                  showSearch
+                  placeholder="默认模型"
+                  optionFilterProp="label"
+                  options={models.map((m) => ({ value: m.id, label: m.name || m.id }))}
+                />
               </Form.Item>
               <Form.Item
                 name="doc_paths"

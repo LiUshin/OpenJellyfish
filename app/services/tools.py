@@ -99,6 +99,10 @@ CAPABILITY_PROMPTS = {
 Agent 会读取文档内容，按照其中描述的步骤逐步执行。
 还可以通过 agent_capabilities 指定 Agent 需要的工具能力（如 ["image", "speech"]）。
 
+### 指定执行模型（可选）
+agent 任务可通过 `model` 参数指定执行用的 LLM 模型 id（catalog id，如 "anthropic:claude-opus-4-7"）。
+**留空则默认使用你当前正在使用的模型。** 仅当用户明确要求换更强/更快/特定模型时才填 model；填了无效 id 会报错并返回可用列表。
+
 ### ⚠️ 脚本路径规则（极其重要）
 脚本通过独立子进程执行，工作目录（cwd）是 scripts/ 的真实路径。
 **脚本内部绝对不能使用 `/docs/`、`/scripts/` 等虚拟路径**，必须用相对路径：
@@ -147,6 +151,9 @@ Agent 会读取文档内容，按照其中描述的步骤逐步执行。
 可以通过 doc_path（单文档）或 doc_paths（多文档）指定任务说明书。
 Agent 会读取文档内容，按照其中描述的步骤逐步执行。
 
+### 指定执行模型（可选）
+可通过 `model` 参数指定执行用的 LLM 模型 id。**留空则默认沿用当前模型。** 仅在用户明确要求时才填。
+
 ### 示例
 - "每天早上9点给我一份新闻摘要"
   → prompt="搜索今日新闻并整理摘要", schedule_type="cron", schedule="0 9 * * *"
@@ -192,6 +199,7 @@ Agent 会读取文档内容，按照其中描述的步骤逐步执行。
 - `prompt`: 给子 Agent 的指令（自然语言）
 - `schedule_type` + `schedule`: 默认 once + 空 → 立即；其他同 schedule_task
 - `capabilities`: 不填则继承父任务能力
+- `model`: 子任务执行用的 LLM 模型 id，不填则**继承父任务（即你当前）的模型**
 - `reason`: 派生原因，写入 spawn_reason，便于谱系图回溯
 - `inherit_reply_to`: 是否继承父任务推送通道，默认 True
 """,
@@ -716,8 +724,63 @@ def _ensure_tz_suffix(iso_str: str, tz_offset_hours: float) -> str:
     return f"{iso_str}{sign}{hh:02d}:{mm:02d}"
 
 
-def create_schedule_tool(user_id: str):
-    """Create a schedule_task tool bound to the given user."""
+# ── 定时任务模型选择 helpers ──────────────────────────────────────────────
+#
+# 让 schedule_task / spawn_child_task / service schedule_task 工具能指定执行
+# 任务用的 LLM 模型（catalog id，如 "anthropic:claude-opus-4-7"）。留空时回退
+# 到「当前 agent 使用的模型」（default_model）。无效 model 在创建时即拒绝并把
+# 可用列表返回给 agent 自纠（discover=docstring_dynamic + reject_list）。
+
+def _available_llm_model_ids(user_id: Optional[str] = None) -> List[str]:
+    """当前用户已配置凭据、可用于定时任务的 LLM model id 列表。
+
+    失败（catalog 异常 / 无凭据探测不到）时返回空列表 —— 调用方据此放行而非误杀。
+    """
+    try:
+        from app.services.model_catalog import list_models
+        ids = [m.get("id") for m in list_models("llm", user_id=user_id, only_available=True)]
+        return [i for i in ids if i]
+    except Exception:
+        return []
+
+
+def _model_list_for_docstring(user_id: Optional[str] = None) -> str:
+    """构造 docstring/能力提示用的可用模型枚举字符串。"""
+    ids = _available_llm_model_ids(user_id)
+    if not ids:
+        return "（运行时按 catalog 解析；常见如 anthropic:claude-sonnet-4-6 / bedrock:claude-opus-4-7）"
+    return " | ".join(ids)
+
+
+def _validate_task_model(model: Optional[str], default_model: str,
+                         user_id: Optional[str]):
+    """校验并解析任务模型。
+
+    Returns ``(resolved_model, error_msg)``：
+      * model 留空 → 用 default_model（当前 agent 模型），无错误
+      * model 有效 → 原样返回
+      * model 无效（且能拿到可用列表）→ (None, 错误字符串含可用列表)，调用方应直接 return
+    """
+    if not model or not str(model).strip():
+        return (default_model or "", None)
+    model = str(model).strip()
+    ids = _available_llm_model_ids(user_id)
+    if ids and model not in ids:
+        listing = " | ".join(ids)
+        default_hint = default_model or "(系统默认)"
+        return (None, (
+            f"错误：模型 '{model}' 不可用或不存在。请从以下可用模型中选择，"
+            f"或留空 model 参数以使用当前默认模型（{default_hint}）：\n{listing}"
+        ))
+    return (model, None)
+
+
+def create_schedule_tool(user_id: str, default_model: str = ""):
+    """Create a schedule_task tool bound to the given user.
+
+    ``default_model`` 是当前 agent 正在使用的模型 id，作为新建 agent 任务的默认
+    执行模型（agent 留空 model 参数时使用）。
+    """
 
     @tool
     def schedule_task(
@@ -731,6 +794,7 @@ def create_schedule_tool(user_id: str):
         agent_doc_path: Optional[str] = None,
         agent_doc_paths: Optional[List[str]] = None,
         agent_capabilities: Optional[List[str]] = None,
+        model: Optional[str] = None,
         read_dirs: Optional[List[str]] = None,
         write_dirs: Optional[List[str]] = None,
         reply_wechat: bool = False,
@@ -755,6 +819,9 @@ def create_schedule_tool(user_id: str):
             agent_doc_path: task_type="agent" 时，单个文档/技能说明书路径（相对 docs/ 目录）
             agent_doc_paths: task_type="agent" 时，多个文档路径列表
             agent_capabilities: task_type="agent" 时，Agent 需要的能力列表
+            model: task_type="agent" 时，指定执行该任务的 LLM 模型 id（catalog id）。
+                留空 → 使用你当前正在使用的模型（默认 {DEFAULT_MODEL}）。
+                可用模型：{MODEL_HINT}
             read_dirs: 允许读取的目录列表（相对用户根目录）。填 ["*"] 表示全部
             write_dirs: 允许写入的目录列表（相对用户根目录）。填 ["*"] 表示全部
             reply_wechat: 是否在任务完成后将结果推送回微信（仅在微信对话中有效）
@@ -783,11 +850,16 @@ def create_schedule_tool(user_id: str):
             task_config = {"script_path": script_path, "script_args": script_args or []}
         elif task_type == "agent":
             doc_paths = agent_doc_paths or ([agent_doc_path] if agent_doc_path else [])
+            resolved_model, model_err = _validate_task_model(model, default_model, user_id)
+            if model_err:
+                return model_err
             task_config = {
                 "prompt": agent_prompt or "",
                 "doc_path": doc_paths,
                 "capabilities": agent_capabilities or [],
             }
+            if resolved_model:
+                task_config["model"] = resolved_model
         else:
             return f"错误：未知 task_type '{task_type}'，可选 'script' 或 'agent'"
 
@@ -826,6 +898,9 @@ def create_schedule_tool(user_id: str):
         if task_type == "agent" and task_config.get("doc_path"):
             paths = task_config["doc_path"]
             doc_info = f"参考文档: {', '.join(paths) if isinstance(paths, list) else paths}\n"
+        model_info = ""
+        if task_type == "agent":
+            model_info = f"模型: {task_config.get('model') or '当前默认'}\n"
         reply_info = "📬 结果将推送至微信\n" if reply_to else ""
         return (
             f"定时任务已创建！\n"
@@ -834,11 +909,18 @@ def create_schedule_tool(user_id: str):
             f"类型: {task_type}\n"
             f"调度: {schedule_type} → {actual_schedule}\n"
             f"{doc_info}"
+            f"{model_info}"
             f"{reply_info}"
             f"下次运行: {next_run}\n"
             f"可在「定时任务控制台」查看和管理所有任务。"
         )
 
+    try:
+        schedule_task.description = (schedule_task.description or "").replace(
+            "{MODEL_HINT}", _model_list_for_docstring(user_id)
+        ).replace("{DEFAULT_MODEL}", default_model or "系统默认")
+    except Exception:
+        pass
     return schedule_task
 
 
@@ -855,6 +937,7 @@ def create_manage_scheduled_tasks_tool(user_id: str):
         enabled: Optional[bool] = None,
         description: Optional[str] = None,
         agent_prompt: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> str:
         """查看、修改或删除管理员定时任务。
 
@@ -870,6 +953,8 @@ def create_manage_scheduled_tasks_tool(user_id: str):
             enabled: 启用或禁用任务
             description: 修改任务说明
             agent_prompt: 修改 agent 任务的执行指令
+            model: 修改 agent 任务的执行模型 id（catalog id，如 "anthropic:claude-opus-4-7"）。
+                无效则报错并返回可用模型列表。
         """
         from app.services.scheduler import list_tasks, update_task, delete_task
         from app.services.preferences import get_tz_offset
@@ -912,12 +997,22 @@ def create_manage_scheduled_tasks_tool(user_id: str):
                 updates["schedule"] = actual
             if enabled is not None:
                 updates["enabled"] = enabled
-            if agent_prompt is not None:
+            if agent_prompt is not None or model is not None:
                 from app.services.scheduler import get_task
                 existing = get_task(user_id, task_id)
                 if existing:
                     cfg = dict(existing.get("task_config", {}))
-                    cfg["prompt"] = agent_prompt
+                    if agent_prompt is not None:
+                        cfg["prompt"] = agent_prompt
+                    if model is not None:
+                        resolved_model, model_err = _validate_task_model(
+                            model, "", user_id)
+                        if model_err:
+                            return model_err
+                        if resolved_model:
+                            cfg["model"] = resolved_model
+                        else:
+                            cfg.pop("model", None)  # 留空 → 清除指定，回退默认
                     updates["task_config"] = cfg
             if not updates:
                 return "错误：没有提供要修改的字段"
@@ -975,6 +1070,7 @@ def create_spawn_child_task_tool():
         schedule: str = "",
         capabilities: Optional[List[str]] = None,
         doc_paths: Optional[List[str]] = None,
+        model: Optional[str] = None,
         reason: Optional[str] = None,
         inherit_reply_to: bool = True,
         enabled: bool = True,
@@ -996,6 +1092,8 @@ def create_spawn_child_task_tool():
             schedule: 调度值。once 留空 → 立即执行；ISO 时间需带时区后缀；cron / interval 同顶层 schedule_task
             capabilities: 子任务 Agent 需要的工具能力。留空 → 继承父任务
             doc_paths: 文档驱动路径（相对 docs/）
+            model: 子任务执行用的 LLM 模型 id（catalog id，如 anthropic:claude-opus-4-7）。
+                留空 → 继承父任务模型（即你当前正在使用的模型）。无效则会报错并列出可用模型。
             reason: 派生原因（写入 spawn_reason，便于谱系图查看）
             inherit_reply_to: 是否继承父任务的 reply_to（推送通道）。默认 True
             enabled: 是否立即启用，默认 True
@@ -1025,12 +1123,20 @@ def create_spawn_child_task_tool():
         if schedule_type == "once" and schedule:
             actual_schedule = _ensure_tz_suffix(schedule, ctx.tz_offset_hours)
 
+        # 模型：留空继承父任务模型；显式指定则校验可用性。
+        resolved_model, model_err = _validate_task_model(
+            model, getattr(ctx, "model", "") or "", ctx.uid)
+        if model_err:
+            return model_err
+
         task_config: Dict = {
             "prompt": prompt,
             "doc_path": doc_paths or [],
             "capabilities": list(capabilities) if capabilities is not None
                             else list(ctx.capabilities or []),
         }
+        if resolved_model:
+            task_config["model"] = resolved_model
         if ctx.permissions:
             task_config["permissions"] = ctx.permissions
 
@@ -1069,11 +1175,14 @@ def create_spawn_child_task_tool():
 def create_service_schedule_tool(
     admin_id: str, service_id: str, conversation_id: str,
     wechat_session_id: Optional[str] = None,
+    default_model: str = "",
 ):
     """Create a schedule_task tool for a service consumer agent.
 
     Only supports agent tasks (no scripts). Auto-captures reply_to
     so results are pushed back to the user.
+
+    ``default_model`` 是当前 service agent 使用的模型 id，作为新建任务的默认执行模型。
     """
 
     @tool
@@ -1084,6 +1193,7 @@ def create_service_schedule_tool(
         prompt: Optional[str] = None,
         doc_path: Optional[str] = None,
         doc_paths: Optional[List[str]] = None,
+        model: Optional[str] = None,
         description: Optional[str] = None,
         enabled: bool = True,
     ) -> str:
@@ -1099,6 +1209,8 @@ def create_service_schedule_tool(
             prompt: 任务执行指令（给 Agent 的描述）
             doc_path: 单个文档/说明书路径（相对 docs/ 目录）
             doc_paths: 多个文档路径列表
+            model: 指定执行该任务的 LLM 模型 id（catalog id）。留空 → 使用当前模型
+                （默认 {DEFAULT_MODEL}）。可用模型：{MODEL_HINT}
             description: 任务说明（可选）
             enabled: 是否立即启用，默认 True
         """
@@ -1111,11 +1223,17 @@ def create_service_schedule_tool(
         if schedule_type == "once":
             actual_schedule = _ensure_tz_suffix(schedule, tz_offset)
 
+        resolved_model, model_err = _validate_task_model(model, default_model, admin_id)
+        if model_err:
+            return model_err
+
         all_doc_paths = doc_paths or ([doc_path] if doc_path else [])
         task_config = {
             "prompt": prompt or "",
             "doc_path": all_doc_paths,
         }
+        if resolved_model:
+            task_config["model"] = resolved_model
 
         reply_to = {
             "channel": "wechat" if wechat_session_id else "web",
@@ -1141,10 +1259,17 @@ def create_service_schedule_tool(
             f"任务 ID: {task['id']}\n"
             f"名称: {task['name']}\n"
             f"调度: {schedule_type} → {actual_schedule}\n"
+            f"模型: {task_config.get('model') or '当前默认'}\n"
             f"下次运行: {next_run}\n"
             f"📬 任务完成后结果会自动推送给你。"
         )
 
+    try:
+        schedule_task.description = (schedule_task.description or "").replace(
+            "{MODEL_HINT}", _model_list_for_docstring(admin_id)
+        ).replace("{DEFAULT_MODEL}", default_model or "系统默认")
+    except Exception:
+        pass
     return schedule_task
 
 
@@ -1166,6 +1291,7 @@ def create_service_manage_tasks_tool(
         enabled: Optional[bool] = None,
         description: Optional[str] = None,
         prompt: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> str:
         """查看、修改或删除当前对话的定时任务。
 
@@ -1181,6 +1307,7 @@ def create_service_manage_tasks_tool(
             enabled: 启用或禁用任务
             description: 修改任务说明
             prompt: 修改任务执行指令
+            model: 修改任务执行模型 id（catalog id）。无效则报错并返回可用模型列表。
         """
         from app.services.scheduler import (
             list_service_tasks, get_service_task,
@@ -1229,9 +1356,19 @@ def create_service_manage_tasks_tool(
                 updates["schedule"] = actual
             if enabled is not None:
                 updates["enabled"] = enabled
-            if prompt is not None:
+            if prompt is not None or model is not None:
                 cfg = dict(existing.get("task_config", {}))
-                cfg["prompt"] = prompt
+                if prompt is not None:
+                    cfg["prompt"] = prompt
+                if model is not None:
+                    resolved_model, model_err = _validate_task_model(
+                        model, "", admin_id)
+                    if model_err:
+                        return model_err
+                    if resolved_model:
+                        cfg["model"] = resolved_model
+                    else:
+                        cfg.pop("model", None)
                 updates["task_config"] = cfg
             if not updates:
                 return "错误：没有提供要修改的字段"

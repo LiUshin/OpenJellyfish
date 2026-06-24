@@ -30,6 +30,9 @@
   color: var(--text);
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* 为左侧悬浮 query 导航列（.queryNavRail，position:absolute）提供定位上下文。
+     rail 挂在不滚动的 .page 上而非滚动容器 .messages 内，避免随内容滚走。 */
+  position: relative;
 }
 
 .header {
@@ -139,10 +142,47 @@
 .messages {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  /* 左 padding 留 38px gutter：给悬浮 query 导航列让位，正文不被遮挡。 */
+  padding: 20px 20px 20px 38px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  position: relative;
+}
+
+.messages [data-jf-msg-index] {
+  scroll-margin-top: 12px;
+}
+
+/* 左侧 query 快速导航列：悬浮在 .page 左侧垂直居中，脱离滚动容器，
+   不随消息滚动消失。service 端不虚拟化，scrollToMessage 直接 scrollIntoView。 */
+.queryNavRail {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 6;
+  width: 28px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 0;
+  overflow-y: auto;
+  overflow-x: visible;
+  scrollbar-width: none;
+}
+
+.queryNavRail::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.queryNavRailItem {
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .messages::-webkit-scrollbar {
@@ -453,8 +493,15 @@
   }
 
   .messages {
-    padding: 14px 12px 18px;
+    /* 移动端左 gutter 收到 30px（悬浮导航列同步收窄到 24px）。 */
+    padding: 14px 12px 18px 30px;
     gap: 12px;
+  }
+
+  .queryNavRail {
+    left: 2px;
+    width: 24px;
+    max-height: 60vh;
   }
 
   .userMsg {

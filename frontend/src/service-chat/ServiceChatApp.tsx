@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import StreamingMessage from '../pages/Chat/components/StreamingMessage';
+import QueryNavMarker from '../pages/Chat/components/QueryNavMarker';
 import { setMediaUrlBuilder, setFileRevealEnabled, setFileDownloadMode } from '../pages/Chat/markdown';
 import {
   AuthError,
@@ -152,8 +153,12 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 当前视口顶部正在阅读的用户 query 下标（-1 = 无），驱动左侧导航列 active 高亮。
+  const [activeQueryIndex, setActiveQueryIndex] = useState(-1);
 
   // ── 注入 consumer 端的 mediaUrl builder（一次性，依赖 token + convId） ──
   // 用 ref 让闭包总能拿到最新值，但 setMediaUrlBuilder 只调一次。
@@ -469,6 +474,74 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
 
   const showEmpty = !showWelcome && messages.length === 0 && !stream.isStreaming;
 
+  // ── 左侧固定导航列：每条用户 query 一根短横，滚动联动高亮 ──────────────
+  const userMarkers = useMemo(
+    () =>
+      messages
+        .map((m, index) => ({ index, kind: m.kind, text: m.kind === 'user' ? m.data.text : '' }))
+        .filter((x) => x.kind === 'user'),
+    [messages],
+  );
+
+  // 点击导航 → 平滑滚动到对应用户消息（service 端不虚拟化，DOM 节点恒在）。
+  const scrollToMessage = useCallback((index: number) => {
+    const node = messagesContainerRef.current?.querySelector<HTMLElement>(
+      `[data-jf-msg-index="${index}"]`,
+    );
+    node?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, []);
+
+  // 滚动联动 active：取「容器顶 +80px 基准线之上最靠近」的用户消息（DOM rect 法）。
+  useEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    let raf = 0;
+    const recompute = () => {
+      raf = 0;
+      const rows = el.querySelectorAll<HTMLElement>(
+        '[data-jf-msg-index][data-jf-msg-role="user"]',
+      );
+      if (!rows.length) {
+        setActiveQueryIndex((p) => (p === -1 ? p : -1));
+        return;
+      }
+      const lineY = el.getBoundingClientRect().top + 80;
+      let active = Number(rows[0].getAttribute('data-jf-msg-index'));
+      rows.forEach((row) => {
+        if (row.getBoundingClientRect().top <= lineY) {
+          active = Number(row.getAttribute('data-jf-msg-index'));
+        }
+      });
+      setActiveQueryIndex((p) => (p === active ? p : active));
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(recompute);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    raf = requestAnimationFrame(recompute);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [messages, showWelcome, stream.blocks]);
+
+  // active 变化时把对应标记滚入导航列可视区——仅当导航列自身溢出时手动滚 scrollTop，
+  // 否则 scrollIntoView 会冒泡去滚动消息容器，把用户「拉回」（旧 bug 根因）。
+  useEffect(() => {
+    if (activeQueryIndex < 0) return;
+    const rail = railRef.current;
+    if (!rail) return;
+    if (rail.scrollHeight <= rail.clientHeight + 1) return;
+    const node = rail.querySelector<HTMLElement>(`[data-jf-nav-index="${activeQueryIndex}"]`);
+    if (!node) return;
+    const rTop = rail.scrollTop;
+    const rBottom = rTop + rail.clientHeight;
+    const nTop = node.offsetTop;
+    const nBottom = nTop + node.offsetHeight;
+    if (nTop < rTop) rail.scrollTop = nTop - 8;
+    else if (nBottom > rBottom) rail.scrollTop = nBottom - rail.clientHeight + 8;
+  }, [activeQueryIndex]);
+
   // ── 渲染 ────────────────────────────────────────────────────────
   // Header right slot: language switcher (no backend sync — consumers can't
   // hit /api/preferences without an admin token).
@@ -569,6 +642,26 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
         />
       )}
 
+      {/* 左侧 query 快速导航：悬浮在 .page 左侧垂直居中，脱离滚动容器(.messages)，
+          不随消息滚动消失；bar 数 = q 数，active 高亮，点击跳转。 */}
+      {!showWelcome && userMarkers.length > 0 && (
+        <nav ref={railRef} className={styles.queryNavRail} aria-label="Jump to your messages">
+          {userMarkers.map((m) => (
+            <span
+              key={m.index}
+              data-jf-nav-index={m.index}
+              className={styles.queryNavRailItem}
+            >
+              <QueryNavMarker
+                preview={m.text}
+                active={m.index === activeQueryIndex}
+                onClick={() => scrollToMessage(m.index)}
+              />
+            </span>
+          ))}
+        </nav>
+      )}
+
       {showWelcome ? (
         <div className={styles.welcomeScreen}>
           <div className={styles.welcomeTitle}>{config.service_name || t('service.welcomeFallback')}</div>
@@ -595,7 +688,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
           )}
         </div>
       ) : (
-        <div className={styles.messages}>
+        <div className={styles.messages} ref={messagesContainerRef}>
           {showEmpty && (
             <div className={styles.emptyState}>
               <div className={styles.emptyStateIcon}>💬</div>
@@ -604,7 +697,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
           )}
           {messages.map((m, i) =>
             m.kind === 'user' ? (
-              <div key={`u-${i}`} className={styles.userMsg}>
+              <div key={`u-${i}`} className={styles.userMsg} data-jf-msg-index={i} data-jf-msg-role="user">
                 {m.data.text}
                 {m.data.images.length > 0 && (
                   <div className={styles.userMsgImages}>
