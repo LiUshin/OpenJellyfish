@@ -49,6 +49,7 @@ from app.services.published import (
 )
 from app.services.consumer_agent import create_consumer_agent
 from app.services.usage_log import record_request
+from app.services.token_usage import build_usage_callbacks
 
 router = APIRouter(prefix="/api/v1", tags=["consumer"])
 
@@ -370,7 +371,14 @@ async def api_consumer_chat(req: ConsumerChatRequest, ctx=Depends(get_service_co
     save_consumer_message(admin_id, service_id, conv_id, "user", save_text)
     agent = create_consumer_agent(admin_id, service_id, conv_id, channel="web")
     thread_id = f"svc-{service_id}-{conv_id}"
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": build_usage_callbacks(
+            admin_id, service_id=service_id, channel="web", conv_id=conv_id,
+            model_hint=ctx.get("service_config", {}).get("model", ""),
+            key_id=ctx.get("key_id", ""),
+        ),
+    }
 
     stamped = stamp_message(req.message, admin_id)
     inner = _stream_consumer(
@@ -422,7 +430,13 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
     save_consumer_message(admin_id, service_id, conv_id, "user", last_user_msg)
     agent = create_consumer_agent(admin_id, service_id, conv_id, channel="web")
     thread_id = f"svc-{service_id}-{conv_id}"
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": build_usage_callbacks(
+            admin_id, service_id=service_id, channel="api", conv_id=conv_id,
+            model_hint=model_name, key_id=ctx.get("key_id", ""),
+        ),
+    }
 
     stamped = stamp_message(last_user_msg, admin_id)
     if req.stream:

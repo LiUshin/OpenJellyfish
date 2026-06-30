@@ -34,20 +34,34 @@ def _pref_path(user_id: str) -> str:
     return os.path.join(get_user_dir(user_id), "preferences.json")
 
 
+def _global_default_tz() -> float:
+    """全局默认时区偏移（小时），由超管在启动器 / .env 设 ``DEFAULT_TZ_OFFSET_HOURS``。
+
+    call-time 读 env（改值重启后端即生效，无需改代码）。仅对**未显式**设置
+    ``tz_offset_hours`` 的用户生效——已在偏好里存了自己时区的用户不受影响。
+    """
+    try:
+        return float(os.getenv("DEFAULT_TZ_OFFSET_HOURS", "8"))
+    except (TypeError, ValueError):
+        return 8.0
+
+
 def get_preferences(user_id: str) -> Dict[str, Any]:
     path = _pref_path(user_id)
     result = dict(_DEFAULTS)
+    # 动态默认：未显式设置时区的用户回退全局默认（DEFAULT_TZ_OFFSET_HOURS）。
+    result["tz_offset_hours"] = _global_default_tz()
     if os.path.isfile(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                result.update(json.load(f))
+                result.update(json.load(f))  # 用户已存的 tz_offset_hours 会覆盖全局默认
         except Exception:
             pass
     return result
 
 
 def get_tz_offset(user_id: str) -> float:
-    return get_preferences(user_id).get("tz_offset_hours", 8)
+    return get_preferences(user_id).get("tz_offset_hours", _global_default_tz())
 
 
 def update_preferences(user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:

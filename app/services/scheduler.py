@@ -69,6 +69,7 @@ from typing import Optional, List, Dict, Any, Literal
 from app.core.security import get_user_dir
 from app.core.jsonl_store import append_jsonl_many, read_jsonl
 from app.services import scheduler_tree as st
+from app.services.token_usage import build_usage_callbacks
 
 log = logging.getLogger("scheduler")
 
@@ -1304,14 +1305,21 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
     )
 
     if not model:
-        model = _get_default_model()
+        # 传 user_id 以尊重用户在设置页选的默认 LLM（capability_defaults.llm）；
+        # 不传会退回全局 agent_config.json 的旧默认（如 sonnet 4.5）。
+        model = _get_default_model(user_id)
 
     if "humanchat" not in capabilities:
         capabilities = list(capabilities) + ["humanchat"]
 
     agent = create_user_agent(user_id, model=model, capabilities=capabilities)
     thread_id = f"scheduled-{uuid.uuid4().hex[:8]}"
-    agent_config = {"configurable": {"thread_id": thread_id}}
+    agent_config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": build_usage_callbacks(
+            user_id, channel="scheduler", conv_id=conv_id, model_hint=model or ""
+        ),
+    }
     output_parts: List[str] = []
     delivered_parts: List[str] = []
 
@@ -1453,7 +1461,13 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
                                   channel="scheduler",
                                   model_override=task_model)
     thread_id = f"svc-scheduled-{uuid.uuid4().hex[:8]}"
-    agent_config = {"configurable": {"thread_id": thread_id}}
+    agent_config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": build_usage_callbacks(
+            admin_id, service_id=service_id, channel="scheduler",
+            conv_id=conversation_id, model_hint=task_model or "",
+        ),
+    }
     output_parts: List[str] = []
     delivered_parts: List[str] = []
 

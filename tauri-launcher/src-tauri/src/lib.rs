@@ -2,7 +2,7 @@ use chrono::{Local, Utc};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::net::TcpStream;
@@ -26,15 +26,58 @@ struct AppState {
 
 // ── Types ────────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize, Clone)]
-struct EnvConfig {
-    anthropic_api_key: Option<String>,
-    anthropic_base_url: Option<String>,
-    openai_api_key: Option<String>,
-    openai_base_url: Option<String>,
-    tavily_api_key: Option<String>,
-    cloudsway_search_key: Option<String>,
-}
+/// 配置中心管理的全部 .env 键（单一真相源）。
+///
+/// 新增可配置项只需在此追加键名 + 在 `dist/index.html` 的 `CONFIG_SCHEMA` 加一项，
+/// 无需改 load/save 逻辑（二者均基于此泛型 map）。空字符串值 = 从 .env 删除该行。
+const KNOWN_ENV_KEYS: &[&str] = &[
+    // —— LLM Provider（key + base_url / region / group_id）——
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "BEDROCK_API_KEY",
+    "BEDROCK_REGION",
+    "KIMI_API_KEY",
+    "KIMI_BASE_URL",
+    "MINIMAX_API_KEY",
+    "MINIMAX_GROUP_ID",
+    "DOUBAO_ACCESS_KEY",
+    "DOUBAO_SECRET_KEY",
+    "DOUBAO_REGION",
+    // —— 联网搜索 ——
+    "TAVILY_API_KEY",
+    "CLOUDSWAY_SEARCH_KEY",
+    "CLOUDSWAY_SEARCH_URL",
+    "CLOUDSWAY_READ_URL",
+    // —— 多模态 per-capability 覆盖（留空回退 provider 默认）——
+    "IMAGE_API_KEY",
+    "IMAGE_BASE_URL",
+    "TTS_API_KEY",
+    "TTS_BASE_URL",
+    "VIDEO_API_KEY",
+    "VIDEO_BASE_URL",
+    "S2S_API_KEY",
+    "S2S_BASE_URL",
+    "STT_API_KEY",
+    "STT_BASE_URL",
+    // —— 运维开关（高级）——
+    "SAFE_STARTUP",
+    "DISABLE_SCHEDULER",
+    "SCHEDULER_MAX_CONCURRENT",
+    "RESTORE_VENVS_ON_STARTUP",
+    "RESTORE_VENVS_CONCURRENCY",
+    "UVICORN_WORKERS",
+    "SUPERADMIN_SCRIPT_UNRESTRICTED",
+    "SCRIPT_CONCURRENCY",
+    "SCRIPT_QUEUE_TIMEOUT",
+    "STORAGE_BACKEND",
+    // —— 全局默认时区 ——
+    "DEFAULT_TZ_OFFSET_HOURS",
+];
+
+/// 泛型环境配置：键 = .env 变量名，值 = 字符串值。
+type EnvMap = HashMap<String, String>;
 
 #[derive(Serialize)]
 struct EnvStatus {
@@ -93,6 +136,26 @@ struct AdminUserInfo {
     last_login: String,
     reg_key: String,
     has_api_keys: bool,
+    disabled: bool,
+}
+
+#[derive(Serialize)]
+struct StorageBreakdown {
+    name: String,
+    bytes: u64,
+}
+
+#[derive(Serialize)]
+struct AdminStorage {
+    user_id: String,
+    total_bytes: u64,
+    breakdown: Vec<StorageBreakdown>,
+}
+
+#[derive(Serialize)]
+struct AdminKeyStatus {
+    user_id: String,
+    providers: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -309,18 +372,12 @@ fn detect_environment(app: tauri::AppHandle, state: State<'_, AppState>) -> EnvS
 }
 
 #[tauri::command]
-fn load_env_config(state: State<'_, AppState>) -> EnvConfig {
+fn load_env_config(state: State<'_, AppState>) -> EnvMap {
     let project_dir = state.project_dir.lock().unwrap();
     let env_path = project_dir.join(".env");
 
-    let mut config = EnvConfig {
-        anthropic_api_key: None,
-        anthropic_base_url: None,
-        openai_api_key: None,
-        openai_base_url: None,
-        tavily_api_key: None,
-        cloudsway_search_key: None,
-    };
+    let known: HashSet<&str> = KNOWN_ENV_KEYS.iter().copied().collect();
+    let mut config: EnvMap = HashMap::new();
 
     if let Ok(content) = fs::read_to_string(&env_path) {
         for line in content.lines() {
@@ -331,18 +388,10 @@ fn load_env_config(state: State<'_, AppState>) -> EnvConfig {
             let mut parts = line.splitn(2, '=');
             let key = parts.next().unwrap_or("").trim();
             let val = parts.next().unwrap_or("").trim().to_string();
-            if val.is_empty() {
+            if val.is_empty() || !known.contains(key) {
                 continue;
             }
-            match key {
-                "ANTHROPIC_API_KEY" => config.anthropic_api_key = Some(val),
-                "ANTHROPIC_BASE_URL" => config.anthropic_base_url = Some(val),
-                "OPENAI_API_KEY" => config.openai_api_key = Some(val),
-                "OPENAI_BASE_URL" => config.openai_base_url = Some(val),
-                "TAVILY_API_KEY" => config.tavily_api_key = Some(val),
-                "CLOUDSWAY_SEARCH_KEY" => config.cloudsway_search_key = Some(val),
-                _ => {}
-            }
+            config.insert(key.to_string(), val);
         }
     }
 
@@ -350,23 +399,16 @@ fn load_env_config(state: State<'_, AppState>) -> EnvConfig {
 }
 
 #[tauri::command]
-fn save_env_config(config: EnvConfig, state: State<'_, AppState>) -> Result<(), String> {
+fn save_env_config(config: EnvMap, state: State<'_, AppState>) -> Result<(), String> {
     let project_dir = state.project_dir.lock().unwrap();
     let env_path = project_dir.join(".env");
 
+    let known: HashSet<&str> = KNOWN_ENV_KEYS.iter().copied().collect();
     let existing = fs::read_to_string(&env_path).unwrap_or_default();
     let mut lines: Vec<String> = Vec::new();
-    let mut written_keys = HashSet::new();
+    let mut written_keys: HashSet<String> = HashSet::new();
 
-    let key_map: Vec<(&str, &Option<String>)> = vec![
-        ("ANTHROPIC_API_KEY", &config.anthropic_api_key),
-        ("ANTHROPIC_BASE_URL", &config.anthropic_base_url),
-        ("OPENAI_API_KEY", &config.openai_api_key),
-        ("OPENAI_BASE_URL", &config.openai_base_url),
-        ("TAVILY_API_KEY", &config.tavily_api_key),
-        ("CLOUDSWAY_SEARCH_KEY", &config.cloudsway_search_key),
-    ];
-
+    // 第一遍：保留注释/未知行；对已知键 upsert（空值 = 删除该行）。
     for line in existing.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('#') || !trimmed.contains('=') {
@@ -374,26 +416,30 @@ fn save_env_config(config: EnvConfig, state: State<'_, AppState>) -> Result<(), 
             continue;
         }
         let key = trimmed.splitn(2, '=').next().unwrap_or("").trim();
-        let mut replaced = false;
-        for (k, v) in &key_map {
-            if key == *k {
-                if let Some(val) = v {
-                    lines.push(format!("{}={}", k, val));
+        // 仅处理「已知 且 本次提交包含」的键，其余原样保留（防误删无关 env）。
+        if known.contains(key) {
+            if let Some(val) = config.get(key) {
+                let v = val.trim();
+                if !v.is_empty() {
+                    lines.push(format!("{}={}", key, v));
                 }
-                written_keys.insert(k.to_string());
-                replaced = true;
-                break;
+                // v 为空 → 不写入该行（即删除）
+                written_keys.insert(key.to_string());
+                continue;
             }
         }
-        if !replaced {
-            lines.push(line.to_string());
-        }
+        lines.push(line.to_string());
     }
 
-    for (k, v) in &key_map {
-        if !written_keys.contains(*k) {
-            if let Some(val) = v {
-                lines.push(format!("{}={}", k, val));
+    // 第二遍：追加文件里原本没有、但本次提交了非空值的已知键。
+    for k in KNOWN_ENV_KEYS {
+        if written_keys.contains(*k) {
+            continue;
+        }
+        if let Some(val) = config.get(*k) {
+            let v = val.trim();
+            if !v.is_empty() {
+                lines.push(format!("{}={}", k, v));
             }
         }
     }
@@ -676,6 +722,166 @@ fn open_logs_dir(state: State<'_, AppState>) -> Result<(), String> {
         fs::create_dir_all(&logs_dir).map_err(|e| e.to_string())?;
     }
     open::that(&logs_dir).map_err(|e| e.to_string())
+}
+
+// ── System Health (read-only) ────────────────────────────────────
+
+#[derive(Serialize)]
+struct CheckpointInfo {
+    exists: bool,
+    db_bytes: u64,
+    wal_bytes: u64,
+    shm_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct LogFileInfo {
+    name: String,
+    bytes: u64,
+    modified: String,
+}
+
+#[derive(Serialize)]
+struct SystemHealth {
+    project_dir: String,
+    backend_running: bool,
+    frontend_running: bool,
+    backend_port: u16,
+    frontend_port: u16,
+    checkpoints: CheckpointInfo,
+    logs: Vec<LogFileInfo>,
+}
+
+#[derive(Serialize)]
+struct DiskUsage {
+    total_bytes: u64,
+    breakdown: Vec<StorageBreakdown>,
+}
+
+fn file_len(path: &std::path::Path) -> u64 {
+    fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+/// Fast read-only health snapshot: runtime ports, checkpoints.db sizes,
+/// and a listing of `logs/` files. Does NOT walk large dirs (use
+/// `get_disk_usage` for that).
+#[tauri::command]
+fn get_system_health(state: State<'_, AppState>) -> Result<SystemHealth, String> {
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    let backend_port = *state.backend_port.lock().unwrap();
+    let frontend_port = *state.frontend_port.lock().unwrap();
+
+    // Checkpoints (WAL mode → db + -wal + -shm)
+    let data_dir = project_dir.join("data");
+    let db = data_dir.join("checkpoints.db");
+    let checkpoints = CheckpointInfo {
+        exists: db.exists(),
+        db_bytes: file_len(&db),
+        wal_bytes: file_len(&data_dir.join("checkpoints.db-wal")),
+        shm_bytes: file_len(&data_dir.join("checkpoints.db-shm")),
+    };
+
+    // Logs listing (may not exist until launcher has run once)
+    let mut logs: Vec<LogFileInfo> = Vec::new();
+    let logs_dir = project_dir.join("logs");
+    if logs_dir.is_dir() {
+        if let Ok(entries) = fs::read_dir(&logs_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let meta = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let modified = meta
+                    .modified()
+                    .ok()
+                    .map(|t| {
+                        let dt: chrono::DateTime<chrono::Local> = t.into();
+                        dt.format("%Y-%m-%d %H:%M").to_string()
+                    })
+                    .unwrap_or_default();
+                logs.push(LogFileInfo {
+                    name: entry.file_name().to_string_lossy().to_string(),
+                    bytes: meta.len(),
+                    modified,
+                });
+            }
+        }
+    }
+    logs.sort_by(|a, b| b.modified.cmp(&a.modified));
+
+    Ok(SystemHealth {
+        project_dir: project_dir.to_string_lossy().to_string(),
+        backend_running: is_port_open(backend_port),
+        frontend_running: is_port_open(frontend_port),
+        backend_port,
+        frontend_port,
+        checkpoints,
+        logs,
+    })
+}
+
+/// On-demand: walk project_dir top-level entries and report disk usage,
+/// descending by size. Slow (walks venv/.git/users), so triggered by an
+/// explicit button rather than on page load.
+#[tauri::command]
+fn get_disk_usage(state: State<'_, AppState>) -> Result<DiskUsage, String> {
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    let mut breakdown: Vec<StorageBreakdown> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in fs::read_dir(&project_dir).map_err(|e| e.to_string())?.flatten() {
+        let p = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let bytes = if p.is_dir() {
+            dir_size_bytes(&p)
+        } else {
+            entry.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+        total += bytes;
+        breakdown.push(StorageBreakdown { name, bytes });
+    }
+    breakdown.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    Ok(DiskUsage {
+        total_bytes: total,
+        breakdown,
+    })
+}
+
+/// Read-only tail of a log file under `logs/`. Path-safety: `name` must be
+/// a bare filename directly inside `logs/` (no separators / `..`).
+#[tauri::command]
+fn tail_log(name: String, lines: usize, state: State<'_, AppState>) -> Result<String, String> {
+    // Reject anything that isn't a plain filename
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+    {
+        return Err("非法日志文件名".into());
+    }
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    let logs_dir = project_dir.join("logs");
+    let target = logs_dir.join(&name);
+
+    // Resolve & confirm the file lives directly under logs_dir
+    let logs_canon = fs::canonicalize(&logs_dir).map_err(|_| "日志目录不存在".to_string())?;
+    let target_canon = fs::canonicalize(&target).map_err(|_| "日志文件不存在".to_string())?;
+    if target_canon.parent() != Some(logs_canon.as_path()) {
+        return Err("非法日志路径".into());
+    }
+    if !target_canon.is_file() {
+        return Err("不是文件".into());
+    }
+
+    let content = fs::read_to_string(&target_canon)
+        .map_err(|e| format!("读取失败: {}", e))?;
+    let n = lines.clamp(1, 5000);
+    let all: Vec<&str> = content.lines().collect();
+    let start = all.len().saturating_sub(n);
+    Ok(all[start..].join("\n"))
 }
 
 /// Open the GitHub releases page in the user's default browser.
@@ -1029,6 +1235,7 @@ fn list_admin_users(state: State<'_, AppState>) -> Result<Vec<AdminUserInfo>, St
                 .unwrap_or("")
                 .to_string(),
             has_api_keys,
+            disabled: udata.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false),
         });
     }
 
@@ -1108,6 +1315,176 @@ fn delete_admin_user(user_id: String, state: State<'_, AppState>) -> Result<(), 
 }
 
 #[tauri::command]
+fn set_admin_disabled(
+    user_id: String,
+    disabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    let path = users_json_path(&project_dir);
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut users: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+    let obj = users.as_object_mut().ok_or("users.json 格式错误")?;
+    let user = obj
+        .get_mut(&user_id)
+        .ok_or("用户不存在")?
+        .as_object_mut()
+        .ok_or("用户数据格式错误")?;
+
+    user.insert("disabled".into(), serde_json::Value::Bool(disabled));
+    // 封禁时清掉 token，强制现有会话失效
+    if disabled {
+        user.insert("token".into(), serde_json::Value::String(String::new()));
+    }
+
+    let json = serde_json::to_string_pretty(&users).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_admin_user(
+    user_id: String,
+    new_username: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let new_username = new_username.trim().to_string();
+    if new_username.is_empty() {
+        return Err("用户名不能为空".into());
+    }
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    let path = users_json_path(&project_dir);
+    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut users: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+    let obj = users.as_object_mut().ok_or("users.json 格式错误")?;
+
+    // 重名检查（排除自己）
+    for (uid, udata) in obj.iter() {
+        if uid == &user_id {
+            continue;
+        }
+        if udata.get("username").and_then(|v| v.as_str()) == Some(new_username.as_str()) {
+            return Err(format!("用户名 \"{}\" 已被占用", new_username));
+        }
+    }
+
+    let user = obj
+        .get_mut(&user_id)
+        .ok_or("用户不存在")?
+        .as_object_mut()
+        .ok_or("用户数据格式错误")?;
+    user.insert("username".into(), serde_json::Value::String(new_username));
+
+    let json = serde_json::to_string_pretty(&users).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn dir_size_bytes(path: &std::path::Path) -> u64 {
+    use walkdir::WalkDir;
+    let mut total: u64 = 0;
+    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        if let Ok(meta) = entry.metadata() {
+            if meta.is_file() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+#[tauri::command]
+fn get_admin_storage(
+    user_id: String,
+    state: State<'_, AppState>,
+) -> Result<AdminStorage, String> {
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    let user_dir = project_dir.join("users").join(&user_id);
+    if !user_dir.exists() {
+        return Ok(AdminStorage {
+            user_id,
+            total_bytes: 0,
+            breakdown: Vec::new(),
+        });
+    }
+
+    let mut breakdown: Vec<StorageBreakdown> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in fs::read_dir(&user_dir).map_err(|e| e.to_string())?.flatten() {
+        let p = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let bytes = if p.is_dir() {
+            dir_size_bytes(&p)
+        } else {
+            entry.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+        total += bytes;
+        breakdown.push(StorageBreakdown { name, bytes });
+    }
+    breakdown.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+
+    Ok(AdminStorage {
+        user_id,
+        total_bytes: total,
+        breakdown,
+    })
+}
+
+#[tauri::command]
+fn get_admin_key_status(
+    user_id: String,
+    state: State<'_, AppState>,
+) -> Result<AdminKeyStatus, String> {
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    let path = project_dir
+        .join("users")
+        .join(&user_id)
+        .join("api_keys.json");
+
+    let mut providers: Vec<String> = Vec::new();
+    if path.exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(obj) = val.as_object() {
+                    // 字段名 → 友好供应商名（仅密钥字段，密文非空即视为已配置）
+                    let map: &[(&str, &str)] = &[
+                        ("openai_api_key", "OpenAI"),
+                        ("anthropic_api_key", "Anthropic"),
+                        ("tavily_api_key", "Tavily"),
+                        ("cloudsway_search_key", "CloudsWay"),
+                        ("image_api_key", "图像"),
+                        ("tts_api_key", "TTS"),
+                        ("video_api_key", "视频"),
+                        ("s2s_api_key", "实时语音"),
+                        ("stt_api_key", "STT"),
+                        ("kimi_api_key", "Kimi"),
+                        ("minimax_api_key", "MiniMax"),
+                        ("doubao_access_key", "豆包"),
+                        ("bedrock_api_key", "Bedrock"),
+                    ];
+                    for (field, label) in map {
+                        let configured = obj
+                            .get(*field)
+                            .and_then(|v| v.as_str())
+                            .map(|s| !s.is_empty())
+                            .unwrap_or(false);
+                        if configured {
+                            providers.push(label.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(AdminKeyStatus { user_id, providers })
+}
+
+#[tauri::command]
 fn get_admin_stats(state: State<'_, AppState>) -> Result<AdminStats, String> {
     let project_dir = state.project_dir.lock().unwrap().clone();
 
@@ -1172,6 +1549,192 @@ fn get_admin_stats(state: State<'_, AppState>) -> Result<AdminStats, String> {
     })
 }
 
+// ── Token Usage Stats (P3) ───────────────────────────────────────
+// 直读 users/{admin}/llm_usage/usage-YYYY-MM.jsonl（P0 落盘），按用户/模型/
+// 渠道/日期聚合。纯文件读，不走后端 HTTP——符合「启动器读文件」原则。
+
+#[derive(Serialize, Default, Clone)]
+struct UsageBucket {
+    calls: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+}
+
+impl UsageBucket {
+    fn add(&mut self, inp: u64, out: u64, tot: u64) {
+        self.calls += 1;
+        self.input_tokens += inp;
+        self.output_tokens += out;
+        self.total_tokens += tot;
+    }
+}
+
+#[derive(Serialize)]
+struct NamedBucket {
+    name: String,
+    calls: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+}
+
+#[derive(Serialize)]
+struct TokenUsageStats {
+    total: UsageBucket,
+    by_user: Vec<NamedBucket>,
+    by_model: Vec<NamedBucket>,
+    by_channel: Vec<NamedBucket>,
+    by_day: Vec<NamedBucket>,
+    months_scanned: u32,
+}
+
+#[derive(Deserialize)]
+struct UsageRecord {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    input_tokens: i64,
+    #[serde(default)]
+    output_tokens: i64,
+    #[serde(default)]
+    total_tokens: i64,
+    #[serde(default)]
+    ts: String,
+    #[serde(default)]
+    channel: String,
+}
+
+fn bucket_map_to_sorted_vec(map: HashMap<String, UsageBucket>, by_name: bool) -> Vec<NamedBucket> {
+    let mut v: Vec<NamedBucket> = map
+        .into_iter()
+        .map(|(name, b)| NamedBucket {
+            name,
+            calls: b.calls,
+            input_tokens: b.input_tokens,
+            output_tokens: b.output_tokens,
+            total_tokens: b.total_tokens,
+        })
+        .collect();
+    if by_name {
+        // 日期升序（YYYY-MM-DD 字典序即时间序）
+        v.sort_by(|a, b| a.name.cmp(&b.name));
+    } else {
+        // 用量降序（token 多的在前）
+        v.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+    }
+    v
+}
+
+#[tauri::command]
+fn get_token_usage_stats(months: Option<u32>, state: State<'_, AppState>) -> TokenUsageStats {
+    let months = months.unwrap_or(6).clamp(1, 24);
+    let project_dir = state.project_dir.lock().unwrap().clone();
+    let users_dir = project_dir.join("users");
+
+    // uid → username（用于面板友好显示）
+    let mut uid_to_name: HashMap<String, String> = HashMap::new();
+    if let Ok(content) = fs::read_to_string(users_json_path(&project_dir)) {
+        if let Ok(users) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(obj) = users.as_object() {
+                for (uid, udata) in obj {
+                    if let Some(name) = udata.get("username").and_then(|v| v.as_str()) {
+                        uid_to_name.insert(uid.clone(), name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut total = UsageBucket::default();
+    let mut by_user: HashMap<String, UsageBucket> = HashMap::new();
+    let mut by_model: HashMap<String, UsageBucket> = HashMap::new();
+    let mut by_channel: HashMap<String, UsageBucket> = HashMap::new();
+    let mut by_day: HashMap<String, UsageBucket> = HashMap::new();
+
+    if let Ok(entries) = fs::read_dir(&users_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let admin_id = entry.file_name().to_string_lossy().to_string();
+            let llm_dir = path.join("llm_usage");
+            if !llm_dir.is_dir() {
+                continue;
+            }
+            // 收集 usage-*.jsonl，按文件名倒序（最近月份在前），取最近 months 个
+            let mut files: Vec<PathBuf> = Vec::new();
+            if let Ok(rd) = fs::read_dir(&llm_dir) {
+                for f in rd.flatten() {
+                    let fname = f.file_name().to_string_lossy().to_string();
+                    if fname.starts_with("usage-") && fname.ends_with(".jsonl") {
+                        files.push(f.path());
+                    }
+                }
+            }
+            files.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+            files.truncate(months as usize);
+
+            let display_name = uid_to_name
+                .get(&admin_id)
+                .cloned()
+                .unwrap_or_else(|| admin_id.clone());
+
+            for file in files {
+                let content = match fs::read_to_string(&file) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let rec: UsageRecord = match serde_json::from_str(line) {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    let inp = rec.input_tokens.max(0) as u64;
+                    let out = rec.output_tokens.max(0) as u64;
+                    let tot = if rec.total_tokens > 0 {
+                        rec.total_tokens as u64
+                    } else {
+                        inp + out
+                    };
+                    total.add(inp, out, tot);
+                    by_user.entry(display_name.clone()).or_default().add(inp, out, tot);
+                    let model = if rec.model.is_empty() {
+                        "(未知)".to_string()
+                    } else {
+                        rec.model.clone()
+                    };
+                    by_model.entry(model).or_default().add(inp, out, tot);
+                    let channel = if rec.channel.is_empty() {
+                        "(其它)".to_string()
+                    } else {
+                        rec.channel.clone()
+                    };
+                    by_channel.entry(channel).or_default().add(inp, out, tot);
+                    let day: String = rec.ts.chars().take(10).collect();
+                    if day.len() == 10 {
+                        by_day.entry(day).or_default().add(inp, out, tot);
+                    }
+                }
+            }
+        }
+    }
+
+    TokenUsageStats {
+        total,
+        by_user: bucket_map_to_sorted_vec(by_user, false),
+        by_model: bucket_map_to_sorted_vec(by_model, false),
+        by_channel: bucket_map_to_sorted_vec(by_channel, false),
+        by_day: bucket_map_to_sorted_vec(by_day, true),
+        months_scanned: months,
+    }
+}
+
 // ── App ──────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1217,7 +1780,15 @@ pub fn run() {
             list_admin_users,
             reset_admin_password,
             delete_admin_user,
+            set_admin_disabled,
+            rename_admin_user,
+            get_admin_storage,
+            get_admin_key_status,
             get_admin_stats,
+            get_token_usage_stats,
+            get_system_health,
+            get_disk_usage,
+            tail_log,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build JellyfishBot launcher")

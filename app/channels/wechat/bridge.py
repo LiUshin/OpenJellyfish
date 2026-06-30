@@ -19,6 +19,7 @@ from app.services.published import (
     save_consumer_attachment, get_consumer_attachment_dir,
 )
 from app.services.consumer_agent import create_consumer_agent
+from app.services.token_usage import build_usage_callbacks
 from app.services.usage_log import record_request
 
 log = logging.getLogger("wechat.bridge")
@@ -435,7 +436,13 @@ async def _run_agent_and_reply(
         channel="wechat",
     )
     thread_id = f"svc-{session.service_id}-{session.conversation_id}"
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": build_usage_callbacks(
+            session.admin_id, service_id=session.service_id,
+            channel="wechat", conv_id=session.conversation_id,
+        ),
+    }
 
     # Bracket the entire streaming + post-stream send/save section so any L2
     # scheduled-task injections queued for this thread wait until we finish.

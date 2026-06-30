@@ -49,6 +49,7 @@ from app.routes.scheduler import router as scheduler_router
 from app.routes.consumer_ui import router as consumer_ui_router
 from app.routes.inbox import router as inbox_router
 from app.routes.backup import router as backup_router
+from app.routes.usage import router as usage_router
 from app.voice.router import router as voice_router
 from app.routes.voice_live import router as voice_live_router
 try:
@@ -89,6 +90,7 @@ app.include_router(consumer_ui_router)
 app.include_router(scheduler_router)
 app.include_router(inbox_router)
 app.include_router(backup_router)
+app.include_router(usage_router)
 app.include_router(voice_router)
 app.include_router(voice_live_router)
 if _WECHAT_AVAILABLE:

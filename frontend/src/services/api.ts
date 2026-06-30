@@ -1232,3 +1232,36 @@ export async function updateVoiceAgentConfig(
 export async function resetVoiceAgentConfig(): Promise<VoiceAgentConfig> {
   return request('DELETE', '/voice/live/config');
 }
+
+// ── Token Usage ──────────────────────────────────────────────────
+export interface UsageBucket {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+export interface UsageRow extends UsageBucket {
+  name: string;
+  id?: string;
+}
+
+export interface UsageSummary {
+  total: UsageBucket;
+  months_scanned: number;
+  by_model: UsageRow[];
+  by_service: UsageRow[];
+  by_key: UsageRow[];
+  by_provider: UsageRow[];
+  by_channel: UsageRow[];
+  by_day: UsageRow[];
+}
+
+export async function getUsageSummary(months = 3): Promise<UsageSummary> {
+  return request('GET', `/usage/summary?months=${encodeURIComponent(months)}`);
+}
+
+/** 单个 service 的 token 用量聚合（admin 在「服务页」查看自己某服务的用量）。 */
+export async function getServiceTokenUsage(serviceId: string, months = 3): Promise<UsageSummary> {
+  return request('GET', `/services/${encodeURIComponent(serviceId)}/token-usage?months=${encodeURIComponent(months)}`);
+}

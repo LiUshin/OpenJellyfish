@@ -14,6 +14,7 @@ import InboxPage from '../pages/Settings/InboxPage';
 import GeneralPage from '../pages/Settings/GeneralPage';
 import BackupPage from '../pages/Settings/BackupPage';
 import VoicePage from '../pages/Settings/VoicePage';
+import UsagePage from '../pages/Settings/UsagePage';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { Spin } from 'antd';
 
@@ -110,6 +111,7 @@ export default function AppRouter() {
             <Route path="wechat" element={<WeChatPage />} />
             <Route path="voice" element={<VoicePage />} />
             <Route path="inbox" element={<InboxPage />} />
+            <Route path="usage" element={<UsagePage />} />
             <Route path="general" element={<GeneralPage />} />
             <Route path="backup" element={<BackupPage />} />
           </Route>

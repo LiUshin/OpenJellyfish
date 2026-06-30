@@ -17,6 +17,7 @@ from app.services.conversations import save_message, save_attachment
 from app.services.tools import PLAN_MODE_PROMPT
 from app.services.prompt import stamp_message, expand_file_mentions
 from app.core.observability import get_langfuse_callbacks, get_langfuse_metadata, flush_langfuse, is_langfuse_enabled
+from app.services.token_usage import build_usage_callbacks
 from app.deps import get_current_user
 
 _log = logging.getLogger("chat")
@@ -613,7 +614,7 @@ async def api_chat(req: ChatRequest, user=Depends(get_current_user)):
     thread_id = f"{user_id}-{conv_id}"
     config = {
         "configurable": {"thread_id": thread_id},
-        "callbacks": get_langfuse_callbacks(),
+        "callbacks": build_usage_callbacks(user_id, channel="web", conv_id=conv_id, model_hint=req.model or ""),
         "metadata": get_langfuse_metadata(session_id=thread_id, user_id=username),
     }
     user_content = canonical_message
@@ -681,7 +682,7 @@ async def api_chat_resume(req: ResumeRequest, user=Depends(get_current_user)):
     thread_id = f"{user_id}-{conv_id}"
     config = {
         "configurable": {"thread_id": thread_id},
-        "callbacks": get_langfuse_callbacks(),
+        "callbacks": build_usage_callbacks(user_id, channel="web", conv_id=conv_id, model_hint=req.model or ""),
         "metadata": get_langfuse_metadata(session_id=thread_id, user_id=username),
     }
     return _sse_response(_stream_agent(agent, Command(resume={"decisions": req.decisions}), config, user_id, conv_id, yolo=bool(req.yolo)))
