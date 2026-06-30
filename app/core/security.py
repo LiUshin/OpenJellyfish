@@ -158,6 +158,8 @@ def login(username: str, password: str) -> Dict[str, Any]:
     users = _load_users()
     for uid, info in users.items():
         if info.get("username") == username:
+            if info.get("disabled"):
+                return {"success": False, "error": "账户已被禁用，请联系管理员"}
             if _verify_password(password, info["password_hash"]):
                 new_token = secrets.token_hex(24)
                 users[uid]["token"] = new_token
@@ -174,6 +176,8 @@ def verify_token(token: str) -> Optional[Dict[str, Any]]:
     users = _load_users()
     for uid, info in users.items():
         if info.get("token") == token:
+            if info.get("disabled"):
+                return None
             return {"user_id": uid, "username": info["username"]}
     return None
 

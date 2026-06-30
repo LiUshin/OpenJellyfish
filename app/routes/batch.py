@@ -12,6 +12,7 @@ from app.core.security import verify_token
 from app.schemas.requests import BatchRunRequest
 from app.services.agent import create_batch_agent
 from app.services.prompt import get_user_system_prompt, get_prompt_version
+from app.services.token_usage import build_usage_callbacks
 from app.deps import get_current_user
 from app.storage import get_storage_service
 
@@ -191,7 +192,12 @@ async def _run_batch_task(task_id: str, user_id: str, model: str, prompt_content
                 thread_id = f"batch-{task_id}-row{row}"
                 result = await agent.ainvoke(
                     {"messages": [{"role": "user", "content": query}]},
-                    config={"configurable": {"thread_id": thread_id}},
+                    config={
+                        "configurable": {"thread_id": thread_id},
+                        "callbacks": build_usage_callbacks(
+                            user_id, channel="batch", model_hint=model or ""
+                        ),
+                    },
                 )
                 content_text = ""
                 tool_calls_text = ""

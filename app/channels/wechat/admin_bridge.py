@@ -369,6 +369,7 @@ async def _run_admin_agent_and_reply(
     """
     from app.services.agent import create_user_agent
     from app.services.prompt import stamp_message
+    from app.services.token_usage import build_usage_callbacks
     from langgraph.types import Command
 
     user_id = session["user_id"]
@@ -380,7 +381,10 @@ async def _run_admin_agent_and_reply(
         capabilities=["humanchat", "image", "speech"],
     )
     thread_id = f"{user_id}-{conv_id}"
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": build_usage_callbacks(user_id, channel="wechat", conv_id=conv_id),
+    }
 
     # Bracket the entire streaming + post-stream send/save section inside a
     # scheduled_inject.thread_active context so any L2 injections queued for

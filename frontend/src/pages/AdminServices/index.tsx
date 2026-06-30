@@ -34,15 +34,16 @@ import {
   getModels, listPromptVersions, listProfileVersions, listServiceKeys,
   createServiceKey, deleteServiceKey, request,
   listServiceConversations, getServiceConversation, deleteServiceConversation,
-  listServiceUsage,
+  listServiceUsage, getServiceTokenUsage,
 } from '../../services/api';
 import type {
   ServiceConfig, ModelInfo, PromptVersion,
   ServiceKey, WeChatSession, WeChatMessage,
 } from '../../types';
 import type {
-  ServiceConvSummary, ServiceConvDetail, ServiceUsageRecord,
+  ServiceConvSummary, ServiceConvDetail, ServiceUsageRecord, UsageSummary,
 } from '../../services/api';
+import UsageView from '../../components/UsageView';
 import { fmtUserTime } from '../../utils/timezone';
 import LogoLoading from '../../components/LogoLoading';
 import { useIsMobile } from '../../hooks/useMediaQuery';
@@ -348,8 +349,12 @@ export default function AdminServicesPage() {
   const [svcConvsLoading, setSvcConvsLoading] = useState(false);
   const [svcUsage, setSvcUsage] = useState<ServiceUsageRecord[]>([]);
   const [svcUsageLoading, setSvcUsageLoading] = useState(false);
-  const [usageView, setUsageView] = useState<'convs' | 'records'>('convs');
+  const [usageView, setUsageView] = useState<'convs' | 'records' | 'tokens'>('convs');
   const [usageChannelFilter, setUsageChannelFilter] = useState<'' | 'web' | 'api' | 'wechat'>('');
+  // 用量(Tokens)：单 service 的 LLM token 用量聚合
+  const [svcTokenUsage, setSvcTokenUsage] = useState<UsageSummary | null>(null);
+  const [svcTokenLoading, setSvcTokenLoading] = useState(false);
+  const [tokenMonths, setTokenMonths] = useState(3);
 
   // service consumer 会话查看 Drawer
   const [convDrawerOpen, setConvDrawerOpen] = useState(false);
@@ -554,6 +559,17 @@ export default function AdminServicesPage() {
     }
   }, []);
 
+  const loadSvcTokenUsage = useCallback(async (sid: string, months: number) => {
+    setSvcTokenLoading(true);
+    try {
+      setSvcTokenUsage(await getServiceTokenUsage(sid, months));
+    } catch {
+      setSvcTokenUsage(null);
+    } finally {
+      setSvcTokenLoading(false);
+    }
+  }, []);
+
   const openSvcConvDrawer = useCallback(async (sid: string, cid: string) => {
     setConvDrawerOpen(true);
     setConvDrawerLoading(true);
@@ -590,6 +606,8 @@ export default function AdminServicesPage() {
     }
     loadSvcConvs(svc.id);
     loadSvcUsage(svc.id);
+    setSvcTokenUsage(null);
+    setUsageView('convs');
   };
 
   const openCreateModal = () => {
@@ -1334,10 +1352,17 @@ export default function AdminServicesPage() {
                     <Segmented
                       size="small"
                       value={usageView}
-                      onChange={(v) => setUsageView(v as 'convs' | 'records')}
+                      onChange={(v) => {
+                        const view = v as 'convs' | 'records' | 'tokens';
+                        setUsageView(view);
+                        if (view === 'tokens' && currentSvc && !svcTokenUsage) {
+                          loadSvcTokenUsage(currentSvc.id, tokenMonths);
+                        }
+                      }}
                       options={[
                         { value: 'convs', label: `会话 (${svcConvs.length})` },
                         { value: 'records', label: `调用 (${svcUsage.length})` },
+                        { value: 'tokens', label: '用量' },
                       ]}
                     />
                     <Button
@@ -1346,7 +1371,8 @@ export default function AdminServicesPage() {
                       onClick={() => {
                         if (!currentSvc) return;
                         if (usageView === 'convs') loadSvcConvs(currentSvc.id);
-                        else loadSvcUsage(currentSvc.id, usageChannelFilter);
+                        else if (usageView === 'records') loadSvcUsage(currentSvc.id, usageChannelFilter);
+                        else loadSvcTokenUsage(currentSvc.id, tokenMonths);
                       }}
                     >
                       刷新
@@ -1368,6 +1394,32 @@ export default function AdminServicesPage() {
                       style: { background: (index ?? 0) % 2 === 0 ? C.bg1 : C.bg2 },
                     })}
                   />
+                ) : usageView === 'tokens' ? (
+                  <>
+                    <div style={{ marginBottom: 8 }}>
+                      <Segmented
+                        size="small"
+                        value={tokenMonths}
+                        onChange={(v) => {
+                          const m = v as number;
+                          setTokenMonths(m);
+                          if (currentSvc) loadSvcTokenUsage(currentSvc.id, m);
+                        }}
+                        options={[
+                          { value: 1, label: '近 1 月' },
+                          { value: 3, label: '近 3 月' },
+                          { value: 6, label: '近 6 月' },
+                        ]}
+                      />
+                    </div>
+                    {svcTokenLoading ? (
+                      <div style={{ padding: '40px 0', textAlign: 'center' }}><Spin /></div>
+                    ) : svcTokenUsage ? (
+                      <UsageView data={svcTokenUsage} dims={{ channel: true, model: true, day: true, key: true, service: false, provider: false }} />
+                    ) : (
+                      <Empty description="暂无用量数据" />
+                    )}
+                  </>
                 ) : (
                   <>
                     <div style={{ marginBottom: 8 }}>

@@ -24,7 +24,11 @@ from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
     CallbackManagerForLLMRun,
 )
-from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.language_models.chat_models import (
+    BaseChatModel,
+    agenerate_from_stream,
+    generate_from_stream,
+)
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -627,28 +631,18 @@ class ChatBedrockInvoke(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        system, api_messages = _convert_messages(messages)
-        body = self._build_body(system, api_messages, **kwargs)
+        """非流式生成：内部走 InvokeModelWithResponseStream 并聚合 chunk。
 
-        if stop:
-            body["stop_sequences"] = stop
-
-        url = self._build_url()
-        headers = self._build_headers()
-        client = self._get_client()
-
-        log.debug("Bedrock invoke: %s model=%s", url, self.model_name)
-
-        response = client.post(url, headers=headers, json=body)
-
-        if response.status_code != 200:
-            error_text = response.text[:500]
-            raise RuntimeError(
-                f"Bedrock InvokeModel failed ({response.status_code}): {error_text}"
-            )
-
-        data = response.json()
-        return self._parse_response(data)
+        历史上这里直接 POST 非流式 InvokeModel 端点，但 thinking 模型（尤其
+        Claude Opus 4.7 的 adaptive thinking）在非流式端点上会被 Bedrock 以
+        503「unable to process your request」拒绝（deepagents 的摘要中间件用
+        ainvoke 调用模型时必现）。统一路由到流式端点 + ``generate_from_stream``
+        聚合，既绕开会失败的非流式端点，又复用 ``_stream`` 的空流兜底/重试。
+        """
+        stream_iter = self._stream(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        )
+        return generate_from_stream(stream_iter)
 
     async def _agenerate(
         self,
@@ -657,28 +651,11 @@ class ChatBedrockInvoke(BaseChatModel):
         run_manager: Optional[AsyncCallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        system, api_messages = _convert_messages(messages)
-        body = self._build_body(system, api_messages, **kwargs)
-
-        if stop:
-            body["stop_sequences"] = stop
-
-        url = self._build_url()
-        headers = self._build_headers()
-        client = self._get_aclient()
-
-        log.debug("Bedrock invoke (async): %s model=%s", url, self.model_name)
-
-        response = await client.post(url, headers=headers, json=body)
-
-        if response.status_code != 200:
-            error_text = response.text[:500]
-            raise RuntimeError(
-                f"Bedrock InvokeModel failed ({response.status_code}): {error_text}"
-            )
-
-        data = response.json()
-        return self._parse_response(data)
+        """异步非流式生成：内部走流式端点聚合（理由同 ``_generate``）。"""
+        stream_iter = self._astream(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        )
+        return await agenerate_from_stream(stream_iter)
 
     def _anthropic_event_to_chunk(
         self, event: Dict[str, Any], state: Dict[str, Any]
@@ -777,6 +754,22 @@ class ChatBedrockInvoke(BaseChatModel):
             if usage:
                 state["usage_out"] = usage.get("output_tokens", 0)
                 state["stop_reason"] = event.get("delta", {}).get("stop_reason", "")
+                # 发射 usage_metadata chunk：让 token 用量沿 LangChain 标准管线流出
+                # （AIMessageChunk.__add__ 会累加，回调 on_llm_end 即可读到），
+                # 从而被 token 统计回调统一捕获——与原生 ChatAnthropic/ChatOpenAI 一致。
+                in_tok = int(state.get("usage_in", 0) or 0)
+                out_tok = int(state.get("usage_out", 0) or 0)
+                if in_tok or out_tok:
+                    return ChatGenerationChunk(
+                        message=AIMessageChunk(
+                            content="",
+                            usage_metadata={
+                                "input_tokens": in_tok,
+                                "output_tokens": out_tok,
+                                "total_tokens": in_tok + out_tok,
+                            },
+                        )
+                    )
             return None
 
         return None

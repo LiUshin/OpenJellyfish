@@ -136,3 +136,26 @@ async def api_list_service_usage(
         limit=limit, channel=channel,
     )
     return {"records": records, "limit": limit, "channel": channel}
+
+
+@router.get("/{service_id}/token-usage")
+async def api_service_token_usage(
+    service_id: str,
+    months: int = Query(3, ge=1, le=24),
+    user=Depends(get_current_user),
+):
+    """该 service 的 LLM token 用量聚合（admin 看自己某个服务烧了多少 token）。
+
+    复用 ``token_usage.aggregate_usage`` 的 ``service_id`` 过滤 + ``usage`` 路由的
+    key 友好名映射，返回与 ``/api/usage/summary`` 同结构的 UsageSummary。
+    """
+    admin_id = user["user_id"]
+    if not get_service(admin_id, service_id):
+        raise HTTPException(status_code=404, detail="Service 不存在")
+    from app.services.token_usage import aggregate_usage
+    from app.routes.usage import _key_name_map, _label_rows
+    agg = aggregate_usage(admin_id, months=months, service_id=service_id)
+    agg["by_key"] = _label_rows(
+        agg.get("by_key", []), _key_name_map(admin_id), "—（无 Key）"
+    )
+    return agg

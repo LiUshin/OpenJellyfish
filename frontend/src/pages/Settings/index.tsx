@@ -13,6 +13,7 @@ import {
   GearSix,
   Archive,
   Microphone,
+  ChartBar,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import * as api from '../../services/api';
@@ -53,6 +54,7 @@ export default function SettingsLayout() {
         </span>
       ),
     },
+    { key: '/settings/usage', icon: <ChartBar size={18} />, label: t('settings.usage') },
     { key: '/settings/general', icon: <GearSix size={18} />, label: t('settings.general') },
     { key: '/settings/backup', icon: <Archive size={18} />, label: t('settings.backup') },
   ], [inboxUnread, t]);
