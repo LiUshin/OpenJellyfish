@@ -1,5 +1,5 @@
 # ============================================================
-# JellyfishBot Docker Compose
+# OpenJellyfish Docker Compose
 #
 # 使用方式:
 #   1. 在项目目录创建 .env 文件（或从上级目录复制需要的变量）
@@ -24,22 +24,22 @@ services:
   # ==================== Nginx 反向代理 ====================
   nginx:
     image: nginx:alpine
-    container_name: jellyfishbot-nginx
+    container_name: openjellyfish-nginx
     restart: unless-stopped
     ports:
       - "80:80"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
-      jellyfishbot:
+      openjellyfish:
         condition: service_healthy
 
-  # ==================== JellyfishBot 应用 ====================
-  jellyfishbot:
+  # ==================== OpenJellyfish 应用 ====================
+  openjellyfish:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: jellyfishbot
+    container_name: openjellyfish
     restart: unless-stopped
     # 不直接对外暴露端口，由 nginx 反向代理
     # 如需本机调试，取消下面的注释:

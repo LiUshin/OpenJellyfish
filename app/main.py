@@ -1,5 +1,5 @@
 """
-JellyfishBot — FastAPI application entry point.
+OpenJellyfish — FastAPI application entry point.
 
 New structure:
     app/core/       — settings, security, observability
@@ -49,6 +49,7 @@ from app.routes.scheduler import router as scheduler_router
 from app.routes.consumer_ui import router as consumer_ui_router
 from app.routes.inbox import router as inbox_router
 from app.routes.backup import router as backup_router
+from app.routes.workspace import router as workspace_router
 from app.routes.usage import router as usage_router
 from app.voice.router import router as voice_router
 from app.routes.voice_live import router as voice_live_router
@@ -59,11 +60,11 @@ try:
     _WECHAT_AVAILABLE = True
 except ImportError:
     _WECHAT_AVAILABLE = False
-    print("[JellyfishBot] WeChat channel unavailable (missing qrcode/pycryptodome)")
+    print("[OpenJellyfish] WeChat channel unavailable (missing qrcode/pycryptodome)")
 
 
 app = FastAPI(
-    title="JellyfishBot API",
+    title="OpenJellyfish API",
     version="2.0.0",
     description="AI agent with filesystem, voice, batch execution and tool-calling capabilities.",
 )
@@ -90,6 +91,7 @@ app.include_router(consumer_ui_router)
 app.include_router(scheduler_router)
 app.include_router(inbox_router)
 app.include_router(backup_router)
+app.include_router(workspace_router)
 app.include_router(usage_router)
 app.include_router(voice_router)
 app.include_router(voice_live_router)
@@ -118,7 +120,7 @@ def _apply_safe_startup() -> None:
     os.environ["DISABLE_SCHEDULER"] = "1"
     os.environ["RESTORE_VENVS_ON_STARTUP"] = "0"
     print(
-        "[JellyfishBot] SAFE_STARTUP: set DISABLE_SCHEDULER=1, "
+        "[OpenJellyfish] SAFE_STARTUP: set DISABLE_SCHEDULER=1, "
         "RESTORE_VENVS_ON_STARTUP=0 (remove SAFE_STARTUP after recovery)"
     )
 
@@ -132,21 +134,21 @@ async def startup():
     _apply_safe_startup()
 
     await init_checkpointer()
-    print("[JellyfishBot] Checkpointer initialized")
+    print("[OpenJellyfish] Checkpointer initialized")
 
     from app.services.scheduler import get_scheduler
     if _is_scheduler_disabled():
-        print("[JellyfishBot] Task scheduler DISABLED (DISABLE_SCHEDULER env)")
+        print("[OpenJellyfish] Task scheduler DISABLED (DISABLE_SCHEDULER env)")
     else:
         get_scheduler().start()
-        print("[JellyfishBot] Task scheduler started")
+        print("[OpenJellyfish] Task scheduler started")
 
     from app.services.venv_manager import restore_all_venvs, restore_venvs_on_startup_enabled
     await restore_all_venvs()
     if restore_venvs_on_startup_enabled():
-        print("[JellyfishBot] User venvs verified")
+        print("[OpenJellyfish] User venvs verified")
     else:
-        print("[JellyfishBot] Venv restore skipped at startup")
+        print("[OpenJellyfish] Venv restore skipped at startup")
 
     if _WECHAT_AVAILABLE:
         from app.channels.wechat.session_manager import get_session_manager
@@ -157,10 +159,10 @@ async def startup():
         await manager.restore_sessions()
         await manager.start_all_polling()
         manager.start_cleanup_task(inactive_minutes=60 * 24)
-        print("[JellyfishBot] WeChat session manager initialized")
+        print("[OpenJellyfish] WeChat session manager initialized")
 
         await restore_admin_sessions()
-        print("[JellyfishBot] Admin WeChat sessions restored")
+        print("[OpenJellyfish] Admin WeChat sessions restored")
 
 
 @app.on_event("shutdown")
@@ -175,7 +177,7 @@ async def shutdown():
         await get_session_manager().shutdown()
         await shutdown_admin_sessions()
     shutdown_langfuse()
-    print("[JellyfishBot] Shutdown complete")
+    print("[OpenJellyfish] Shutdown complete")
 
 
 @app.get("/api/health")

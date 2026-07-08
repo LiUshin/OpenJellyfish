@@ -198,7 +198,7 @@ export default function Login() {
                 letterSpacing: '-0.02em',
               }}
             >
-              JellyfishBot
+              OpenJellyfish
             </Title>
             <Text style={{ color: 'var(--jf-text-muted)', fontSize: 16 }}>
               {t('login.tagline')}

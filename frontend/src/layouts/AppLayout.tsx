@@ -228,7 +228,7 @@ export default function AppLayout() {
             }}
             onClick={() => { if (!isMobile) setCollapsed(!collapsed); }}
           >
-            JellyfishBot
+            OpenJellyfish
           </span>
         )}
         <Tooltip title={isDark ? t('header.switchToLight') : t('header.switchToDark')} placement="top">

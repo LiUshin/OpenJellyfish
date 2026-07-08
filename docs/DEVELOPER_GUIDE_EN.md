@@ -1,7 +1,7 @@
-# JellyfishBot Developer Guide
+# OpenJellyfish Developer Guide
 
 > Complete technical documentation for developers: architecture, backend/frontend modules, security mechanisms, extension patterns, and deployment.
-> Last updated: 2026-04-21 (synchronized with `.cursorrules` and `docs/filesystem-architecture.md`)
+> Last updated: 2026-07-07 (synchronized with `.cursorrules` and `docs/filesystem-architecture.md`)
 
 ---
 
@@ -430,6 +430,7 @@ Exact time is no longer written to system prompt (daily cache would freeze time)
 | `web_search` / `web_fetch` | CloudsWay / Tavily | ✅ Always | `web` capability |
 | `generate_image` / `generate_speech` / `generate_video` | OpenAI multimedia | By capability | By capability |
 | `schedule_task` / `manage_scheduled_tasks` | Scheduled task CRUD | ✅ Always | `scheduler` capability |
+| `spawn_child_task` | Spawn child task from current scheduler context (task tree) | ✅ (scheduler/agent context) | ✅ (scheduler/agent context) |
 | `publish_service_task` | Admin dispatches task to Service | ✅ Always | ❌ |
 | `send_message` | Send to WeChat user | Injected in wechat channel | `humanchat` capability + non-web channel |
 | `contact_admin` | Service notifies admin | ❌ | `humanchat` capability |
@@ -468,8 +469,8 @@ Dual provider, resolves key by user_id:
 - **Storage**: `users/{uid}/subagents.json`
 - **DEFAULT_SUBAGENTS**: includes one built-in `memory` subagent (cannot delete, but can disable)
 - **Available tool pool** (`SHARED_TOOL_NAMES + MEMORY_TOOL_NAMES`):
-  - General: `run_script` / `web_search` / `web_fetch` / `generate_image` / `generate_speech` / `generate_video` / `schedule_task` / `manage_scheduled_tasks` / `publish_service_task` / `send_message`
-  - Memory: `list_conversations` / `read_conversation` / `list_service_conversations` / `read_service_conversation` / `read_inbox` / `soul_list` / `soul_read` / `soul_write` / `soul_delete`
+  - General: `run_script` / `web_search` / `web_fetch` / `generate_image` / `generate_speech` / `generate_video` / `schedule_task` / `manage_scheduled_tasks` / `spawn_child_task` / `publish_service_task` / `send_message`
+  - Memory: `list_conversations` / `read_conversation` / `list_service_conversations` / `read_service_conversation` / `read_inbox` / `list_task_trees` / `read_task_tree` / `soul_list` / `soul_read` / `soul_write` / `soul_delete`
 - **On-demand creation**: `build_subagent_tools(subagent_config, user_id)` only instantiates tools listed in config
 - **API**: `GET /api/subagents` (with `available_tools`) + CRUD
 
@@ -1194,19 +1195,38 @@ _MEDIA_TAG_RE = re.compile(r"<<FILE:([^>]+?)>>")
 
 ## 8. Scheduler (Scheduled Tasks)
 
-### 8.1 Scheduler Design
+### 8.1 Scheduler Design (v2)
 
-- `app/services/scheduler.py::TaskScheduler` singleton, asyncio loop checks every 30s
-- Started by `main.py` startup, gracefully stopped on shutdown
+- `app/services/scheduler.py::HeapScheduler` (`TaskScheduler` alias): **min-heap** `[(next_run_unix, task_path)]` + `asyncio.Event` wake — replaces v1 30s polling
+- Started/stopped with `main.py` lifecycle
+- Any `next_run_at` change calls `_wake_event.set()`
+- 600s full rescan fallback; concurrency capped by `SCHEDULER_MAX_CONCURRENT` (default 4)
+- `DISABLE_SCHEDULER=1` skips startup (emergency)
 
-### 8.2 Task Storage
+### 8.2 Task Storage (file tree)
 
-| Type | Path | Prefix |
-|------|------|--------|
-| Admin tasks | `users/{uid}/tasks/{task_id}.json` | `task_*` |
-| Service tasks | `users/{uid}/services/{svc}/tasks/{task_id}.json` | `stask_*` |
+| Type | Path | ID prefix |
+|------|------|-----------|
+| Admin root/child | `users/{uid}/tasks/{root_id}/[{child_id}/...]/_meta.json` | `task_*` |
+| Service root/child | `users/{uid}/services/{svc}/tasks/{root_id}/[...]/_meta.json` | `stask_*` |
 
-Each task file contains the last 20 run records.
+- `root_task_id` = first path segment; `scheduler_tree.task_path_for(task_id)` resolves disk path
+- Run steps: `{task_path}/runs/{run_id}.jsonl` (append-only)
+- v1 flat `{task_id}.json` **lazy-migrates** to tree (`scripts/migrate_tasks_to_tree.py`)
+- `list_tasks(..., roots_only=True)` returns roots only (UI sidebar); heap reload uses `list_all_tasks_flat`
+
+### 8.2.1 Spawn children & context
+
+- `spawn_child_task` + `create_child_task()`; `ContextVar` `_current_task_var` set/reset in `_execute_*_task` (**must reset in finally**)
+- Inherits parent `reply_to` / `permissions` / `capabilities` / `tz_offset_hours` / `model` by default
+- Rate limit: `spawn_limits.check_chain_quota` (default 30/hour/chain, `SCHED_SPAWN_RATE_PER_HOUR`)
+- L3: `descendants_summary` appended to ancestors after child finishes (LRU 1500 chars)
+
+### 8.2.2 Per-task model
+
+- Optional `task_config.model` (catalog id); empty → `_get_default_model(user_id)`
+- Admin: `create_schedule_tool` / `manage_scheduled_tasks` / `spawn_child_task` support `model`
+- Service: `_run_service_agent_task` passes `config.model` as `model_override` to `create_consumer_agent`
 
 ### 8.3 Task Types
 
@@ -1312,6 +1332,18 @@ Consumer agent via:
 - `session_ids` optional parameter to target specific WeChat sessions
 - `run_now` scheduling uses `_schedule_coro` thread-safe mode
 
+### 8.11 v2 API (tree / quota)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/scheduler/{task_id}/tree?max_depth=5` | Task tree |
+| GET | `/api/scheduler/{task_id}/children` | Direct children |
+| GET | `/api/scheduler/{task_id}/ancestors` | Ancestor chain |
+| GET | `/api/scheduler/quotas/{root_task_id}` | Spawn chain quota (peek) |
+| POST | `/api/scheduler/admin/migrate` | v1→v2 migration (`dry_run`) |
+
+Service mirror: `/api/scheduler/services/{service_id}/...`
+
 ---
 
 ## 9. Inbox
@@ -1361,22 +1393,30 @@ Service Agent
 
 ## 10. Realtime Voice (S2S WebSocket)
 
-### 10.1 Module
+### 10.1 S2S module (legacy path)
 
-`app/voice/router.py` provides WebSocket endpoint `/api/voice/ws` as a proxy for OpenAI Realtime API.
-
-### 10.2 Workflow
+`app/voice/router.py` — WebSocket `/api/voice/ws` proxies OpenAI Realtime API.
 
 ```
 Browser ──WebSocket──→ FastAPI ──WebSocket──→ wss://api.openai.com/v1/realtime
-                       │
-                       └── injects tool config on session.update
-                       └── transparent tool calls + backend tool execution
 ```
 
-- Tool injection: session.update event includes Admin's configured toolset
-- Authentication: JWT in query parameter
-- API Key: override via `S2S_API_KEY` / `S2S_BASE_URL` (falls back to `OPENAI_API_KEY`)
+- Tool injection on `session.update`; JWT in query; `S2S_API_KEY` / `S2S_BASE_URL`
+
+### 10.2 LiveKit voice plugin (recommended)
+
+Separate process `plugins/voice/` + Core routes `app/routes/voice_live.py`:
+
+```
+Browser ─WebRTC→ LiveKit Server ← Worker(jellyfish_voice)
+                      │
+Worker ─HTTP/SSE─→ Core /api/voice/live/{session,delegate,llm/v1/chat/completions}
+                      └── delegates via chat._stream_agent(yolo=True), shared thread_id
+```
+
+- Bridge token: `app/voice/live_token.py`
+- Config: `users/{uid}/voice_agent_config.json`; UI **Settings → Voice**
+- Deploy: `docker-compose.voice.yml`; env `LIVEKIT_*`, `VOICE_BRIDGE_SECRET`, `FISH_*`, `DASHSCOPE_API_KEY`
 
 ---
 
@@ -1502,7 +1542,7 @@ tauri-launcher/
 #### 12.5.1 Windows `\\?\` Extended Long Path Prefix (Critical Bug 2026-04-20)
 
 - **Symptom**: Windows .exe startup — uvicorn reports `OSError: Cannot load native module 'Crypto.Util._cpuid_c'` but `.pyd` file physically exists
-- **Root cause**: Tauri's `app.path().resource_dir()` on Windows returns extended long path prefix form like `\\?\D:\JellyfishBot\`; this prefix contaminates Python subprocess `sys.executable`; pycryptodome's `os.path.isfile()` cannot find sibling `.pyd` under `\\?\` prefixed paths
+- **Root cause**: Tauri's `app.path().resource_dir()` on Windows returns extended long path prefix form like `\\?\D:\OpenJellyfish\`; this prefix contaminates Python subprocess `sys.executable`; pycryptodome's `os.path.isfile()` cannot find sibling `.pyd` under `\\?\` prefixed paths
 - **Fix**: `src-tauri/src/lib.rs`'s `strip_win_extended_prefix()` helper, forcibly strips prefix in three places: `resolve_project_dir` / `find_bundled_python` / `find_bundled_node`; `launcher.py` adds `_strip_extended_prefix()` as double defense
 - **Scope**: affects numpy / scipy / matplotlib and all packages with native extensions
 - **macOS completely unaffected**
@@ -1568,7 +1608,7 @@ Package size: DMG ~247 MB, extracted ~998 MB.
 
 ### 13.1 Features
 
-- **Old instance detection**: detects running JellyfishBot processes via port scan (lsof / netstat)
+- **Old instance detection**: detects running OpenJellyfish processes via port scan (lsof / netstat)
 - **User-confirmed kill**: lists processes occupying ports, SIGTERM → SIGKILL
 - **Auto port discovery**: default 8000 (backend) + 3000 (frontend), auto-increments if occupied
 - **Dual-process management**: starts uvicorn + Express, cleans up all processes on subprocess crash
@@ -1675,7 +1715,7 @@ Excludes `frontend/node_modules/` / `frontend/dist/` / `venv/` / `data/` / `.env
 | File operation errors | `path_security` logs, `safe_join` boundary |
 | WeChat messages not delivering | `wechat.*` logs, iLink connection status, `context_token` expiry |
 | WeChat shows literal `<<FILE:>>` | Check if `delivery.py::extract_media_tags` was called |
-| Scheduled task not running | `scheduler.py` 30s loop logs, `tz_offset_hours` field |
+| Scheduled task not running | `HeapScheduler` heap logs, `tz_offset_hours`, `DISABLE_SCHEDULER` |
 | Inbox not triggering WeChat | `_main_loop` injected, Admin WeChat connected |
 | Script "queue busy" | `SCRIPT_CONCURRENCY` env var + `SCRIPT_QUEUE_TIMEOUT` |
 | Tauri startup reports pycryptodome error | `\\?\` extended prefix (see §12.5.1) |

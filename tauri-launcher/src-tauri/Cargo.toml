@@ -1,11 +1,11 @@
 [package]
-name = "jellyfishbot-launcher"
+name = "openjellyfish-launcher"
 version = "1.2.1"
 edition = "2021"
-description = "JellyfishBot Desktop Launcher"
+description = "OpenJellyfish Desktop Launcher"
 
 [lib]
-name = "jellyfishbot_launcher_lib"
+name = "openjellyfish_launcher_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

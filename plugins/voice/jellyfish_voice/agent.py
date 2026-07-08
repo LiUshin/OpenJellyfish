@@ -1,9 +1,9 @@
-"""LiveKit Agents Worker 入口 —— JellyfishBot 语音前台。
+"""LiveKit Agents Worker 入口 —— OpenJellyfish 语音前台。
 
 数据流:
   浏览器 ──WebRTC──> LiveKit Server(SFU) <──音轨── 本 Worker
   本 Worker ──桥接令牌(读自参与者 metadata)──> Core /api/voice/live/session 引导
-  前台 Copilot 委派 ──> Core /api/voice/live/delegate(SSE)──> JellyfishBot agent
+  前台 Copilot 委派 ──> Core /api/voice/live/delegate(SSE)──> OpenJellyfish agent
 
 运行:
   python -m jellyfish_voice.agent dev      # 开发(连本地 LiveKit)
@@ -117,7 +117,7 @@ def _build_llm(provider_cfg: dict, bridge_token: str):
     Worker 不再各自对接 OpenAI/Anthropic/Bedrock:``llm_model`` 存与主 Chat 一致的
     catalog id(``provider:model``,如 ``bedrock:claude-sonnet-4-6``),原样作为
     ``model`` 发给 Core ``/api/voice/live/llm/v1/chat/completions``。Core 内部用
-    jellyfishbot 的 ``_resolve_model`` 解析(Bedrock 走 Invoke),凭据/模型选择全在
+    openjellyfish 的 ``_resolve_model`` 解析(Bedrock 走 Invoke),凭据/模型选择全在
     Core 一处,与主 Chat 完全一致。
 
     鉴权:把桥接令牌当 api_key —— openai 客户端会以 ``Authorization: Bearer`` 发出,

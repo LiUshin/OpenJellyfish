@@ -1,5 +1,5 @@
 """
-生成 JellyfishBot 注册码
+生成 OpenJellyfish 注册码
 
 用法:
     python generate_keys.py              # 生成 10 个注册码
@@ -17,10 +17,14 @@ REG_KEYS_FILE = os.path.join(CONFIG_DIR, "registration_keys.json")
 EXAMPLE_FILE = os.path.join(CONFIG_DIR, "registration_keys.example.json")
 
 
+_KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
 def generate_key() -> str:
-    part1 = secrets.token_hex(4).upper()
-    part2 = secrets.token_hex(4).upper()
-    return f"DA-{part1}-{part2}"
+    def seg() -> str:
+        return "".join(secrets.choice(_KEY_ALPHABET) for _ in range(4))
+
+    return f"OJF-{seg()}-{seg()}-{seg()}"
 
 
 def main():
@@ -37,7 +41,7 @@ def main():
         print("    使用 --append 追加，或删除文件后重新生成。")
         sys.exit(1)
     else:
-        data = {"description": "JellyfishBot 注册码 — 每个 key 只能使用一次", "keys": []}
+        data = {"description": "OpenJellyfish 注册码 — 每个 key 只能使用一次", "keys": []}
 
     new_keys = []
     for _ in range(count):

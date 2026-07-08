@@ -27,7 +27,7 @@
  * - 工具结果（block.result）展示 —— 写入成功无信息价值，失败时简短显示
  */
 
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import hljs from 'highlight.js/lib/core';
 import { FileArrowUp, FileCode, CircleNotch, CheckCircle, XCircle } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
@@ -263,7 +263,7 @@ export function FilePreviewBody({
   );
 }
 
-export default function StreamingFilePreview({ block, isStreaming = false }: Props) {
+function StreamingFilePreview({ block, isStreaming = false }: Props) {
   const isWrite = block.name === 'write_file';
   const parsed = useMemo(() => parseArgs(block.args || ''), [block.args]);
 
@@ -327,3 +327,9 @@ export default function StreamingFilePreview({ block, isStreaming = false }: Pro
     />
   );
 }
+
+// block 引用在指纹 flush 下稳定；已写完的文件卡片流式期间不再重跑高亮/diff。
+export default memo(
+  StreamingFilePreview,
+  (a, b) => a.block === b.block && a.isStreaming === b.isStreaming,
+);

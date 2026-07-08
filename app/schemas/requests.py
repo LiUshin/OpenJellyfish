@@ -24,6 +24,11 @@ class ChatRequest(BaseModel):
     capabilities: Optional[list] = None
     plan_mode: Optional[bool] = None
     yolo: Optional[bool] = None
+    # Workspace lock: lock_mode "auto" (default, grab broadest free region),
+    # "manual" (lock exactly lock_paths), or "agent" (acquire nothing; the agent
+    # declares its write region via the acquire_workspace tool).
+    lock_mode: Optional[str] = None
+    lock_paths: Optional[list] = None
 
 
 class ResumeRequest(BaseModel):
@@ -36,6 +41,10 @@ class ResumeRequest(BaseModel):
 
 class StopChatRequest(BaseModel):
     conversation_id: str
+    # When set, cancel the current pass and continue the same SSE stream with this
+    # user message (interrupt-and-continue / ↵ mode).
+    follow_up: Optional[Any] = None
+    queue_id: Optional[str] = None
 
 
 class WriteFileRequest(BaseModel):

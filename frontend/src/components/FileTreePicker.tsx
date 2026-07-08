@@ -15,14 +15,23 @@ interface FileTreePickerProps {
    */
   rootPath: string;
   /**
-   * 当前已选路径列表（相对路径，不带前导 /，文件夹以 / 结尾）；
-   * 特殊值 ['*'] 表示全部
+   * 当前已选路径列表。
+   * - pathOutput='relative'（默认）：相对 rootPath，文件夹以 / 结尾；['*'] = 全部
+   * - pathOutput='absolute'：以 / 开头的绝对路径；['/'] = 全部
    */
   value: string[];
   /** 空选时显示给用户的提示文字（如「未选 = 不允许任何脚本」） */
   emptyHint?: string;
-  /** 是否支持「全部 (*)」 快捷开关 */
+  /** 是否支持「全部」快捷开关 */
   enableAllShortcut?: boolean;
+  /** 返回值格式：relative（Service 白名单）| absolute（工作区写锁等） */
+  pathOutput?: 'relative' | 'absolute';
+  /** 全部模式的输出 token：relative 默认 '*'，absolute 默认 '/' */
+  allToken?: string;
+  /** 全部开关主文案（默认「允许全部」） */
+  allShortcutTitle?: string;
+  /** 全部开关说明（默认提及 rootPath） */
+  allShortcutHint?: string;
   onCancel: () => void;
   onOk: (next: string[]) => void;
 }
@@ -55,6 +64,50 @@ function toRelKey(absPath: string, rootPath: string, isDir: boolean): string {
   return isDir ? `${rel}/` : rel;
 }
 
+/** 树勾选 key（相对 rootPath）→ 绝对路径（供写锁等跨根目录场景） */
+export function relKeysToAbsPaths(keys: string[], rootPath: string): string[] {
+  const root = rootPath.replace(/\/+$/, '');
+  return keys.map((key) => {
+    if (key === './' || key === '') return root || '/';
+    const body = key.replace(/\/+$/, '');
+    let abs: string;
+    if (!root || root === '/') {
+      abs = `/${body}`;
+    } else {
+      abs = `${root}/${body}`;
+    }
+    return abs.replace(/\/+/g, '/');
+  });
+}
+
+/** 绝对路径 → 树勾选 key（文件夹尽量带尾斜杠以便回显） */
+export function absPathsToRelKeys(paths: string[], rootPath: string): string[] {
+  const root = rootPath.replace(/\/+$/, '') || '';
+  return paths.map((raw) => {
+    let abs = raw.startsWith('/') ? raw : `/${raw}`;
+    abs = abs.replace(/\/+/g, '/');
+    if (root && abs === root) return './';
+    let rel: string;
+    if (root) {
+      const prefix = `${root}/`;
+      if (abs.startsWith(prefix)) rel = abs.slice(prefix.length);
+      else if (abs === root) rel = '';
+      else return raw;
+    } else {
+      rel = abs.replace(/^\//, '');
+    }
+    if (!rel) return './';
+    const base = rel.replace(/\/+$/, '');
+    const last = base.split('/').pop() || '';
+    const looksLikeFile = last.includes('.') && !last.endsWith('.');
+    return looksLikeFile ? base : `${base}/`;
+  });
+}
+
+function isAllValue(value: string[], allToken: string): boolean {
+  return value.includes('*') || (allToken !== '*' && value.includes(allToken));
+}
+
 export default function FileTreePicker({
   open,
   title,
@@ -62,9 +115,14 @@ export default function FileTreePicker({
   value,
   emptyHint,
   enableAllShortcut = true,
+  pathOutput = 'relative',
+  allToken,
   onCancel,
   onOk,
+  allShortcutTitle,
+  allShortcutHint,
 }: FileTreePickerProps) {
+  const resolvedAllToken = allToken ?? (pathOutput === 'absolute' ? '/' : '*');
   const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [allMode, setAllMode] = useState(false);
@@ -75,14 +133,18 @@ export default function FileTreePicker({
   // 把外部 value 同步到内部 state
   useEffect(() => {
     if (!open) return;
-    if (value.includes('*')) {
+    if (isAllValue(value || [], resolvedAllToken)) {
       setAllMode(true);
       setCheckedKeys([]);
     } else {
       setAllMode(false);
-      setCheckedKeys(value || []);
+      const internal =
+        pathOutput === 'absolute'
+          ? absPathsToRelKeys(value || [], rootPath)
+          : (value || []);
+      setCheckedKeys(internal);
     }
-  }, [open, value]);
+  }, [open, value, pathOutput, rootPath, resolvedAllToken]);
 
   // 把 FileItem[] 映射为 antd Tree 节点
   const buildNodes = useCallback(
@@ -162,7 +224,9 @@ export default function FileTreePicker({
 
   const handleOk = () => {
     if (allMode) {
-      onOk(['*']);
+      onOk([resolvedAllToken]);
+    } else if (pathOutput === 'absolute') {
+      onOk(relKeysToAbsPaths(checkedKeys, rootPath));
     } else {
       onOk(checkedKeys);
     }
@@ -206,9 +270,12 @@ export default function FileTreePicker({
           >
             <Switch checked={allMode} onChange={switchToAllMode} size="small" />
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, color: 'var(--jf-text)' }}>允许全部 (<code>*</code>)</div>
+              <div style={{ fontSize: 13, color: 'var(--jf-text)' }}>
+                {allShortcutTitle ?? `允许全部 (${resolvedAllToken === '/' ? '/' : '*'})`}
+              </div>
               <div style={{ fontSize: 11, color: 'var(--jf-text-muted)' }}>
-                打开后将忽略下方勾选；service 可访问 <code>{rootPath}</code> 下所有内容
+                {allShortcutHint ??
+                  `打开后将忽略下方勾选；可访问 ${rootPath} 下所有内容`}
               </div>
             </div>
           </div>
@@ -308,7 +375,7 @@ function updateTreeData(
 // 重新导出选中值的展示工具，供外部 trigger 用
 export function summarizePaths(value: string[]): string {
   if (!value || value.length === 0) return '（未设置）';
-  if (value.includes('*')) return '✅ 全部';
+  if (value.includes('*') || (value.length === 1 && value[0] === '/')) return '✅ 全部';
   if (value.length <= 3) return value.join(', ');
   return `${value.slice(0, 3).join(', ')} 等 ${value.length} 项`;
 }
@@ -323,7 +390,7 @@ export function PickerTrigger({
   onClick: () => void;
   placeholder?: string;
 }) {
-  const isAll = value?.includes('*');
+  const isAll = value?.includes('*') || (value?.length === 1 && value[0] === '/');
   return (
     <div
       onClick={onClick}

@@ -30,6 +30,15 @@ PLAN_MODE_PROMPT = """[Plan Mode 已开启]
 
 绝对不要跳过规划阶段直接执行任务。在用户批准计划之前，不要调用除 propose_plan 以外的任何工具。"""
 
+WORKSPACE_LOCK_PROMPT = """[工作区并发锁]
+你和其它进程（其它对话、定时任务）共享同一个文件工作区。为避免互相覆盖：
+- 你只能【写入】本进程持有写锁的区域；对未持锁区域只有【只读】权限（随时可读）。
+- 若写入 / 运行脚本 / 生成媒体时收到"只读"或"被锁定"的错误，请调用 acquire_workspace
+  声明你要写入的路径（目录或具体文件均可，如 ["/scripts", "/docs/项目A/报告.md"] 或 ["/"] 锁定全部）。每轮仅一次。
+- 抢锁前可用 check_workspace_locks 查看哪些区域已被占用，避开它们即可与其它进程并行。
+- 你派出的 subagent 会自动共享你的写锁，无需重复声明。
+- 本轮结束会自动释放你的锁；若提前完成写操作可调用 release_workspace 让排队任务尽快开始。"""
+
 CAPABILITY_PROMPTS = {
     "web": """
 ## 联网工具
@@ -512,6 +521,12 @@ def create_move_file_tool(user_id: str):
         Returns:
             成功时返回新路径；失败时返回错误信息。
         """
+        from app.services import workspace_lock as wl
+        # A move mutates BOTH the source region (removal) and the destination.
+        for _p in (source, destination):
+            _deny = wl.check_write(_p)
+            if _deny:
+                return _deny
         storage = get_storage_service()
         try:
             new_path = storage.move(user_id, source, destination)
@@ -528,6 +543,70 @@ def create_move_file_tool(user_id: str):
             return f"[错误] 移动失败: {e}"
 
     return move_file
+
+
+def create_workspace_lock_tools(user_id: str):
+    """Create the workspace-lock tools the agent uses to declare its write region.
+
+    Returns [acquire_workspace, release_workspace, check_workspace_locks].
+    Ownership is read from contextvars (set at stream/task start); subagents run
+    in the same context and therefore share the parent's lock.
+    """
+    from app.services import workspace_lock as wl
+
+    @tool
+    def acquire_workspace(paths: List[str]) -> str:
+        """声明本轮对话要【写入】的工作区区域（每轮只能声明一次）。
+
+        当你尝试写入却收到"只读"错误时，用这个工具锁定你需要写入的目录，
+        锁定后本进程（含你派出的 subagent）对这些区域拥有独占写权限，其它
+        进程只能读。流式结束后自动释放。
+
+        Args:
+            paths: 路径列表，以 "/" 开头。可以是目录（如 "/scripts"、"/docs/项目A"）或
+                   具体文件（如 "/docs/报告.md"）；传 ["/"] 锁定整个工作区。
+        """
+        owner = wl.current_owner()
+        if not owner:
+            return "当前不在可锁定的对话进程中。"
+        me = wl.get_process(owner)
+        if me and me.paths:
+            return (
+                f"本轮已锁定 {me.paths}，不能再更改锁定区域（每轮仅一次机会）。"
+                f"如需其它区域，请在新的一轮对话中重新声明。"
+            )
+        r = wl.try_acquire(owner, paths)
+        if r.ok:
+            return f"✅ 已锁定工作区写权限：{r.granted}。本进程可写这些区域，其它进程只读。"
+        detail = "；".join(f"`{p}` 被「{lbl}」占用" for p, _o, lbl in r.conflicts)
+        return f"⛔ 锁定失败：{detail}。请改锁未被占用的区域，或稍后重试。"
+
+    @tool
+    def release_workspace() -> str:
+        """提前释放本进程持有的所有工作区写锁（让排队的其它进程可以推进）。
+
+        通常无需手动调用——流式结束会自动释放。仅当你已完成全部写操作、想尽早
+        让其它任务开始时才用。
+        """
+        owner = wl.current_owner()
+        if not owner:
+            return "当前不在可锁定的对话进程中。"
+        wl.release_locks(owner)
+        return "✅ 已释放本进程的工作区写锁。"
+
+    @tool
+    def check_workspace_locks() -> str:
+        """查看当前所有活跃进程及其锁定的工作区区域（便于选择空闲区域）。"""
+        procs = wl.list_processes(user_id)
+        if not procs:
+            return "当前没有活跃进程。"
+        lines = []
+        for p in procs:
+            locks = "、".join(p["locked_paths"]) if p["locked_paths"] else "（未锁定，只读）"
+            lines.append(f"- {p['label']}（{p['kind']}，已运行{p['elapsed_sec']}s）：{locks}")
+        return "当前活跃进程与锁定区域：\n" + "\n".join(lines)
+
+    return [acquire_workspace, release_workspace, check_workspace_locks]
 
 
 def create_run_script_tool(user_id: str):
@@ -550,6 +629,14 @@ def create_run_script_tool(user_id: str):
             input_data: 传给 stdin 的输入数据
             timeout: 超时时间（秒），默认 30，最大 120
         """
+        from app.services import workspace_lock as wl
+        # Scripts may write to scripts/ and generated/. Require write access to
+        # both regions (the default whole-workspace lock covers them; a
+        # narrowly-locked process must hold these to run writing scripts).
+        for _region in ("/scripts", "/generated"):
+            _deny = wl.check_write(_region)
+            if _deny:
+                return _deny
         storage = get_storage_service()
         with storage.script_execution(user_id, script_path) as ctx:
             if "error" in ctx:
@@ -597,6 +684,10 @@ def create_ai_gen_tools(user_id: str):
             quality: 质量，可选 low、medium、high、auto
             filename: 可选，自定义文件名如 my_image.png
         """
+        from app.services import workspace_lock as wl
+        _deny = wl.check_write("/generated/images")
+        if _deny:
+            return _deny
         result = _gen_image_impl(prompt, fs_dir, size=size, quality=quality, filename=filename, user_id=user_id)
         if result["success"]:
             return f"图片已生成：{result['path']}\n请使用 <<FILE:{result['path']}>> 展示给用户。"
@@ -617,6 +708,10 @@ def create_ai_gen_tools(user_id: str):
             speed: 语速 0.25-4.0，默认 1.0
             filename: 可选，自定义文件名如 my_speech.mp3
         """
+        from app.services import workspace_lock as wl
+        _deny = wl.check_write("/generated/audio")
+        if _deny:
+            return _deny
         result = _gen_speech_impl(text, fs_dir, voice=voice, speed=speed, filename=filename, user_id=user_id)
         if result["success"]:
             return f"语音已生成：{result['path']}\n请使用 <<FILE:{result['path']}>> 展示给用户。"
@@ -637,6 +732,10 @@ def create_ai_gen_tools(user_id: str):
             size: 分辨率，可选 1280x720(横屏)、720x1280(竖屏)
             filename: 可选，自定义文件名如 my_video.mp4
         """
+        from app.services import workspace_lock as wl
+        _deny = wl.check_write("/generated/videos")
+        if _deny:
+            return _deny
         result = _gen_video_impl(prompt, fs_dir, seconds=seconds, size=size, filename=filename, user_id=user_id)
         if result["success"]:
             return f"视频已生成：{result['path']}\n请使用 <<FILE:{result['path']}>> 展示给用户。"

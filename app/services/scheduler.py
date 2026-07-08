@@ -1333,6 +1333,31 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
                            "微信推送通道不可用（管理员可能已断开连接），"
                            "send_message 将不会发送到微信"))
 
+    # ── workspace lock: acquire the task's declared write regions ──
+    # Scheduled admin tasks share the admin's filesystem with interactive chats
+    # and other tasks. Acquire fail-fast with a short wait; if still contended,
+    # skip this run (it will fire again on the next schedule tick).
+    from app.services import workspace_lock as wl
+    _task_label = (task_meta or {}).get("task_name") or "定时任务"
+    _write_dirs = perms.get("write_dirs") or ["docs", "scripts", "generated", "tasks"]
+    _regions = ["/" + str(d).strip("/") for d in _write_dirs if str(d).strip("/")] or ["/"]
+    wl.register_process(thread_id, user_id, kind="scheduled", label=_task_label)
+    _wl_tokens = wl.set_context(thread_id, user_id)
+    _acq = wl.try_acquire(thread_id, _regions, ttl=2100)
+    if not _acq.ok:
+        for _ in range(10):  # up to ~30s grace
+            await asyncio.sleep(3)
+            _acq = wl.try_acquire(thread_id, _regions, ttl=2100)
+            if _acq.ok:
+                break
+    if not _acq.ok:
+        detail = "；".join(f"{p}←「{lbl}」" for p, _o, lbl in _acq.conflicts)
+        steps.append(_step("workspace_busy", f"工作区被占用，本次运行跳过：{detail}"))
+        wl.reset_context(_wl_tokens)
+        wl.unregister_process(thread_id)
+        return {"output": f"工作区被占用，本次运行跳过（{detail}）", "success": False, "steps": steps}
+    steps.append(_step("workspace_locked", f"已锁定工作区写权限：{_acq.granted}"))
+
     try:
         input_payload = {"messages": [{"role": "user", "content": full_prompt}]}
         await _run_agent_loop(
@@ -1350,6 +1375,11 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
         steps.append(_step("error", f"Agent 执行失败: {e}"))
         await _safe_persist_admin_failure(user_id, conv_id, task_meta, str(e))
         return {"output": f"Agent 执行失败: {e}", "success": False, "steps": steps}
+    finally:
+        # Release the workspace lock as soon as agent execution ends (before
+        # the bookkeeping/persist tail) so queued tasks can proceed.
+        wl.reset_context(_wl_tokens)
+        wl.unregister_process(thread_id)
 
     text = _compose_clean_task_output(delivered_parts, output_parts)
     # Stash the raw ReAct monologue in steps for debugging, but keep it OUT of

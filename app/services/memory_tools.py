@@ -538,8 +538,12 @@ def create_admin_memory_tools(user_id: str) -> List:
                 content: 文件内容
             """
             from app.core.path_security import safe_join
+            from app.services import workspace_lock as wl
             if path.strip("/\\") == "config.json":
                 return "错误：不允许直接修改 config.json，请使用设置页面。"
+            _deny = wl.check_write("/soul/" + path.strip("/\\"))
+            if _deny:
+                return _deny
             target = safe_join(soul_root, path)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target, "w", encoding="utf-8") as f:
@@ -555,8 +559,12 @@ def create_admin_memory_tools(user_id: str) -> List:
             """
             import shutil
             from app.core.path_security import safe_join
+            from app.services import workspace_lock as wl
             if path.strip("/\\") == "config.json":
                 return "错误：不允许删除 config.json。"
+            _deny = wl.check_write("/soul/" + path.strip("/\\"))
+            if _deny:
+                return _deny
             target = safe_join(soul_root, path)
             if os.path.isfile(target):
                 os.remove(target)

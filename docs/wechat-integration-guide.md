@@ -1,6 +1,6 @@
 # 微信 iLink Bot 集成实战指南
 
-> 本文档记录了 semi-deep-agent 项目接入腾讯 iLink Bot API（通过微信分发 AI Service）的完整经历，包含架构设计、协议细节、踩坑记录和解决方案。
+> 本文档记录了 OpenJellyfish 平台接入腾讯 iLink Bot API（通过微信分发 AI Service）的完整经历，包含架构设计、协议细节、踩坑记录和解决方案。
 
 ---
 
@@ -8,7 +8,7 @@
 
 ### 1.1 目标
 
-将 semi-deep-agent 平台已发布的 AI Service 通过微信扫码分发给终端用户，无需微信公众号开发者资质。
+将 OpenJellyfish 平台已发布的 AI Service 通过微信扫码分发给终端用户，无需微信公众号开发者资质。
 
 ### 1.2 最终架构
 

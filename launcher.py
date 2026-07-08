@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-JellyfishBot Cross-Platform Launcher
+OpenJellyfish Cross-Platform Launcher
 
 Handles:
-  - Detection and cleanup of old JellyfishBot instances
+  - Detection and cleanup of old OpenJellyfish instances
   - Automatic free port discovery
   - Starting backend (FastAPI/uvicorn) and frontend (Express)
   - Clean shutdown on exit (SIGINT / SIGTERM / Ctrl+C)
@@ -59,7 +59,7 @@ SCRIPT_DIR = _strip_extended_prefix(os.path.dirname(os.path.abspath(__file__)))
 BACKEND_DEFAULT_PORT = 8000
 FRONTEND_DEFAULT_PORT = 3000
 
-PROCESS_MARKERS = ["uvicorn", "jellyfishbot", "app.main:app"]
+PROCESS_MARKERS = ["uvicorn", "openjellyfish", "app.main:app"]
 FRONTEND_MARKERS = ["server.js", "vite"]
 
 _children = []  # list of subprocess.Popen
@@ -202,11 +202,11 @@ def _get_process_name_unix(pid: int) -> str:
 
 def _is_jellyfish_process(info: dict) -> bool:
     name = (info.get("name", "") + " " + info.get("cmdline", "")).lower()
-    return any(m in name for m in ["uvicorn", "python", "node", "jellyfishbot"])
+    return any(m in name for m in ["uvicorn", "python", "node", "openjellyfish"])
 
 
 def detect_old_instances(backend_port: int, frontend_port: int) -> list[dict]:
-    """Find JellyfishBot-like processes on our target ports."""
+    """Find OpenJellyfish-like processes on our target ports."""
     found = []
     for port in [backend_port, frontend_port]:
         procs = _get_pid_on_port(port)
@@ -237,7 +237,7 @@ def kill_process(pid: int):
 
 def prompt_kill_old(instances: list[dict]) -> bool:
     """Show old instances and ask user whether to kill them."""
-    print("\n⚠️  检测到以下进程正在占用 JellyfishBot 端口：")
+    print("\n⚠️  检测到以下进程正在占用 OpenJellyfish 端口：")
     for inst in instances:
         print(f"   端口 {inst['port']} → PID {inst['pid']} ({inst['name']})")
 
@@ -365,7 +365,7 @@ def cleanup():
     if _shutting_down:
         return
     _shutting_down = True
-    print("\n🛑 正在关闭 JellyfishBot...")
+    print("\n🛑 正在关闭 OpenJellyfish...")
     for proc in _children:
         try:
             if proc.poll() is None:
@@ -407,7 +407,7 @@ def signal_handler(signum, frame):
 # ── Main ──────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="JellyfishBot Launcher")
+    parser = argparse.ArgumentParser(description="OpenJellyfish Launcher")
     parser.add_argument("--port", type=int, default=BACKEND_DEFAULT_PORT,
                         help=f"Backend port (default: {BACKEND_DEFAULT_PORT})")
     parser.add_argument("--frontend-port", type=int, default=FRONTEND_DEFAULT_PORT,
@@ -428,7 +428,7 @@ def main():
     atexit.register(cleanup)
 
     print("=" * 50)
-    print("  🪼 JellyfishBot Launcher")
+    print("  🪼 OpenJellyfish Launcher")
     print("=" * 50)
 
     # 1. Detect old instances
@@ -471,7 +471,7 @@ def main():
     lan_ip = _get_local_ip()
     print()
     print("=" * 50)
-    print("  🪼 JellyfishBot 已启动！")
+    print("  🪼 OpenJellyfish 已启动！")
     print(f"     前端: http://localhost:{frontend_port}" if not args.backend_only else "     前端: 未启动")
     print(f"     后端: http://localhost:{backend_port}")
     if lan_ip and not args.backend_only:

@@ -1,5 +1,5 @@
 /**
- * JellyfishBot — Chat UI (CSS Modules)
+ * OpenJellyfish — Chat UI (CSS Modules)
  * Dark theme tokens scoped via .chatContainer
  */
 
@@ -348,6 +348,14 @@
   max-width: 100%;
   border-radius: var(--jf-radius-md);
   margin: 4px 0;
+}
+
+/* 流式消息中已"定型"（非流式尾部）的 block：让浏览器跳过屏外元素的
+ * layout/paint。长会话 + 多 tool 时显著降低主线程压力；
+ * contain-intrinsic-size 给屏外元素一个占位高度，避免滚动条跳动。 */
+.streamBlockSettled {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 80px;
 }
 
 /* Agent content: dark bg, left-aligned, asymmetric radius */
@@ -2471,6 +2479,123 @@
   border-radius: 50%;
   background: #f59e0b;
   box-shadow: 0 0 4px rgba(245, 158, 11, 0.6);
+}
+
+/* ── Codex-style query queue (lightweight, single-line rows) ── */
+.queryQueueList {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.queryQueueRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 2px;
+  border-radius: var(--jf-radius-sm);
+  transition: background var(--jf-duration) var(--jf-ease);
+}
+
+.queryQueueRow:hover {
+  background: rgba(var(--jf-primary-rgb), 0.05);
+}
+
+.queryQueueInput {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px !important;
+  line-height: 1.5 !important;
+  padding: 0 !important;
+  color: var(--jf-text-muted) !important;
+  background: transparent !important;
+  resize: none !important;
+}
+
+.queryQueueInput:focus {
+  color: var(--jf-text) !important;
+}
+
+/* 主操作组：加号(引导) + 回车(中断立刻执行) —— 常驻显示 */
+.queryQueuePrimary {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  flex-shrink: 0;
+}
+
+.queryQueuePrimaryBtn {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--jf-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--jf-duration) var(--jf-ease);
+}
+
+.queryQueuePrimaryBtn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.queryInterruptBtn {
+  color: var(--jf-warning);
+}
+
+.queryInterruptBtn:hover:not(:disabled) {
+  background: rgba(var(--jf-warning-rgb, 255, 184, 108), 0.16);
+}
+
+.queryQueueActions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--jf-duration) var(--jf-ease);
+}
+
+.queryQueueRow:hover .queryQueueActions,
+.queryQueueRow:focus-within .queryQueueActions {
+  opacity: 1;
+}
+
+.queryQueueActBtn {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--jf-radius-sm);
+  background: transparent;
+  color: var(--jf-text-dim);
+  cursor: pointer;
+  transition: all var(--jf-duration) var(--jf-ease);
+}
+
+.queryQueueActBtn:hover:not(:disabled) {
+  color: var(--jf-primary);
+  background: rgba(var(--jf-primary-rgb), 0.12);
+}
+
+.queryQueueActBtn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.queryQueueRemoveBtn:hover:not(:disabled) {
+  color: var(--jf-error);
+  background: rgba(var(--jf-error-rgb, 255, 107, 157), 0.12);
 }
 
 /* ========== Scheduled Task Card ========== */

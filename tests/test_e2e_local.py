@@ -3,7 +3,7 @@ End-to-end local test script for 6 key scenarios.
 
 Prerequisites:
   1. iLink Mock running:  python tests/ilink_mock_server.py --port 9999
-  2. JellyfishBot running with ILINK_BASE_URL=http://localhost:9999
+  2. OpenJellyfish running with ILINK_BASE_URL=http://localhost:9999
      and ILINK_CDN_URL=http://localhost:9999/cdn
   3. Valid LLM API key in .env (OPENAI_API_KEY or ANTHROPIC_API_KEY)
 
@@ -268,7 +268,7 @@ async def scenario_1_admin_wechat(client: httpx.AsyncClient):
     })
     log.info("Mock: QR status set to confirmed")
 
-    # Step 3: Poll until JellyfishBot picks up the confirmed status
+    # Step 3: Poll until OpenJellyfish picks up the confirmed status
     for _ in range(15):
         status = await _get(client, f"/api/admin/wechat/qrcode/status?qrcode={qr_id}")
         if status.get("status") == "confirmed":
@@ -550,7 +550,7 @@ async def scenario_5_admin_broadcast(client: httpx.AsyncClient):
     await mock_post(client, "/mock/reset")
 
     # We need to re-establish the service WeChat session since mock was reset.
-    # The mock reset clears the QR state, but the session in JellyfishBot is still alive.
+    # The mock reset clears the QR state, but the session in OpenJellyfish is still alive.
     # The key thing is that the session_manager still has the session in memory.
 
     # Verify session exists
@@ -676,12 +676,12 @@ async def check_prerequisites(client: httpx.AsyncClient) -> bool:
         log.error("✗ iLink Mock server not reachable at %s: %s", MOCK_BASE, e)
         ok = False
 
-    # Check JellyfishBot
+    # Check OpenJellyfish
     try:
         resp = await client.get(f"{APP_BASE}/docs")
-        log.info("✓ JellyfishBot running at %s", APP_BASE)
+        log.info("✓ OpenJellyfish running at %s", APP_BASE)
     except Exception as e:
-        log.error("✗ JellyfishBot not reachable at %s: %s", APP_BASE, e)
+        log.error("✗ OpenJellyfish not reachable at %s: %s", APP_BASE, e)
         ok = False
 
     return ok

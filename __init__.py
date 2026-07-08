@@ -1,5 +1,5 @@
 """
-JellyfishBot — 可选的 Python 包（fcnAgent 等工具）
+OpenJellyfish — 可选的 Python 包（fcnAgent 等工具）
 
 使用 deepagents 构建的 Agent 相关能力。
 

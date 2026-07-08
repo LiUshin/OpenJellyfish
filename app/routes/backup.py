@@ -108,7 +108,7 @@ async def api_export(
         raise HTTPException(status_code=500, detail=f"导出失败: {e}")
 
     zip_path = result.zip_path
-    filename = f"jellyfishbot-{user['username']}-{datetime.now():%Y%m%d-%H%M%S}.zip"
+    filename = f"openjellyfish-{user['username']}-{datetime.now():%Y%m%d-%H%M%S}.zip"
 
     def _stream():
         try:

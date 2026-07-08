@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Robot, CaretDown, CaretRight, Wrench, Brain } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import type { SubagentBlock, SubagentTimelineEntry } from '../types';
@@ -97,7 +97,7 @@ function LegacyRenderer({ block }: { block: SubagentBlock }) {
   );
 }
 
-export default function SubagentCard({ block }: Props) {
+function SubagentCard({ block }: Props) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(!block.done);
 
@@ -141,3 +141,6 @@ export default function SubagentCard({ block }: Props) {
     </div>
   );
 }
+
+// block 引用在指纹 flush 下稳定；已完成的 subagent 卡片流式期间不再重渲染。
+export default memo(SubagentCard);

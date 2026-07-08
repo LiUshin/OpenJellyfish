@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>JellyfishBot Launcher</title>
+<title>OpenJellyfish Launcher</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -506,7 +506,7 @@ tr.used td { opacity: 0.4; }
 <!-- Sidebar -->
 <nav>
   <div class="logo-wrap">
-    <img class="logo-img" src="./jellyfishlogo.png" alt="JellyfishBot" />
+    <img class="logo-img" src="./jellyfishlogo.png" alt="OpenJellyfish" />
   </div>
 
   <div class="nav-item active" data-page="launcher" title="控制台">
@@ -767,7 +767,7 @@ tr.used td { opacity: 0.4; }
     <div class="glass-card no-hover">
       <div class="about-version">
         <span class="v-num" id="aboutVersion">—</span>
-        <span class="v-tag">JellyfishBot Launcher</span>
+        <span class="v-tag">OpenJellyfish Launcher</span>
       </div>
       <div style="font-size:12px;color:var(--jf-text-muted);margin-bottom:18px" id="aboutTagline">
         本地化 AI Agent 控制台
@@ -962,10 +962,10 @@ function mockInvoke(cmd, args) {
   if (cmd === 'get_lan_ip') return Promise.resolve('192.168.1.100');
   if (cmd === 'open_in_browser') return Promise.resolve();
   if (cmd === 'list_registration_keys') return Promise.resolve([
-    {key:'JFBOT-AB12-CD34-EF56',used:false,created_at:'2026-04-10T12:00:00Z'},
+    {key:'OJF-AB12-CD34-EF56',used:false,created_at:'2026-04-10T12:00:00Z'},
     {key:'TEST-E2E-KEY-001',used:true,created_at:'2026-04-09T00:00:00Z',used_by:'test_e2e_user',used_at:'2026-04-09T20:59:45Z'}
   ]);
-  if (cmd === 'generate_registration_keys') return Promise.resolve(['JFBOT-MOCK-1234-ABCD']);
+  if (cmd === 'generate_registration_keys') return Promise.resolve(['OJF-MOCK-1234-ABCD']);
   if (cmd === 'delete_registration_key') return Promise.resolve();
   if (cmd === 'list_admin_users') return Promise.resolve([
     {user_id:'9566ceae',username:'test_e2e_user',created_at:'2026-04-09T20:59:45',last_login:'2026-04-09T22:17:59',reg_key:'TEST-E2E-KEY-001',has_api_keys:true,disabled:false},
@@ -996,7 +996,7 @@ function mockInvoke(cmd, args) {
   if (cmd === 'open_release_page') return Promise.resolve();
   if (cmd === 'pack_backup') return Promise.resolve({
     ok: true, cancelled: false,
-    path: '/mock/Desktop/jellyfishbot-backup-20260421-143000.zip',
+    path: '/mock/Desktop/openjellyfish-backup-20260421-143000.zip',
     file_count: 142, size_bytes: 23456789,
     skipped_dirs: [], message: 'mock backup'
   });
@@ -1321,7 +1321,7 @@ function updateRunUI(s) {
       }
       // 仅在「之前未就绪 → 现在就绪」切换瞬间弹一次，避免每次 polling 都 toast
       if (!lastReadyState) {
-        showToast('JellyfishBot 服务已就绪');
+        showToast('OpenJellyfish 服务已就绪');
       }
     } else {
       btn.className = 'power-btn running'; btn.disabled = true;
@@ -1620,7 +1620,7 @@ async function loadSystemHealth() {
     const sel = document.getElementById('logFileSel');
     if (logs.length === 0) {
       sel.innerHTML = '<option value="">无日志文件</option>';
-      document.getElementById('logViewer').textContent = '尚无日志（启动 JellyfishBot 后生成）';
+      document.getElementById('logViewer').textContent = '尚无日志（启动 OpenJellyfish 后生成）';
     } else {
       sel.innerHTML = logs.map(l => '<option value="' + esc(l.name) + '">' + esc(l.name) + ' (' + fmtBytes(l.bytes) + ')</option>').join('');
     }

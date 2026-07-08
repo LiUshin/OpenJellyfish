@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "JellyfishBot 模型目录（仓库内置默认）。用户可在 users/{uid}/model_catalog.json 中追加/覆盖条目（深合并：同 id 整条覆盖；新 id 追加）。修改后无需重启即可被设置页与运行时读取。",
+  "_comment": "OpenJellyfish 模型目录（仓库内置默认）。用户可在 users/{uid}/model_catalog.json 中追加/覆盖条目（深合并：同 id 整条覆盖；新 id 追加）。修改后无需重启即可被设置页与运行时读取。",
 
   "defaults": {
     "llm":   "anthropic:claude-sonnet-4-5-20250929",

@@ -1,12 +1,12 @@
 #!/bin/bash
-# JellyfishBot Local Launcher (macOS / Linux)
+# OpenJellyfish Local Launcher (macOS / Linux)
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "========================================="
-echo "  JellyfishBot Local Launcher"
+echo "  OpenJellyfish Local Launcher"
 echo "========================================="
 echo
 

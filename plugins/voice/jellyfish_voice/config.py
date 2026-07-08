@@ -1,4 +1,4 @@
-"""Worker 启动引导:从 JellyfishBot Core 拉取会话上下文。
+"""Worker 启动引导:从 OpenJellyfish Core 拉取会话上下文。
 
 Worker 自身无状态——它在加入 room 后从参与者 metadata 读到桥接令牌,
 凭此调用 Core 的 ``GET /api/voice/live/session`` 一次性拿全:
@@ -17,7 +17,7 @@ import httpx
 
 
 def api_base() -> str:
-    """JellyfishBot Core 的内网基址(Worker → Core)。"""
+    """OpenJellyfish Core 的内网基址(Worker → Core)。"""
     return os.environ.get("JELLYFISH_API_BASE", "http://localhost:8000").rstrip("/")
 
 

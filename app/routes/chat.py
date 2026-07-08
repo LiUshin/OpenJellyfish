@@ -5,9 +5,9 @@ import logging
 import os
 import re
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 
@@ -26,6 +26,8 @@ router = APIRouter(tags=["chat"])
 _cancel_flags: dict[str, asyncio.Event] = {}
 _interrupt_state: dict[str, dict] = {}
 _active_streams: dict[str, dict] = {}  # thread_id → {user_id, conv_id}
+# Interrupt-and-continue (↵): set by POST /chat/stop before cancel_event.set().
+_follow_up_on_cancel: dict[str, dict[str, Any]] = {}
 
 
 # ── Concurrency control for agent construction ──────────────────────────────
@@ -154,13 +156,22 @@ def _sse_response(generator):
     )
 
 
-async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool = False):
+async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool = False,
+                        lock_mode: str = "auto", lock_paths=None, lock_label: str = ""):
     """Stream an agent run as SSE events.
 
     yolo: when True, any HITL interrupt (write_file / edit_file / propose_plan)
     is auto-approved and the agent loop continues without touching the frontend
     ApprovalCard. Mirrors the WeChat admin_bridge auto-approve behaviour.
+
+    Workspace lock: this stream registers itself as an active process and (on the
+    INITIAL pass only — not on HITL resume) acquires write locks per `lock_mode`
+    ("auto" => broadest free region, "manual" => exactly `lock_paths`, "agent" =>
+    nothing; agent uses acquire_workspace). The lock is held across a HITL pause
+    and released when the stream truly ends (done / cancel / error). Subagents
+    inherit the lock via contextvars.
     """
+    from app.services import workspace_lock as wl
     thread_id = config["configurable"]["thread_id"]
     prior = _interrupt_state.pop(thread_id, None)
     full_response = prior["full_response"] if prior else ""
@@ -235,6 +246,41 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
     cancel_event = asyncio.Event()
     _cancel_flags[thread_id] = cancel_event
     _active_streams[thread_id] = {"user_id": user_id, "conv_id": conv_id}
+
+    # ── workspace lock lifecycle ──
+    # Owner token = thread_id. Register the process (idempotent — resume reuses
+    # the same owner and keeps any lock acquired on the initial pass). Bind the
+    # identity to contextvars so backend writes / tools / subagents enforce it.
+    _pending_interrupt = False
+    _INTERACTIVE_TTL = 3600  # orphan guard if a HITL pause is abandoned
+    is_resume = prior is not None
+    wl.register_process(thread_id, user_id, kind="interactive",
+                        label=lock_label or f"对话·{conv_id[:8]}")
+    _wl_tokens = wl.set_context(thread_id, user_id)
+    _wl_acquire_event = None  # SSE payload describing the acquired lock (sent below)
+    if not is_resume:
+        mode = (lock_mode or "auto").lower()
+        if mode == "agent":
+            _wl_acquire_event = {"mode": "agent", "granted": []}
+        elif mode == "manual" and lock_paths:
+            r = wl.try_acquire(thread_id, list(lock_paths), ttl=_INTERACTIVE_TTL)
+            _wl_acquire_event = {
+                "mode": "manual", "granted": r.granted,
+                "conflicts": [{"path": p, "holder": lbl} for p, _o, lbl in r.conflicts],
+            }
+        else:  # auto (default)
+            def _real_top_dirs() -> list:
+                # Enumerated lazily — only when "/" is contended by a bg process.
+                from app.storage import get_storage_service
+                entries = get_storage_service().list_dir(user_id, "/")
+                return ["/" + e.name.strip("/") for e in entries if getattr(e, "is_dir", False)]
+            r = wl.acquire_broadest(
+                thread_id, user_id,
+                top_level=["/scripts", "/docs", "/generated", "/soul", "/data"],
+                top_level_fn=_real_top_dirs,
+            )
+            wl.set_ttl(thread_id, _INTERACTIVE_TTL)
+            _wl_acquire_event = {"mode": "auto", "granted": r.granted}
     # Notify scheduled-task injection module that this thread is active so any
     # pending L2 injections wait until our stream finishes (drained in `finally`).
     # Also run one-shot repair to sweep out any legacy stranded summary
@@ -245,6 +291,7 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
     await scheduled_inject.mark_thread_active(thread_id)
     _saved = False
     _cancelled = False
+    _pass_state: dict[str, Any] = {"inject": None, "inject_event": None, "reset_stream": False}
 
     # ── helper: 单轮 agent.astream，作为 SSE generator。被外层 while 循环
     # 反复调用以支持 YOLO 自动批准（每次 interrupt 后 Command(resume=...) 再跑一轮）。
@@ -252,14 +299,44 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
     async def _drain_one_pass(payload):
         nonlocal full_response, _cur_tool_name, _cur_tool_args, _is_task_streaming
         nonlocal _sa_id_counter, _cur_task_sid, _cur_task_args_buf, _cancelled, _saved
+        nonlocal blocks, tool_records
+        _pass_state["inject"] = None
+        _pass_state["inject_event"] = None
+        _pass_state["reset_stream"] = False
         async for event in agent.astream(payload, config=config, stream_mode="messages", subgraphs=True):
             if cancel_event.is_set():
                 _log.info("Agent cancelled by user: %s", thread_id)
-                if full_response:
+                follow = _follow_up_on_cancel.pop(thread_id, None)
+                _has_partial = bool(full_response) or any(
+                    (b.get("content") or b.get("args") or b.get("result"))
+                    for b in blocks
+                )
+                if _has_partial:
                     _blk_sanitize()
                     save_message(user_id, conv_id, "assistant", full_response + "\n\n⚠️ [用户中止]",
                                  tool_calls=tool_records if tool_records else None,
                                  blocks=blocks if blocks else None)
+                if follow:
+                    raw = follow.get("message", "")
+                    canonical = expand_file_mentions(raw)
+                    save_text = _extract_text(canonical)
+                    save_message(user_id, conv_id, "user", save_text)
+                    stamped = stamp_message(canonical, user_id)
+                    _pass_state["inject"] = {"messages": [{"role": "user", "content": stamped}]}
+                    _pass_state["inject_event"] = {
+                        "type": "run_continued",
+                        "content": save_text,
+                        "queue_id": follow.get("queue_id"),
+                    }
+                    _pass_state["reset_stream"] = True
+                    full_response = ""
+                    blocks = []
+                    tool_records = []
+                    _saved = False
+                    # Clear the cancel flag so the continuation pass isn't
+                    # immediately re-cancelled on its first streamed event.
+                    cancel_event.clear()
+                    return
                 _saved = True
                 _cancelled = True
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -480,14 +557,21 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
     YOLO_WARN_EVERY = 50
 
     try:
+        if _wl_acquire_event is not None:
+            yield f"data: {json.dumps({'type': 'workspace_lock', **_wl_acquire_event}, ensure_ascii=False)}\n\n"
         input_payload = agent_input
         yolo_loops = 0
         while True:
             # 1) 流式跑一轮 agent.astream
             async for sse in _drain_one_pass(input_payload):
                 yield sse
+            # interrupt-continue (↵): follow prepared a fresh user turn + event
+            if _pass_state.get("inject"):
+                if _pass_state.get("inject_event"):
+                    yield f"data: {json.dumps(_pass_state['inject_event'], ensure_ascii=False)}\n\n"
+                input_payload = _pass_state["inject"]
+                continue
             if _cancelled:
-                _saved = True
                 return
 
             # 2) 检查是否产生 HITL interrupt
@@ -527,6 +611,10 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
                     "interrupt_configs": interrupt_configs_payload,
                 }
                 _saved = True
+                # Keep the workspace lock held across the HITL pause so the
+                # pending write can complete on resume without another process
+                # grabbing the region in between (TTL is the orphan guard).
+                _pending_interrupt = True
                 return
 
             # 5) YOLO 模式：自动批准并继续（无硬上限；定期打 warning 便于排查死循环）
@@ -583,6 +671,12 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
                          blocks=blocks if blocks else None)
         _cancel_flags.pop(thread_id, None)
         _active_streams.pop(thread_id, None)
+        _follow_up_on_cancel.pop(thread_id, None)
+        # Release the workspace lock unless we're pausing for HITL approval
+        # (in which case the resume pass keeps the same owner + lock alive).
+        wl.reset_context(_wl_tokens)
+        if not _pending_interrupt:
+            wl.unregister_process(thread_id)
         # Release scheduled-injection guard; if any L2 pairs were queued during
         # this stream, the drainer will pick them up now (subject to settle delay).
         await scheduled_inject.mark_thread_inactive(thread_id)
@@ -624,18 +718,37 @@ async def api_chat(req: ChatRequest, user=Depends(get_current_user)):
         elif isinstance(user_content, list):
             user_content = [{"type": "text", "text": PLAN_MODE_PROMPT + "\n\n"}] + user_content
     user_content = stamp_message(user_content, user_id)
-    return _sse_response(_stream_agent(agent, {"messages": [{"role": "user", "content": user_content}]}, config, user_id, conv_id, yolo=bool(req.yolo)))
+    from app.services.conversations import get_conversation_title
+    lock_label = get_conversation_title(user_id, conv_id)
+    return _sse_response(_stream_agent(
+        agent, {"messages": [{"role": "user", "content": user_content}]}, config,
+        user_id, conv_id, yolo=bool(req.yolo),
+        lock_mode=req.lock_mode or "auto", lock_paths=req.lock_paths,
+        lock_label=lock_label,
+    ))
 
 
 @router.post("/api/chat/stop")
 async def api_chat_stop(req: StopChatRequest, user=Depends(get_current_user)):
     user_id = user["user_id"]
     thread_id = f"{user_id}-{req.conversation_id}"
+    if req.follow_up is not None:
+        _follow_up_on_cancel[thread_id] = {
+            "message": req.follow_up,
+            "queue_id": req.queue_id,
+        }
     cancel_event = _cancel_flags.get(thread_id)
     if cancel_event:
         cancel_event.set()
-        _log.info("Stop requested for %s", thread_id)
+        _log.info("Stop requested for %s (follow_up=%s)", thread_id, req.follow_up is not None)
         return {"status": "stopping"}
+    # If the conversation is paused at a HITL interrupt (not actively streaming),
+    # stopping should also drop the retained interrupt state and free its lock.
+    if thread_id in _interrupt_state:
+        _interrupt_state.pop(thread_id, None)
+        from app.services import workspace_lock as wl
+        wl.unregister_process(thread_id)
+        return {"status": "stopped"}
     return {"status": "not_running"}
 
 
@@ -685,4 +798,9 @@ async def api_chat_resume(req: ResumeRequest, user=Depends(get_current_user)):
         "callbacks": build_usage_callbacks(user_id, channel="web", conv_id=conv_id, model_hint=req.model or ""),
         "metadata": get_langfuse_metadata(session_id=thread_id, user_id=username),
     }
-    return _sse_response(_stream_agent(agent, Command(resume={"decisions": req.decisions}), config, user_id, conv_id, yolo=bool(req.yolo)))
+    from app.services.conversations import get_conversation_title
+    lock_label = get_conversation_title(user_id, conv_id)
+    return _sse_response(_stream_agent(
+        agent, Command(resume={"decisions": req.decisions}), config,
+        user_id, conv_id, yolo=bool(req.yolo), lock_label=lock_label,
+    ))

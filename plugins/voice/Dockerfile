@@ -1,4 +1,4 @@
-# JellyfishBot 语音前台 Worker —— 独立部署单元
+# OpenJellyfish 语音前台 Worker —— 独立部署单元
 FROM python:3.11-slim
 
 WORKDIR /app

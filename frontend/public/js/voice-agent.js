@@ -147,7 +147,7 @@ const VoiceAgent = (() => {
     setState('connecting');
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const pathPrefix = location.pathname.startsWith('/jellyfishbot') ? '/jellyfishbot' : '';
+    const pathPrefix = location.pathname.startsWith('/openjellyfish') ? '/openjellyfish' : '';
     const url = `${proto}://${location.host}${pathPrefix}/api/voice/realtime?token=${encodeURIComponent(API.getToken())}`;
 
     _ws = new WebSocket(url);

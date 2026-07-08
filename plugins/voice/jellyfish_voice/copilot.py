@@ -2,7 +2,7 @@
 
 这是「上层对话框架」:一个快速 LLM 直接处理寒暄与澄清;遇到需要查资料、
 读写文档、跑脚本、多步任务时,调用 ``delegate_to_jellyfish`` 把活儿交给后台的
-JellyfishBot agent(经 Core 远程 SSE),并在等待期间用填充语/进度播报维持「活人感」。
+OpenJellyfish agent(经 Core 远程 SSE),并在等待期间用填充语/进度播报维持「活人感」。
 """
 
 from __future__ import annotations

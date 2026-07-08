@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Button, Select, Tooltip, App } from 'antd';
+import { Button, Select, Tooltip, App, Popover, Segmented } from 'antd';
 import {
   Plus,
   PaperPlaneRight,
@@ -13,6 +13,7 @@ import {
   ListChecks,
   Stop,
   Paperclip,
+  LockKey,
 } from '@phosphor-icons/react';
 import { useTranslation, Trans } from 'react-i18next';
 import * as api from '../../services/api';
@@ -36,10 +37,15 @@ import LogoLoading from '../../components/LogoLoading';
 import HeaderControls from '../../components/HeaderControls';
 import { useFileWorkspace } from '../../stores/fileWorkspaceContext';
 import { getYoloMode, YOLO_EVENT } from '../../utils/yoloMode';
+import { getLockMode, setLockMode, getLockPaths, setLockPaths, LOCK_EVENT, type LockMode } from '../../utils/lockMode';
+import WorkspaceLockPanel from './components/WorkspaceLockPanel';
+import FileTreePicker, { PickerTrigger } from '../../components/FileTreePicker';
 import { getLastSelectedModel, setLastSelectedModel } from '../../utils/lastSelectedModel';
 import { getRecentFiles } from '../../utils/recentFiles';
 import { fuzzyMatch } from '../../utils/fuzzyMatch';
 import type { FileIndexEntry } from '../../services/api';
+import QueryQueuePanel from './components/QueryQueuePanel';
+import { newQueueItem, type QueryQueueItem } from './types/queryQueue';
 import styles from './chat.module.css';
 
 const IMG_CACHE_DB = 'jellyfish-img-cache';
@@ -128,11 +134,26 @@ export default function ChatPage() {
   const [serverStreaming, setServerStreaming] = useState<string[]>([]);
   const [serverInterrupted, setServerInterrupted] = useState<string[]>([]);
   const [yoloOn, setYoloOn] = useState(getYoloMode);
+  const [lockModeOn, setLockModeOn] = useState<LockMode>(getLockMode);
+  const [lockPathsOn, setLockPathsOn] = useState<string[]>(getLockPaths);
+  const [lockPanelOpen, setLockPanelOpen] = useState(false);
+  const [lockPopoverOpen, setLockPopoverOpen] = useState(false);
+  const [lockPathPickerOpen, setLockPathPickerOpen] = useState(false);
+  /** Per-conversation mid-run message queue (FIFO + optional interrupt). */
+  const [queryQueues, setQueryQueues] = useState<Record<string, QueryQueueItem[]>>({});
+  const queryQueuesRef = useRef(queryQueues);
+  queryQueuesRef.current = queryQueues;
 
   useEffect(() => {
     const sync = () => setYoloOn(getYoloMode());
     window.addEventListener(YOLO_EVENT, sync);
     return () => window.removeEventListener(YOLO_EVENT, sync);
+  }, []);
+
+  useEffect(() => {
+    const sync = () => { setLockModeOn(getLockMode()); setLockPathsOn(getLockPaths()); };
+    window.addEventListener(LOCK_EVENT, sync);
+    return () => window.removeEventListener(LOCK_EVENT, sync);
   }, []);
 
   const imageAttachRef = useRef<ImageAttachmentHandle>(null);
@@ -166,7 +187,11 @@ export default function ChatPage() {
     finally { fileIndexLoadingRef.current = false; }
   }, []);
 
+  const currentQueue = currentConvId ? (queryQueues[currentConvId] ?? []) : [];
   const isViewingStream = currentConvId === streamingConvId;
+  const viewingActiveStream = isStreaming && isViewingStream;
+  const hitlOnCurrent = !!interruptData && isViewingStream;
+  const allowInputWhileRunning = viewingActiveStream || hitlOnCurrent;
   const showStreamBlocks = isViewingStream && (isStreaming || streamBlocks.length > 0);
 
   // ── 消息列表（虚拟化）相关引用 ─────────────────────────────────────
@@ -397,7 +422,79 @@ export default function ChatPage() {
         setMessages(detail.messages || []);
       }
       clearFinished();
+      processNextQueuedMessage(convId);
     }).catch(() => {});
+  }
+
+  function removeQueueItem(convId: string, itemId?: string) {
+    setQueryQueues((prev) => {
+      const list = prev[convId] ?? [];
+      const next = itemId ? list.filter((i) => i.id !== itemId) : list;
+      return { ...prev, [convId]: next };
+    });
+  }
+
+  const handleRunContinued = useCallback((convId: string, _content: string, queueId?: string) => {
+    if (queueId) removeQueueItem(convId, queueId);
+    api.getConversation(convId).then((detail) => {
+      if (convId === currentConvIdRef.current) {
+        setMessages(detail.messages || []);
+      }
+    }).catch(() => {});
+  }, []);
+
+  async function runInterruptItem(convId: string, item: QueryQueueItem) {
+    const trimmed = item.content.trim();
+    if (!trimmed) return;
+    try {
+      await api.stopChat(convId, {
+        followUp: trimmed,
+        queueId: item.id,
+        keepStream: true,
+      });
+    } catch (e: unknown) {
+      messageApi.error(e instanceof Error ? e.message : t('chat.interruptFail'));
+    }
+  }
+
+  function buildStreamOpts() {
+    return {
+      model: selectedModel,
+      capabilities,
+      plan_mode: planMode || undefined,
+      yolo: getYoloMode(),
+      lock_mode: getLockMode(),
+      lock_paths: getLockMode() === 'manual' ? getLockPaths() : undefined,
+      onDone: handleStreamDone,
+      onError: handleStreamError,
+      onRunContinued: handleRunContinued,
+      onWorkspaceLock: (mode: string, granted: string[], conflicts?: { path: string; holder: string }[]) => {
+        if (conflicts && conflicts.length > 0) {
+          messageApi.warning(
+            `部分区域被占用（${conflicts.map((c) => c.path).join('、')}），本轮以只读运行对应区域`,
+          );
+        } else if (mode !== 'agent' && granted.length === 0) {
+          messageApi.warning('工作区当前被其它进程占满，本轮为只读');
+        }
+      },
+    };
+  }
+
+  function processNextQueuedMessage(convId: string) {
+    const list = queryQueuesRef.current[convId] ?? [];
+    const next = list.find((i) => i.content.trim());
+    if (!next) return;
+    removeQueueItem(convId, next.id);
+    const userMessage: Message = { role: 'user', content: next.content.trim() };
+    if (convId === currentConvIdRef.current) {
+      setMessages((prev) => [...prev, userMessage]);
+    }
+    startStream(convId, next.content.trim(), buildStreamOpts());
+  }
+
+  function handleQueueChange(items: QueryQueueItem[]) {
+    if (!currentConvId) return;
+    setQueryQueues((q) => ({ ...q, [currentConvId]: items }));
   }
 
   function handleStreamError(convId: string, _msg: string) {
@@ -415,13 +512,7 @@ export default function ChatPage() {
 
   function handleResume(decisions: unknown[]) {
     if (!currentConvId || !interruptData) return;
-    resumeStream(currentConvId, decisions, {
-      model: selectedModel,
-      capabilities,
-      yolo: getYoloMode(),
-      onDone: handleStreamDone,
-      onError: handleStreamError,
-    });
+    resumeStream(currentConvId, decisions, buildStreamOpts());
   }
 
   async function handleStop() {
@@ -541,6 +632,31 @@ export default function ChatPage() {
     const msg = text ?? inputValue.trim();
     const hasImages = attachedImages.length > 0;
     if (!msg && !hasImages) return;
+
+    const viewingActiveStream = isStreaming && streamingConvId === currentConvId;
+    const hitlOnCurrent = !!interruptData && streamingConvId === currentConvId;
+
+    // Mid-run: enqueue instead of blocking (Codex-style).
+    if (viewingActiveStream || hitlOnCurrent) {
+      if (hasImages) {
+        messageApi.warning(t('chat.queueNoImages'));
+        return;
+      }
+      const convId = currentConvId ?? streamingConvId;
+      if (!convId) return;
+
+      // Always enqueue; per-item interrupt is triggered from the queue panel.
+      const item = newQueueItem(msg, 'queue');
+      setQueryQueues((prev) => ({
+        ...prev,
+        [convId]: [...(prev[convId] ?? []), item],
+      }));
+      setInputValue('');
+      fileTokenInputRef.current?.clear();
+      setMention({ active: false, triggerStart: -1, query: '', activeIndex: 0 });
+      return;
+    }
+
     if (isStreaming || interruptData) {
       const streamTitle = conversations.find((c) => c.id === streamingConvId)?.title || t('chat.conversationFallback');
       messageApi.warning({
@@ -603,14 +719,7 @@ export default function ChatPage() {
       setAttachedImages([]);
     }
 
-    startStream(convId, messageContent, {
-      model: selectedModel,
-      capabilities,
-      plan_mode: planMode || undefined,
-      yolo: getYoloMode(),
-      onDone: handleStreamDone,
-      onError: handleStreamError,
-    });
+    startStream(convId, messageContent, buildStreamOpts());
   }
 
   // Keyboard callbacks forwarded from FileTokenInput's internal keydown handler.
@@ -750,6 +859,15 @@ export default function ChatPage() {
         {/* Header */}
         <div className={styles.chatHeader}>
           <span className={styles.chatTitle}>{currentTitle}</span>
+          <Tooltip title="活跃进程 / 工作区锁">
+            <button
+              className={styles.capBtn}
+              style={{ marginLeft: 8 }}
+              onClick={() => setLockPanelOpen(true)}
+            >
+              <LockKey size={16} />
+            </button>
+          </Tooltip>
           {(!editingFile || splitMode === 'chat') && <HeaderControls />}
         </div>
 
@@ -762,7 +880,7 @@ export default function ChatPage() {
               <div className={styles.emptyIcon}>
                 <img
                   src="/media_resources/jellyfishlogo.png"
-                  alt="JellyfishBot"
+                  alt="OpenJellyfish"
                   style={{ width: 96, height: 96, objectFit: 'contain' }}
                 />
               </div>
@@ -909,11 +1027,19 @@ export default function ChatPage() {
 
         {/* Input */}
         <div className={styles.inputArea}>
+          <QueryQueuePanel
+            items={currentQueue}
+            onChange={handleQueueChange}
+            onRemove={(id) => currentConvId && removeQueueItem(currentConvId, id)}
+            onRunInterrupt={(item) => currentConvId && runInterruptItem(currentConvId, item)}
+            canInterrupt={isStreaming && isViewingStream && !interruptData}
+            hitlLocked={hitlOnCurrent}
+          />
           <ImageAttachment
             ref={imageAttachRef}
             images={attachedImages}
             onImagesChange={setAttachedImages}
-            disabled={isStreaming}
+            disabled={isStreaming && !allowInputWhileRunning}
           />
           <div className={styles.inputToolbar}>
             <Tooltip title={t('chat.uploadTooltip')}>
@@ -951,6 +1077,52 @@ export default function ChatPage() {
                 <ListChecks size={16} />
               </button>
             </Tooltip>
+            <div className={styles.inputToolbarDivider} />
+            <Popover
+              open={lockPopoverOpen}
+              onOpenChange={setLockPopoverOpen}
+              trigger="click"
+              placement="top"
+              content={
+                <div style={{ width: 260, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ fontSize: 12, color: 'var(--jf-text-dim)' }}>
+                    本轮对话的工作区写锁策略：
+                  </div>
+                  <Segmented
+                    size="small"
+                    block
+                    value={lockModeOn}
+                    onChange={(v) => setLockMode(v as LockMode)}
+                    options={[
+                      { label: '自动', value: 'auto' },
+                      { label: '手动', value: 'manual' },
+                      { label: 'Agent 自选', value: 'agent' },
+                    ]}
+                  />
+                  <div style={{ fontSize: 11, color: 'var(--jf-text-dim)', lineHeight: 1.5 }}>
+                    {lockModeOn === 'auto' && '默认：抢占当前空闲的最大区域，独占会话可写全部，并发会话自动避让。'}
+                    {lockModeOn === 'manual' && '锁定你指定的目录或文件（可多选），其它区域只读。'}
+                    {lockModeOn === 'agent' && '不预先锁定，Agent 需要写入时自行调用工具声明区域。'}
+                  </div>
+                  {lockModeOn === 'manual' && (
+                    <PickerTrigger
+                      value={lockPathsOn}
+                      placeholder="点击选择要锁定的路径…"
+                      onClick={() => setLockPathPickerOpen(true)}
+                    />
+                  )}
+                  <Button size="small" type="link" style={{ padding: 0, textAlign: 'left' }} onClick={() => { setLockPopoverOpen(false); setLockPanelOpen(true); }}>
+                    查看活跃进程 / 已锁区域 →
+                  </Button>
+                </div>
+              }
+            >
+              <Tooltip title={`工作区锁：${lockModeOn === 'auto' ? '自动' : lockModeOn === 'manual' ? '手动' : 'Agent 自选'}`}>
+                <button className={`${styles.capBtn} ${lockModeOn !== 'auto' ? styles.capBtnActive : ''}`}>
+                  <LockKey size={16} />
+                </button>
+              </Tooltip>
+            </Popover>
             <div style={{ flex: 1 }} />
             <Select
               value={selectedModel || undefined}
@@ -965,7 +1137,7 @@ export default function ChatPage() {
           <div className={styles.inputWrapper} style={{ position: 'relative' }}>
             <VoiceInput
               onTranscript={(text) => handleSend(text)}
-              disabled={isStreaming}
+              disabled={isStreaming && !allowInputWhileRunning}
             />
             <FileTokenInput
               ref={fileTokenInputRef}
@@ -978,8 +1150,12 @@ export default function ChatPage() {
               onMentionNavUp={handleMentionNavUp}
               onMentionConfirm={handleMentionConfirm}
               onMentionDismiss={handleMentionDismiss}
-              placeholder={t('chat.inputPlaceholder')}
-              disabled={isStreaming}
+              placeholder={
+                allowInputWhileRunning
+                  ? t('chat.inputPlaceholderQueue')
+                  : t('chat.inputPlaceholder')
+              }
+              disabled={isStreaming && !allowInputWhileRunning}
               onImagePaste={handleImagePaste}
             />
             {mention.active && (
@@ -993,7 +1169,7 @@ export default function ChatPage() {
                 onSelect={insertMention}
               />
             )}
-            {isStreaming && isViewingStream ? (
+            {viewingActiveStream && (
               <Button
                 danger
                 type="primary"
@@ -1001,15 +1177,20 @@ export default function ChatPage() {
                 onClick={handleStop}
                 style={{ borderRadius: 'var(--jf-radius-md)', flexShrink: 0 }}
               />
-            ) : (
-              <Button
-                type="primary"
-                icon={<PaperPlaneRight size={18} weight="fill" />}
-                onClick={() => handleSend()}
-                disabled={(!inputValue.trim() && attachedImages.length === 0) || isStreaming || !!interruptData}
-                style={{ borderRadius: 'var(--jf-radius-md)', flexShrink: 0 }}
-              />
             )}
+            <Button
+              type="primary"
+              icon={<PaperPlaneRight size={18} weight="fill" />}
+              onClick={() => handleSend()}
+              disabled={
+                (!inputValue.trim() && attachedImages.length === 0)
+                || (isStreaming && !allowInputWhileRunning)
+                || (!!interruptData && !hitlOnCurrent)
+                || serverStreaming.includes(currentConvId ?? '')
+                || (serverInterrupted.includes(currentConvId ?? '') && !hitlOnCurrent)
+              }
+              style={{ borderRadius: 'var(--jf-radius-md)', flexShrink: 0 }}
+            />
           </div>
           {yoloOn && currentConvId && yoloApprovedConvs.has(currentConvId) && (
             <div
@@ -1022,6 +1203,25 @@ export default function ChatPage() {
           )}
         </div>
       </div>
+      <WorkspaceLockPanel open={lockPanelOpen} onClose={() => setLockPanelOpen(false)} />
+      <FileTreePicker
+        open={lockPathPickerOpen}
+        title="选择要锁定的工作区路径"
+        rootPath="/"
+        value={lockPathsOn}
+        pathOutput="absolute"
+        allToken="/"
+        enableAllShortcut
+        allShortcutTitle="锁定全部工作区 (/)"
+        allShortcutHint="打开后将锁定整个工作区写权限，忽略下方勾选"
+        emptyHint="未选 = 手动模式下本轮不预先锁定任何区域（只读）"
+        onCancel={() => setLockPathPickerOpen(false)}
+        onOk={(next) => {
+          setLockPaths(next);
+          setLockPathsOn(next);
+          setLockPathPickerOpen(false);
+        }}
+      />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-JellyfishBot Version Manager
+OpenJellyfish Version Manager
 
 Syncs version across tauri.conf.json, Cargo.toml, package.json.
 Optionally creates a git tag.

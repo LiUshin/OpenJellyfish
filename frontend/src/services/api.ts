@@ -16,9 +16,18 @@ import type {
   UserProfile,
   SSECallbacks,
   ChatOptions,
+  WorkspaceProcess,
 } from '../types';
 
 const BASE = '/api';
+
+export function listWorkspaceLocks(): Promise<{ processes: WorkspaceProcess[] }> {
+  return request<{ processes: WorkspaceProcess[] }>('GET', '/workspace/locks');
+}
+
+export function releaseWorkspaceLock(owner: string): Promise<{ status: string; owner?: string }> {
+  return request<{ status: string; owner?: string }>('POST', '/workspace/locks/release', { owner });
+}
 
 export function getToken(): string {
   return localStorage.getItem('token') || '';
@@ -139,10 +148,11 @@ export function abortStream(): void {
 function handleSSEStream(res: Response, callbacks: SSECallbacks): void {
   const {
     onToken, onThinking, onToolCall, onToolCallChunk, onToolResult,
-    onDone, onError, onInterrupt, onAutoApprove,
+    onDone, onError, onInterrupt, onAutoApprove, onWorkspaceLock,
     onSubagentCall, onSubagentCallChunk, onSubagentStart, onSubagentToken,
-    onSubagentThinking, onSubagentToolCall, onSubagentToolChunk,
+    onSubagentThinking,     onSubagentToolCall, onSubagentToolChunk,
     onSubagentToolResult, onSubagentEnd,
+    onRunContinued,
   } = callbacks;
 
   const reader = res.body!.getReader();
@@ -171,6 +181,7 @@ function handleSSEStream(res: Response, callbacks: SSECallbacks): void {
               case 'thinking':           onThinking?.(data.content); break;
               case 'interrupt':          onInterrupt?.(data.actions, data.configs); _currentAbortController = null; return;
               case 'auto_approve':       onAutoApprove?.(data.count, data.actions); break;
+              case 'workspace_lock':     onWorkspaceLock?.(data.mode, data.granted || [], data.conflicts || []); break;
               case 'tool_call':          onToolCall?.(data.name, data.args); break;
               case 'tool_call_chunk':    onToolCallChunk?.(data.args_delta); break;
               case 'tool_result':        onToolResult?.(data.name, data.content); break;
@@ -183,6 +194,7 @@ function handleSSEStream(res: Response, callbacks: SSECallbacks): void {
               case 'subagent_tool_chunk': onSubagentToolChunk?.(data.args_delta); break;
               case 'subagent_tool_result': onSubagentToolResult?.(data.name, data.content, data.agent, data.subagent_id); break;
               case 'subagent_end':       onSubagentEnd?.(data.name, data.result, data.subagent_id); break;
+              case 'run_continued':      onRunContinued?.(data.content, data.queue_id); break;
               case 'done':              onDone?.(); _currentAbortController = null; return;
               case 'error':             onError?.(data.content); _currentAbortController = null; return;
             }
@@ -223,6 +235,8 @@ export function streamChat(
   if (options.capabilities) body.capabilities = options.capabilities;
   if (options.plan_mode) body.plan_mode = true;
   if (options.yolo) body.yolo = true;
+  if (options.lock_mode) body.lock_mode = options.lock_mode;
+  if (options.lock_paths) body.lock_paths = options.lock_paths;
 
   fetch(`${BASE}/chat`, {
     method: 'POST',
@@ -248,9 +262,17 @@ export function streamChat(
     });
 }
 
-export async function stopChat(conversationId: string): Promise<void> {
-  abortStream();
-  await request('POST', '/chat/stop', { conversation_id: conversationId }).catch(() => {});
+export async function stopChat(
+  conversationId: string,
+  opts?: { followUp?: string | unknown[]; queueId?: string; keepStream?: boolean },
+): Promise<void> {
+  if (!opts?.keepStream) {
+    abortStream();
+  }
+  const body: Record<string, unknown> = { conversation_id: conversationId };
+  if (opts?.followUp !== undefined) body.follow_up = opts.followUp;
+  if (opts?.queueId) body.queue_id = opts.queueId;
+  await request('POST', '/chat/stop', body).catch(() => {});
 }
 
 export interface StreamingStatusResult {
@@ -1138,7 +1160,7 @@ export async function downloadBackup(opts: {
   const blob = await res.blob();
   const cd = res.headers.get('Content-Disposition') || '';
   const m = /filename="([^"]+)"/.exec(cd);
-  const filename = m ? m[1] : `jellyfishbot-backup-${Date.now()}.zip`;
+  const filename = m ? m[1] : `openjellyfish-backup-${Date.now()}.zip`;
   const fileCount = parseInt(res.headers.get('X-Backup-File-Count') || '0', 10);
 
   // Trigger browser save dialog.

@@ -1991,7 +1991,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "jellyfishbot-launcher"
+name = "openjellyfish-launcher"
 version = "1.1.2"
 dependencies = [
  "chrono",

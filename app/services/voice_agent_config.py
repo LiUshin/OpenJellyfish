@@ -2,7 +2,7 @@
 
 存储位置: ``{user_dir}/voice_agent_config.json``
 
-这是「上层对话编排」的可调参数集合,与底层 JellyfishBot agent(任务引擎)解耦。
+这是「上层对话编排」的可调参数集合,与底层 OpenJellyfish agent(任务引擎)解耦。
 前端「语音前台调音台」读写本配置;语音 Worker 在 session 启动时通过
 ``/api/voice/live/session`` 拉取(改完即时生效,无需重部署 worker)。
 
@@ -25,7 +25,7 @@ from typing import Any, Dict
 from app.core.security import get_user_dir
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "你是用户的实时语音 Copilot,运行在 JellyfishBot 之上。"
+    "你是用户的实时语音 Copilot,运行在 OpenJellyfish 之上。"
     "你说话简洁、口语化、自然,像真人助理。回答尽量控制在 1-2 句话。"
     "你可以闲聊、确认意图;遇到需要查资料、读写文档、跑脚本、做多步任务时,"
     "调用 delegate_to_jellyfish 把任务交给后台执行,并在等待时用简短的话安抚用户。"

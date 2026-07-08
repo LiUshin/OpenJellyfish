@@ -1,7 +1,7 @@
 @echo off
-title JellyfishBot
+title OpenJellyfish
 echo =========================================
-echo   JellyfishBot Local Launcher (Windows)
+echo   OpenJellyfish Local Launcher (Windows)
 echo =========================================
 echo.
 

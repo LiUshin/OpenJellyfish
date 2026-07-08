@@ -1,5 +1,5 @@
 # ============================================================
-# JellyfishBot 语音插件 —— Docker Compose 叠加层(可选)
+# OpenJellyfish 语音插件 —— Docker Compose 叠加层(可选)
 #
 # 作为「额外插件」单独成文件,与主 compose 解耦。启用方式:
 #   docker compose -f docker-compose.yml -f docker-compose.voice.yml up -d --build
@@ -20,7 +20,7 @@ services:
   # ==================== LiveKit Server (SFU) ====================
   livekit-server:
     image: livekit/livekit-server:latest
-    container_name: jellyfishbot-livekit
+    container_name: openjellyfish-livekit
     restart: unless-stopped
     # 用配置文件而非 --dev:EC2/NAT 后面需要 use_external_ip 才能让媒体连通。
     # 见 ./livekit/livekit.yaml(含安全组放行说明)。
@@ -37,7 +37,7 @@ services:
     build:
       context: ./plugins/voice
       dockerfile: Dockerfile
-    container_name: jellyfishbot-voice-worker
+    container_name: openjellyfish-voice-worker
     restart: unless-stopped
     environment:
       # 连 SFU(容器内网名)+ 注册 worker。这对 key/secret 必须与 livekit-server
@@ -46,7 +46,7 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
       # Core 内网基址(主 compose 的服务名)
-      - JELLYFISH_API_BASE=http://jellyfishbot:8000
+      - JELLYFISH_API_BASE=http://openjellyfish:8000
       # Fish Audio TTS 兜底(凭据正常由 Core 经 /session 下发;此处作为 env 回退)
       - FISH_API_KEY=${FISH_API_KEY:-}
       - FISH_REFERENCE_ID=${FISH_REFERENCE_ID:-}
@@ -61,7 +61,7 @@ services:
   # 启用:docker compose --profile scale -f ... up -d
   redis:
     image: redis:7-alpine
-    container_name: jellyfishbot-redis
+    container_name: openjellyfish-redis
     restart: unless-stopped
     profiles: ["scale"]
     command: redis-server --save "" --appendonly no

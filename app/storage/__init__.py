@@ -37,15 +37,22 @@ def create_agent_backend(root_dir: str, *, user_id: str | None = None) -> Any:
 
     - local mode: returns FilesystemBackend(root_dir=root_dir, virtual_mode=True)
     - S3 mode:    returns S3Backend(bucket=..., prefix=<user-scoped>)
+
+    The result is wrapped in a LockAwareBackend so that agent-driven writes
+    respect the per-process workspace locks (see app/services/workspace_lock.py).
+    Reads pass through untouched; writes outside any tracked process fail-open.
     """
     if is_s3_mode():
         from app.storage.s3_backend import S3Backend
         cfg = get_s3_config()
         prefix_parts = [p for p in [cfg.prefix, user_id or "", "fs"] if p]
-        return S3Backend(bucket=cfg.bucket, prefix="/".join(prefix_parts))
+        inner = S3Backend(bucket=cfg.bucket, prefix="/".join(prefix_parts))
     else:
         from deepagents.backends.filesystem import FilesystemBackend
-        return FilesystemBackend(root_dir=root_dir, virtual_mode=True)
+        inner = FilesystemBackend(root_dir=root_dir, virtual_mode=True)
+
+    from app.storage.lock_backend import LockAwareBackend
+    return LockAwareBackend(inner)
 
 
 def create_consumer_backend(

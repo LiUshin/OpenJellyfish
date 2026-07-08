@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Wrench, CircleNotch, CheckCircle } from '@phosphor-icons/react';
 import type { ToolBlock } from '../types';
 import { escapeHtml } from '../markdown';
@@ -8,7 +8,7 @@ interface Props {
   block: ToolBlock;
 }
 
-export default function ToolIndicator({ block }: Props) {
+function ToolIndicator({ block }: Props) {
   const [expanded, setExpanded] = useState(false);
   const hasArgs = block.args.trim().length > 0;
   const hasResult = block.result.trim().length > 0;
@@ -58,3 +58,7 @@ export default function ToolIndicator({ block }: Props) {
     </>
   );
 }
+
+// block 引用在 streamContext 的指纹 flush 下保持稳定（未变即复用同一对象），
+// memo 让已完成的 tool pill 在流式期间不再每帧重渲染。
+export default memo(ToolIndicator);

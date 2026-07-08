@@ -1,7 +1,7 @@
-# JellyfishBot 开发指南
+# OpenJellyfish 开发指南
 
 > 面向开发者的完整技术文档，涵盖架构设计、后端/前端模块、安全机制、扩展方式和部署。
-> 更新日期：2026-04-21（与 `.cursorrules`、`docs/filesystem-architecture.md` 同步）
+> 更新日期：2026-07-07（与 `.cursorrules`、`docs/filesystem-architecture.md` 同步）
 
 ---
 
@@ -430,6 +430,7 @@ _resolve_model(model_id, user_id=None) → ChatModel
 | `web_search` / `web_fetch` | CloudsWay / Tavily | ✅ 始终注入 | `web` capability |
 | `generate_image` / `generate_speech` / `generate_video` | OpenAI 多媒体 | 按 capability | 按 capability |
 | `schedule_task` / `manage_scheduled_tasks` | 定时任务 CRUD | ✅ 始终 | `scheduler` capability |
+| `spawn_child_task` | 从当前定时任务上下文派生子任务（谱系树） | ✅（定时/agent 上下文） | ✅（定时/agent 上下文） |
 | `publish_service_task` | Admin 给 Service 派发任务 | ✅ 始终 | ❌ |
 | `send_message` | 发送给微信用户 | wechat 渠道注入 | `humanchat` capability + 非 web channel |
 | `contact_admin` | Service 通知管理员 | ❌ | `humanchat` capability |
@@ -468,8 +469,8 @@ _resolve_model(model_id, user_id=None) → ChatModel
 - **存储**：`users/{uid}/subagents.json`
 - **DEFAULT_SUBAGENTS**：包含一个内置 `memory` subagent（不可删，但可禁用）
 - **可用工具池**（`SHARED_TOOL_NAMES + MEMORY_TOOL_NAMES`）：
-  - 通用：`run_script` / `web_search` / `web_fetch` / `generate_image` / `generate_speech` / `generate_video` / `schedule_task` / `manage_scheduled_tasks` / `publish_service_task` / `send_message`
-  - 记忆：`list_conversations` / `read_conversation` / `list_service_conversations` / `read_service_conversation` / `read_inbox` / `soul_list` / `soul_read` / `soul_write` / `soul_delete`
+  - 通用：`run_script` / `web_search` / `web_fetch` / `generate_image` / `generate_speech` / `generate_video` / `schedule_task` / `manage_scheduled_tasks` / `spawn_child_task` / `publish_service_task` / `send_message`
+  - 记忆：`list_conversations` / `read_conversation` / `list_service_conversations` / `read_service_conversation` / `read_inbox` / `list_task_trees` / `read_task_tree` / `soul_list` / `soul_read` / `soul_write` / `soul_delete`
 - **按需创建**：`build_subagent_tools(subagent_config, user_id)` 仅实例化配置中列出的工具
 - **API**：`GET /api/subagents`（含 `available_tools`）+ CRUD
 
@@ -1193,19 +1194,38 @@ _MEDIA_TAG_RE = re.compile(r"<<FILE:([^>]+?)>>")
 
 ## 8. 定时任务（Scheduler）
 
-### 8.1 调度器设计
+### 8.1 调度器设计（v2）
 
-- `app/services/scheduler.py::TaskScheduler` 单例，asyncio 循环每 30s 检查
+- `app/services/scheduler.py::HeapScheduler`（`TaskScheduler` 别名）单例：**最小堆** `[(next_run_unix, task_path)]` + `asyncio.Event` 唤醒，替代 v1 的 30s 轮询
 - `main.py` startup 启动，shutdown 优雅停止
+- 任何 `next_run_at` 变化（create/update/spawn/delete/run-now）调用 `_wake_event.set()`
+- 每 600s 全量 rescan 兜底；并发执行受 `SCHEDULER_MAX_CONCURRENT`（默认 4）信号量限制
+- 环境变量 `DISABLE_SCHEDULER=1` 可跳过启动（紧急救火）
 
-### 8.2 任务存储
+### 8.2 任务存储（文件树）
 
-| 类型 | 路径 | 前缀 |
+| 类型 | 路径 | ID 前缀 |
 |---|---|---|
-| Admin 任务 | `users/{uid}/tasks/{task_id}.json` | `task_*` |
-| Service 任务 | `users/{uid}/services/{svc}/tasks/{task_id}.json` | `stask_*` |
+| Admin root/子任务 | `users/{uid}/tasks/{root_id}/[{child_id}/...]/_meta.json` | `task_*` |
+| Service root/子任务 | `users/{uid}/services/{svc}/tasks/{root_id}/[...]/_meta.json` | `stask_*` |
 
-每个任务文件含最近 20 条运行记录。
+- `root_task_id` = 路径第一段；`scheduler_tree.task_path_for(task_id)` 反查磁盘路径
+- 运行步骤：`{task_path}/runs/{run_id}.jsonl`（append-only）
+- v1 扁平 `{task_id}.json` **lazy 迁移**到树结构（`scripts/migrate_tasks_to_tree.py`）
+- `list_tasks(..., roots_only=True)` 默认只返回 root（UI 侧栏）；堆 reload 仍用 `list_all_tasks_flat`（子任务须进堆）
+
+### 8.2.1 Spawn 子任务与上下文
+
+- `spawn_child_task` 工具 + `create_child_task()`；`ContextVar` `_current_task_var` 在 `_execute_*_task` 进出 set/reset（**finally 必须 reset**）
+- 默认继承父任务 `reply_to` / `permissions` / `capabilities` / `tz_offset_hours` / `model`
+- 限频：`spawn_limits.check_chain_quota`（默认每小时 30 次/链，`SCHED_SPAWN_RATE_PER_HOUR`）
+- L3：`descendants_summary` 在子任务完成后向上祖先追加摘要（LRU 1500 字）
+
+### 8.2.2 任务级模型
+
+- `task_config.model` 可选 catalog id；空则 `_get_default_model(user_id)`（尊重用户 `capability_defaults.llm`）
+- Admin：`create_schedule_tool` / `manage_scheduled_tasks` / `spawn_child_task` 均支持 `model` 参数与校验
+- Service：`_run_service_agent_task` 将 `config.model` 作为 `model_override` 传入 `create_consumer_agent`
 
 ### 8.3 任务类型
 
@@ -1311,6 +1331,18 @@ Consumer agent 通过：
 - `session_ids` 可选参数，精确到单个微信会话
 - `run_now` 调度使用 `_schedule_coro` 线程安全模式
 
+### 8.11 v2 API 端点（谱系 / 配额）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/scheduler/{task_id}/tree?max_depth=5` | 任务树 |
+| GET | `/api/scheduler/{task_id}/children` | 直接子节点 |
+| GET | `/api/scheduler/{task_id}/ancestors` | 祖先链 |
+| GET | `/api/scheduler/quotas/{root_task_id}` | spawn 链配额（peek） |
+| POST | `/api/scheduler/admin/migrate` | v1→v2 迁移（`dry_run`） |
+
+Service 镜像路径：`/api/scheduler/services/{service_id}/...`
+
 ---
 
 ## 9. Inbox（收件箱）
@@ -1360,22 +1392,32 @@ Service Agent
 
 ## 10. 实时语音（S2S WebSocket）
 
-### 10.1 模块
+### 10.1 S2S 模块（旧路径）
 
 `app/voice/router.py` 提供 WebSocket 端点 `/api/voice/ws`，作为 OpenAI Realtime API 的代理。
 
-### 10.2 工作流
-
 ```
 浏览器 ──WebSocket──→ FastAPI ──WebSocket──→ wss://api.openai.com/v1/realtime
-                       │
-                       └── session.update 时注入工具配置
-                       └── 工具调用透传 + 后端工具执行
 ```
 
 - 工具注入：`session.update` 事件中包含 Admin 配置的工具集
-- 鉴权：通过 query 参数携带 JWT
-- API Key：通过 `S2S_API_KEY` / `S2S_BASE_URL` 覆盖（fallback 到 `OPENAI_API_KEY`）
+- 鉴权：query 参数 JWT
+- API Key：`S2S_API_KEY` / `S2S_BASE_URL`
+
+### 10.2 LiveKit 语音插件（推荐）
+
+独立进程 `plugins/voice/`（LiveKit Agents）+ Core 路由 `app/routes/voice_live.py`：
+
+```
+浏览器 ─WebRTC→ LiveKit Server ← Worker(jellyfish_voice)
+                      │
+Worker ─HTTP/SSE─→ Core /api/voice/live/{session,delegate,llm/v1/chat/completions}
+                      └── 委派复用 chat._stream_agent(yolo=True)，thread_id 与文字对话共享
+```
+
+- 桥接令牌：`app/voice/live_token.py`（`X-Bridge-Token` / Bearer 用于 LLM 网关）
+- 前台配置：`users/{uid}/voice_agent_config.json`；调音台 **设置 → 语音**
+- 部署：`docker-compose.voice.yml`（livekit-server + voice-worker）；`LIVEKIT_*` / `VOICE_BRIDGE_SECRET` / `FISH_*` / `DASHSCOPE_API_KEY` 等由部署方配置
 
 ---
 
@@ -1501,7 +1543,7 @@ tauri-launcher/
 #### 12.5.1 Windows `\\?\` 扩展长路径前缀（2026-04-20 关键 bug）
 
 - **症状**：Windows .exe 启动后 uvicorn 报 `OSError: Cannot load native module 'Crypto.Util._cpuid_c'`，但 `.pyd` 文件物理存在
-- **根因**：Tauri 的 `app.path().resource_dir()` 在 Windows 上返回 `\\?\D:\JellyfishBot\` 形式的扩展长路径前缀；该前缀污染 Python 子进程 `sys.executable`，`pycryptodome` 的 `os.path.isfile()` 在 `\\?\` 前缀路径下查不到 sibling `.pyd`
+- **根因**：Tauri 的 `app.path().resource_dir()` 在 Windows 上返回 `\\?\D:\OpenJellyfish\` 形式的扩展长路径前缀；该前缀污染 Python 子进程 `sys.executable`，`pycryptodome` 的 `os.path.isfile()` 在 `\\?\` 前缀路径下查不到 sibling `.pyd`
 - **修复**：`src-tauri/src/lib.rs` 的 `strip_win_extended_prefix()` helper，在 `resolve_project_dir` / `find_bundled_python` / `find_bundled_node` 三处强制剥离前缀；`launcher.py` 加 `_strip_extended_prefix()` 双重防御
 - **影响范围**：会影响 numpy / scipy / matplotlib 等所有依赖原生扩展的包
 - **mac 完全无此问题**
@@ -1567,7 +1609,7 @@ CI/CD：`.github/workflows/release.yml`
 
 ### 13.1 功能
 
-- **旧实例检测**：通过端口扫描（lsof / netstat）检测已运行的 JellyfishBot 进程
+- **旧实例检测**：通过端口扫描（lsof / netstat）检测已运行的 OpenJellyfish 进程
 - **用户确认后杀掉**：列出占用端口的进程，SIGTERM → SIGKILL
 - **自动端口发现**：默认 8000(后端) + 3000(前端)，被占用时自动递增
 - **双进程管理**：启动 uvicorn + Express，子进程异常退出时全部清理
@@ -1674,7 +1716,7 @@ Cloudflare (SSL) → Nginx (:80) → Express (:3000) → FastAPI (:8000)
 | 文件操作报错 | `path_security` 日志、`safe_join` 边界 |
 | 微信消息不送达 | `wechat.*` 日志、iLink 连接状态、`context_token` 是否过期 |
 | 微信看到 `<<FILE:>>` 字面 | `delivery.py::extract_media_tags` 是否被调用 |
-| 定时任务不执行 | `scheduler.py` 30s 循环日志、`tz_offset_hours` 字段 |
+| 定时任务不执行 | `HeapScheduler` 堆日志、`tz_offset_hours`、`DISABLE_SCHEDULER` |
 | Inbox 不触发 WeChat | `_main_loop` 是否注入、Admin WeChat 是否已连接 |
 | 脚本"队列繁忙" | `SCRIPT_CONCURRENCY` 环境变量 + `SCRIPT_QUEUE_TIMEOUT` |
 | Tauri 启动报 pycryptodome | `\\?\` 扩展前缀（见 §12.5.1） |

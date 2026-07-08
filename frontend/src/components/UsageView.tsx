@@ -164,7 +164,7 @@ export default function UsageView({ data, dims }: { data: UsageSummary; dims?: U
       )}
 
       <div className={styles.footer}>
-        JELLYFISHBOT · {t('usage.footer', '本人用量 · 服务端聚合 llm_usage/*.jsonl')}
+        openjellyfish · {t('usage.footer', '本人用量 · 服务端聚合 llm_usage/*.jsonl')}
       </div>
     </>
   );

@@ -554,7 +554,7 @@ fn start_jellyfish(
     let mut proc_guard = state.jellyfish_process.lock().unwrap();
     if let Some(ref mut child) = *proc_guard {
         if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-            return Err("JellyfishBot 已在运行中".into());
+            return Err("OpenJellyfish 已在运行中".into());
         }
     }
 
@@ -648,7 +648,7 @@ fn shutdown_jellyfish(state: &AppState) -> Result<(), String> {
         *proc_guard = None;
         Ok(())
     } else {
-        Err("JellyfishBot 未运行".into())
+        Err("OpenJellyfish 未运行".into())
     }
 }
 
@@ -713,7 +713,7 @@ fn open_users_dir(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 /// Open the `logs/` directory; created lazily on first call so users
-/// who haven't started JellyfishBot yet still get a usable folder.
+/// who haven't started OpenJellyfish yet still get a usable folder.
 #[tauri::command]
 fn open_logs_dir(state: State<'_, AppState>) -> Result<(), String> {
     let project_dir = state.project_dir.lock().unwrap().clone();
@@ -886,11 +886,11 @@ fn tail_log(name: String, lines: usize, state: State<'_, AppState>) -> Result<St
 
 /// Open the GitHub releases page in the user's default browser.
 ///
-/// Points to the public mirror at `LiUshin/JellyfishBot` (the private
+/// Points to the public mirror at `LiUshin/OpenJellyfish` (the private
 /// development repo `LiUshin/semi-deep-agent` is not exposed here).
 #[tauri::command]
 fn open_release_page() -> Result<(), String> {
-    const RELEASE_URL: &str = "https://github.com/LiUshin/JellyfishBot/releases/latest";
+    const RELEASE_URL: &str = "https://github.com/LiUshin/OpenJellyfish/releases/latest";
     open::that(RELEASE_URL).map_err(|e| e.to_string())
 }
 
@@ -967,13 +967,13 @@ async fn pack_backup(state: State<'_, AppState>) -> Result<BackupResult, String>
 
     // Ask the user where to save.
     let default_name = format!(
-        "jellyfishbot-backup-{}.zip",
+        "openjellyfish-backup-{}.zip",
         Local::now().format("%Y%m%d-%H%M%S")
     );
     let chosen = rfd::AsyncFileDialog::new()
         .add_filter("ZIP archive", &["zip"])
         .set_file_name(&default_name)
-        .set_title("保存 JellyfishBot 备份到…")
+        .set_title("保存 OpenJellyfish 备份到…")
         .save_file()
         .await;
 
@@ -1110,7 +1110,7 @@ fn load_reg_keys_file(project_dir: &std::path::Path) -> Result<RegKeysFile, Stri
     let path = reg_keys_path(project_dir);
     if !path.exists() {
         return Ok(RegKeysFile {
-            description: Some("JellyfishBot 注册码".into()),
+            description: Some("OpenJellyfish 注册码".into()),
             keys: Vec::new(),
         });
     }
@@ -1133,7 +1133,7 @@ fn generate_key_string() -> String {
         let chars: Vec<char> = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".chars().collect();
         (0..4).map(|_| chars[r.gen_range(0..chars.len())]).collect()
     };
-    format!("JFBOT-{}-{}-{}", seg(&mut rng), seg(&mut rng), seg(&mut rng))
+    format!("OJF-{}-{}-{}", seg(&mut rng), seg(&mut rng), seg(&mut rng))
 }
 
 #[tauri::command]
@@ -1791,7 +1791,7 @@ pub fn run() {
             tail_log,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build JellyfishBot launcher")
+        .expect("failed to build OpenJellyfish launcher")
         .run(|app, event| {
             // 双保险：即便 CloseRequested 没触发（比如系统强制 Exit），
             // 在 RunEvent::Exit 阶段再清一次进程树。

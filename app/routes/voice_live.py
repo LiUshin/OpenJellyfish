@@ -246,7 +246,7 @@ async def voice_live_session(sess=Depends(get_voice_worker_session)):
 
 @router.post("/delegate")
 async def voice_live_delegate(req: dict, sess=Depends(get_voice_worker_session)):
-    """Worker 委派一段用户指令给 JellyfishBot agent,流式返回(SSE)。
+    """Worker 委派一段用户指令给 OpenJellyfish agent,流式返回(SSE)。
 
     复用 /api/chat 的 ``_stream_agent``:
     - 与文字对话**共享同一 thread_id**(``{admin_id}-{conv_id}``)→ 语音/文字共用上下文;
@@ -290,7 +290,7 @@ async def voice_live_delegate(req: dict, sess=Depends(get_voice_worker_session))
 # ── C) LLM 网关(OpenAI 兼容,专供语音 Worker)────────────────────────
 #
 # 语音 Worker 的实时 LLM 不再各自对接 OpenAI/Anthropic/Bedrock —— 而是统一指向
-# 本端点(一个 OpenAI 兼容的 /chat/completions)。端点内部复用 jellyfishbot 的
+# 本端点(一个 OpenAI 兼容的 /chat/completions)。端点内部复用 openjellyfish 的
 # ``_resolve_model``(Bedrock 自然走 Invoke REST),把任意 LangChain chat model 的
 # 流式输出(含 tool_calls)转成 OpenAI SSE chunk 回吐。这样:
 #   • 模型选择/凭据/Bedrock Invoke 全在 Core 一处,与主 Chat 完全一致;
@@ -401,7 +401,7 @@ async def voice_llm_chat_completions(req: dict, sess=Depends(get_voice_llm_user)
     messages = req.get("messages") or []
     tools = req.get("tools") or []
 
-    # 实时语音不开扩展思考:thinking 变体取其 base 模型(查 jellyfishbot 同一张表)。
+    # 实时语音不开扩展思考:thinking 变体取其 base 模型(查 openjellyfish 同一张表)。
     resolve_id = model_id
     cfg = THINKING_MODEL_CONFIG.get(model_id)
     if cfg and cfg.get("base_model") and cfg["base_model"] != model_id:

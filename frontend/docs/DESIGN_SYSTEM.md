@@ -1,4 +1,4 @@
-# JellyfishBot Design System
+# OpenJellyfish Design System
 
 **完整设计规范文档 v1.0**
 
@@ -32,7 +32,7 @@
 
 ### 1.1 品牌定位
 
-JellyfishBot 是一个专业的 AI Agent 平台，提供对话式 AI 交互、服务管理、定时任务、微信集成等功能。
+OpenJellyfish 是一个专业的 AI Agent 平台，提供对话式 AI 交互、服务管理、定时任务、微信集成等功能。
 
 ### 1.2 设计理念
 
@@ -2138,4 +2138,4 @@ describe('ChatPage', () => {
 
 ---
 
-*JellyfishBot Design System v1.0 — Last updated: 2026-04-02*
+*OpenJellyfish Design System v1.0 — Last updated: 2026-04-02*

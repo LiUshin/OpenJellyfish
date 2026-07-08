@@ -16,7 +16,7 @@
  *     不暴露 task_id / scope / 内部命名，避免泄露后台细节给消费者。
  */
 
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Calendar, CheckCircle, WarningCircle, Bell, CaretDown } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import i18n from '../../../i18n';
@@ -78,7 +78,7 @@ interface Props {
   friendlyMode?: boolean;
 }
 
-export default function ScheduledTaskCard({ block, friendlyMode = false }: Props) {
+function ScheduledTaskCard({ block, friendlyMode = false }: Props) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   const meta = parseMeta(block.args);
@@ -146,3 +146,5 @@ export default function ScheduledTaskCard({ block, friendlyMode = false }: Props
     </div>
   );
 }
+
+export default memo(ScheduledTaskCard);

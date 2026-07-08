@@ -1,5 +1,5 @@
 # ============================================================
-# JellyfishBot Docker Image  (multi-stage)
+# OpenJellyfish Docker Image  (multi-stage)
 # Stage 1 — Node.js: build React (Vite + TypeScript)
 # Stage 2 — Python 3.11 + Node.js 20: production runtime
 # ============================================================

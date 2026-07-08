@@ -5,6 +5,52 @@ import {
 import type { StreamBlock, SubagentBlock } from '../pages/Chat/types';
 import * as api from '../services/api';
 
+/**
+ * 计算一个 block 的「内容指纹」——只要指纹不变，就认为该 block 的可见内容
+ * 没有变化，flush 时复用上一帧的对象引用，从而让子组件的 React.memo 命中
+ * bail-out，不重渲染已完成的历史 block。
+ *
+ * ⚠️ SSE 回调是原地 mutate（b.args += delta / last.content += token），
+ * 所以不能靠对象引用判等；用长度 + 关键 flag 拼指纹足够区分「变没变」。
+ */
+function blockFingerprint(b: StreamBlock): string {
+  switch (b.type) {
+    case 'thinking':
+      return `t:${b.content.length}:${b.collapsed ? 1 : 0}`;
+    case 'text':
+      return `x:${b.content.length}`;
+    case 'tool':
+      return `o:${b.name}:${b.done ? 1 : 0}:${b.args.length}:${b.result.length}:${b.resultCollapsed ? 1 : 0}`;
+    case 'subagent': {
+      let tlLen = 0;
+      for (const e of b.timeline) {
+        tlLen += (e.content?.length ?? 0) + (e.toolName?.length ?? 0) + (e.toolDone ? 1 : 0);
+      }
+      return `s:${b.done ? 1 : 0}:${b.status}:${b.content.length}:${b.tools.length}:${b.timeline.length}:${tlLen}:${b.collapsed ? 1 : 0}`;
+    }
+    case 'auto_approve':
+      return `a:${b.count}`;
+    default:
+      return '?';
+  }
+}
+
+/** 浅克隆一个 block（含内部数组），产生新引用让 memo 感知「内容变了」。 */
+function cloneBlock(b: StreamBlock): StreamBlock {
+  switch (b.type) {
+    case 'subagent':
+      return {
+        ...b,
+        tools: b.tools.map((t) => ({ ...t })),
+        timeline: b.timeline.map((e) => ({ ...e })),
+      };
+    case 'auto_approve':
+      return { ...b, actions: [...b.actions] };
+    default:
+      return { ...b };
+  }
+}
+
 export interface PlanStep {
   content: string;
   status: string;
@@ -46,9 +92,13 @@ interface StreamOpts {
   capabilities?: string[];
   plan_mode?: boolean;
   yolo?: boolean;
+  lock_mode?: 'auto' | 'manual' | 'agent';
+  lock_paths?: string[];
   onDone?: (convId: string) => void;
   onError?: (convId: string, msg: string) => void;
   onInterrupt?: () => void;
+  onWorkspaceLock?: (mode: string, granted: string[], conflicts?: { path: string; holder: string }[]) => void;
+  onRunContinued?: (convId: string, content: string, queueId?: string) => void;
 }
 
 const StreamContext = createContext<StreamContextType>(null!);
@@ -63,19 +113,59 @@ export function StreamProvider({ children }: { children: ReactNode }) {
   const [yoloApprovedConvs, setYoloApprovedConvs] = useState<Set<string>>(() => new Set());
 
   const blocksRef = useRef<StreamBlock[]>([]);
+  // flush 时上一帧「发给 React」的对象数组 + 对应指纹；用于按 block 复用引用，
+  // 只把内容真正变化的 block 换成新对象，让未变 block 的子组件 memo 命中。
+  const emittedBlocksRef = useRef<StreamBlock[]>([]);
+  const emittedFingerprintsRef = useRef<string[]>([]);
   const rafRef = useRef<number>(0);
   const pendingRef = useRef(false);
   const convIdRef = useRef<string | null>(null);
   const doneRef = useRef<((convId: string) => void) | null>(null);
   const errorRef = useRef<((convId: string, msg: string) => void) | null>(null);
   const interruptRef = useRef<(() => void) | null>(null);
+  const wsLockRef = useRef<((mode: string, granted: string[], conflicts?: { path: string; holder: string }[]) => void) | null>(null);
+  const runContinuedRef = useRef<((convId: string, content: string, queueId?: string) => void) | null>(null);
+
+  /**
+   * 把 blocksRef 的当前状态提交到 React state。逐个 block 比对指纹：
+   * 指纹未变 → 复用上一帧的对象引用（子组件 memo bail out，零重渲染）；
+   * 指纹变了 → cloneBlock 产生新引用（子组件重渲染该项）。
+   * 这样每帧实际重渲染的只有「正在变的最后一两个 block」，把整轮从
+   * O(n²) 降到 ~O(1) 重渲染。
+   */
+  function flushBlocksToReact() {
+    const raw = blocksRef.current;
+    const prevEmitted = emittedBlocksRef.current;
+    const prevFp = emittedFingerprintsRef.current;
+    const next: StreamBlock[] = new Array(raw.length);
+    const nextFp: string[] = new Array(raw.length);
+
+    for (let i = 0; i < raw.length; i++) {
+      const fp = blockFingerprint(raw[i]);
+      nextFp[i] = fp;
+      if (i < prevFp.length && prevFp[i] === fp && prevEmitted[i]) {
+        next[i] = prevEmitted[i];
+      } else {
+        next[i] = cloneBlock(raw[i]);
+      }
+    }
+    emittedBlocksRef.current = next;
+    emittedFingerprintsRef.current = nextFp;
+    setStreamBlocks(next);
+  }
+
+  /** 清空 emitted 缓存（重置流状态时与 blocksRef=[] 同步调用）。 */
+  function clearEmittedCache() {
+    emittedBlocksRef.current = [];
+    emittedFingerprintsRef.current = [];
+  }
 
   function scheduleFlush() {
     if (pendingRef.current) return;
     pendingRef.current = true;
     rafRef.current = requestAnimationFrame(() => {
       pendingRef.current = false;
-      setStreamBlocks([...blocksRef.current]);
+      flushBlocksToReact();
     });
   }
 
@@ -282,7 +372,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
       onDone() {
         cancelAnimationFrame(rafRef.current);
         pendingRef.current = false;
-        setStreamBlocks([...blocksRef.current]);
+        flushBlocksToReact();
         setIsStreaming(false);
         const cid = convIdRef.current;
         if (cid) doneRef.current?.(cid);
@@ -291,7 +381,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
         cancelAnimationFrame(rafRef.current);
         pendingRef.current = false;
         blocksRef.current.push({ type: 'text', content: `❌ 错误: ${msg}` });
-        setStreamBlocks([...blocksRef.current]);
+        flushBlocksToReact();
         setIsStreaming(false);
         const cid = convIdRef.current;
         if (cid) errorRef.current?.(cid, msg);
@@ -299,10 +389,20 @@ export function StreamProvider({ children }: { children: ReactNode }) {
       onInterrupt(actions: unknown[], configs: unknown) {
         cancelAnimationFrame(rafRef.current);
         pendingRef.current = false;
-        setStreamBlocks([...blocksRef.current]);
+        flushBlocksToReact();
         setIsStreaming(false);
         setInterruptData({ actions, configs });
         interruptRef.current?.();
+      },
+      onWorkspaceLock(mode: string, granted: string[], conflicts?: { path: string; holder: string }[]) {
+        wsLockRef.current?.(mode, granted, conflicts);
+      },
+      onRunContinued(content: string, queueId?: string) {
+        blocksRef.current = [];
+        clearEmittedCache();
+        scheduleFlush();
+        const cid = convIdRef.current;
+        if (cid) runContinuedRef.current?.(cid, content, queueId);
       },
     };
   }
@@ -317,18 +417,23 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     setIsStreaming(true);
     setInterruptData(null);
     blocksRef.current = [];
+    clearEmittedCache();
     setStreamBlocks([]);
     setPlanSteps([]);
 
     doneRef.current = opts.onDone ?? null;
     errorRef.current = opts.onError ?? null;
     interruptRef.current = opts.onInterrupt ?? null;
+    wsLockRef.current = opts.onWorkspaceLock ?? null;
+    runContinuedRef.current = opts.onRunContinued ?? null;
 
     api.streamChat(convId, content, buildCallbacks(), {
       model: opts.model,
       capabilities: opts.capabilities?.length ? opts.capabilities : undefined,
       plan_mode: opts.plan_mode,
       yolo: opts.yolo,
+      lock_mode: opts.lock_mode,
+      lock_paths: opts.lock_paths?.length ? opts.lock_paths : undefined,
     });
   }, []);
 
@@ -343,6 +448,8 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     doneRef.current = opts.onDone ?? null;
     errorRef.current = opts.onError ?? null;
     interruptRef.current = opts.onInterrupt ?? null;
+    wsLockRef.current = opts.onWorkspaceLock ?? null;
+    runContinuedRef.current = opts.onRunContinued ?? null;
 
     api.resumeChat(convId, decisions, buildCallbacks(), {
       model: opts.model,
@@ -355,7 +462,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     cancelAnimationFrame(rafRef.current);
     pendingRef.current = false;
     blocksRef.current.push({ type: 'text', content: '\n\n⚠️ 已中止' });
-    setStreamBlocks([...blocksRef.current]);
+    flushBlocksToReact();
     setIsStreaming(false);
     setInterruptData(null);
 
@@ -369,6 +476,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
 
   const clearFinished = useCallback(() => {
     blocksRef.current = [];
+    clearEmittedCache();
     setStreamBlocks([]);
     setStreamingConvId(null);
     setInterruptData(null);
@@ -380,6 +488,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     setIsStreaming(false);
     setInterruptData(data);
     blocksRef.current = [];
+    clearEmittedCache();
     setStreamBlocks([]);
   }, []);
 

@@ -74,7 +74,7 @@ def _create_user_dirs(user_id: str):
                 readme_content = f.read()
         else:
             readme_content = (
-                "# 欢迎使用 JellyfishBot\n\n"
+                "# 欢迎使用 OpenJellyfish\n\n"
                 "这是你的个人文档目录。你可以：\n\n"
                 "- 上传、创建、编辑文档\n"
                 "- 在 scripts/ 目录编写和运行 Python 脚本\n"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-JellyfishBot Release Builder
+OpenJellyfish Release Builder
 
 Downloads embedded Python & Node.js, stages project files,
 pre-installs Python dependencies, and runs Tauri build
@@ -400,7 +400,7 @@ def _cleanup_stuck_dmg_mounts():
     except Exception:
         return
     for line in out.splitlines():
-        if "/Volumes/dmg." in line or "/Volumes/JellyfishBot" in line:
+        if "/Volumes/dmg." in line or "/Volumes/OpenJellyfish" in line:
             dev = line.split()[0]
             print(f"   [cleanup] force-detaching {dev}")
             subprocess.run(["hdiutil", "detach", dev, "-force"],
@@ -526,7 +526,7 @@ def tauri_build(target: str):
 # ── Main ──────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="JellyfishBot Release Builder")
+    parser = argparse.ArgumentParser(description="OpenJellyfish Release Builder")
     parser.add_argument("--version", help="Set version before building (e.g., 1.2.0)")
     parser.add_argument("--target", help="Rust target triple (auto-detected if omitted)")
     parser.add_argument("--no-frontend", action="store_true", help="Skip frontend rebuild")
@@ -536,7 +536,7 @@ def main():
     args = parser.parse_args()
 
     target = args.target or detect_target()
-    print("JellyfishBot Release Builder")
+    print("OpenJellyfish Release Builder")
     print(f"   Target:  {target}")
     print(f"   Version: {get_version()}")
 

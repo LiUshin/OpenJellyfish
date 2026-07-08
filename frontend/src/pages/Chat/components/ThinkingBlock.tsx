@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { ThinkingBlock as ThinkingBlockType } from '../types';
 import styles from '../chat.module.css';
 
@@ -7,7 +7,7 @@ interface Props {
   isStreaming?: boolean;
 }
 
-export default function ThinkingBlock({ block, isStreaming }: Props) {
+function ThinkingBlock({ block, isStreaming }: Props) {
   const [collapsed, setCollapsed] = useState(block.collapsed);
   const showDots = !collapsed && isStreaming;
 
@@ -33,3 +33,8 @@ export default function ThinkingBlock({ block, isStreaming }: Props) {
     </div>
   );
 }
+
+export default memo(
+  ThinkingBlock,
+  (a, b) => a.block === b.block && a.isStreaming === b.isStreaming,
+);

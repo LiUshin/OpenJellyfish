@@ -1,6 +1,6 @@
-"""桥接:Worker → JellyfishBot Core 的任务委派(远程 SSE,路1 解耦)。
+"""桥接:Worker → OpenJellyfish Core 的任务委派(远程 SSE,路1 解耦)。
 
-Worker 不内嵌 JellyfishBot agent,而是通过 Core 的
+Worker 不内嵌 OpenJellyfish agent,而是通过 Core 的
 ``POST /api/voice/live/delegate`` 远程驱动它,消费与 ``/api/chat`` 完全相同的
 SSE 事件流。这样:
 - 任务跑在 Core 进程里,与语音对话进程互不干扰;

@@ -1,5 +1,5 @@
 #!/bin/bash
-# JellyfishBot Docker / Server startup script
+# OpenJellyfish Docker / Server startup script
 # Supports dynamic ports via BACKEND_PORT / FRONTEND_PORT env vars
 set -e
 
@@ -7,7 +7,7 @@ BACKEND_PORT=${BACKEND_PORT:-8000}
 FRONTEND_PORT=${FRONTEND_PORT:-3000}
 
 echo "========================================="
-echo "  JellyfishBot Starting..."
+echo "  OpenJellyfish Starting..."
 echo "  Backend port:  $BACKEND_PORT"
 echo "  Frontend port: $FRONTEND_PORT"
 echo "========================================="
@@ -41,7 +41,7 @@ FRONTEND_PORT="$FRONTEND_PORT" API_TARGET="http://localhost:$BACKEND_PORT" node 
 FRONTEND_PID=$!
 
 echo "========================================="
-echo "  JellyfishBot is running!"
+echo "  OpenJellyfish is running!"
 echo "  Frontend: http://localhost:$FRONTEND_PORT"
 echo "  API:      http://localhost:$BACKEND_PORT"
 echo "========================================="

@@ -168,6 +168,7 @@ export interface SSECallbacks {
   onError?: (msg: string) => void;
   onInterrupt?: (actions: unknown[], configs: unknown) => void;
   onAutoApprove?: (count: number, actions: { name: string; args: unknown }[]) => void;
+  onWorkspaceLock?: (mode: string, granted: string[], conflicts?: { path: string; holder: string }[]) => void;
   onSubagentCall?: (name: string, task: string, subagentId?: number) => void;
   onSubagentCallChunk?: (argsDelta: string) => void;
   onSubagentStart?: (name: string, subagentId?: number) => void;
@@ -177,6 +178,8 @@ export interface SSECallbacks {
   onSubagentToolChunk?: (argsDelta: string) => void;
   onSubagentToolResult?: (name: string, content: string, agent: string, subagentId?: number) => void;
   onSubagentEnd?: (name: string, result: string, subagentId?: number) => void;
+  /** Interrupt-and-continue: partial saved, new user turn on same SSE. */
+  onRunContinued?: (content: string, queueId?: string) => void;
 }
 
 export interface ChatOptions {
@@ -184,6 +187,19 @@ export interface ChatOptions {
   capabilities?: string[];
   plan_mode?: boolean;
   yolo?: boolean;
+  lock_mode?: 'auto' | 'manual' | 'agent';
+  lock_paths?: string[];
+}
+
+export interface WorkspaceProcess {
+  owner: string;
+  user_id: string;
+  kind: 'interactive' | 'scheduled' | 'manual' | string;
+  label: string;
+  started_at: number;
+  elapsed_sec: number;
+  locked_paths: string[];
+  expires_at: number | null;
 }
 
 export interface SchedulerTask {

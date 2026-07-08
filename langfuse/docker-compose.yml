@@ -1,7 +1,7 @@
 # ============================================================
 # Langfuse v3 自托管部署
 #
-# 基于官方 docker-compose 配置，适配 JellyfishBot 项目
+# 基于官方 docker-compose 配置，适配 OpenJellyfish 项目
 # 官方文档: https://langfuse.com/self-hosting/deployment/docker-compose
 #
 # 组件:
@@ -17,7 +17,7 @@
 #   2. docker compose up -d
 #   3. 访问 http://localhost:3000 注册管理员账号
 #   4. 创建 Project，获取 Public Key / Secret Key
-  #   5. 配置到 JellyfishBot 的 .env 中
+  #   5. 配置到 OpenJellyfish 的 .env 中
 #
 # 安全提醒:
 #   - 生产环境务必修改所有 CHANGEME 标记的密钥

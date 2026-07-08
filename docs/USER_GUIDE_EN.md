@@ -1,7 +1,7 @@
-# JellyfishBot User Guide
+# OpenJellyfish User Guide
 
-> This document covers all feature modules in JellyfishBot v2.0+ with React frontend and Tauri desktop app.
-> Last updated: 2026-04-21
+> This document covers all feature modules in OpenJellyfish v2.0+ with React frontend and Tauri desktop app.
+> Last updated: 2026-07-07
 
 ---
 
@@ -47,10 +47,10 @@
 ### 1.2 Desktop App (Recommended for New Users)
 
 1. Download the installer for your platform from GitHub Release:
-   - Windows: `JellyfishBot-x.y.z-x64.exe` (NSIS installer)
-   - macOS (Apple Silicon): `JellyfishBot-x.y.z-aarch64.dmg`
-   - macOS (Intel): `JellyfishBot-x.y.z-x64.dmg`
-2. Install and open JellyfishBot.
+   - Windows: `OpenJellyfish-x.y.z-x64.exe` (NSIS installer)
+   - macOS (Apple Silicon): `OpenJellyfish-x.y.z-aarch64.dmg`
+   - macOS (Intel): `OpenJellyfish-x.y.z-x64.dmg`
+2. Install and open OpenJellyfish.
 3. **First launch automatically**:
    - Detects bundled Python 3.12 + Node.js 20 runtime
    - Extracts backend / frontend resources to install directory
@@ -134,7 +134,7 @@ docker compose up -d --build
 
 # 5. View logs
 docker compose logs -f
-docker compose logs -f jellyfishbot   # App logs only
+docker compose logs -f openjellyfish   # App logs only
 docker compose logs -f nginx          # Nginx logs only
 ```
 
@@ -166,13 +166,13 @@ Container has built-in health check (checks FastAPI `/docs`). Nginx only accepts
 1. Open the app (<http://localhost:3000>), it auto-redirects to the login page.
 2. Switch to the **Register** tab.
 3. Fill in:
-   - **Registration Code**: A one-time code distributed by the admin (e.g., `JFBOT-XXXX-XXXX-XXXX`)
+   - **Registration Code**: A one-time code distributed by the admin (e.g., `OJF-XXXX-XXXX-XXXX`)
    - **Username**: Choose a username
    - **Password**: Set a password
 4. Click **Register**.
 5. After successful registration, auto-login and redirect to main interface.
 
-> Each registration code can only be used once. If lost or insufficient, admin can generate new ones in the Tauri Desktop App's "Registration Code Management" tab.
+> Each registration code can only be used once. New codes use the **`OJF-`** prefix; legacy `JFBOT-` / `DA-` format codes **still work** (validation matches the full string, not the prefix). If lost or insufficient, admin can generate new ones in the Tauri Desktop App's "Registration Code Management" tab.
 
 ### 2.2 Login
 
@@ -219,7 +219,7 @@ The login page uses a split-panel brand design: left 40% is the jellyfish Logo b
 
 - **User row**: avatar + username + settings gear button (enters Settings Center)
 - **Content area**: conversation page shows conversation list; settings page shows settings nav menu
-- **Brand area**: JellyfishBot Logo + name (click to collapse sidebar from 240px → 64px)
+- **Brand area**: OpenJellyfish Logo + name (click to collapse sidebar from 240px → 64px)
 - **Bottom quick actions**: System Prompt / Subagent / User Profile / File Panel (all with tooltips) + **Theme toggle** (Sun/Moon/Terminal three-state cycle)
 - **Bottom user area**: Avatar + username + logout button
 
@@ -235,6 +235,9 @@ The login page uses a split-panel brand design: left 40% is the jellyfish Logo b
 | `/settings/packages` | Python Environment | Settings → Python Environment |
 | `/settings/inbox` | Inbox | Settings → Inbox (with unread badge) |
 | `/settings/general` | General (API Key + Timezone + Theme + Batch Run + Advanced) | Settings → General |
+| `/settings/backup` | Data Backup | Settings → Data Backup |
+| `/settings/usage` | Usage Statistics | Settings → Usage |
+| `/settings/voice` | Voice (LiveKit) | Settings → Voice |
 | `/settings/services` | Service Management | Settings → Service Management |
 | `/settings/scheduler` | Scheduled Tasks | Settings → Scheduled Tasks |
 | `/settings/wechat` | WeChat Integration | Settings → WeChat |
@@ -255,7 +258,7 @@ Theme choice persists in browser `localStorage`.
 
 ## 4. Chat
 
-The chat page is JellyfishBot's core interface for streaming conversations with the AI Agent.
+The chat page is OpenJellyfish's core interface for streaming conversations with the AI Agent.
 
 ### 4.1 Conversation List
 
@@ -282,11 +285,24 @@ Bottom input area contains:
   - Ctrl+V to paste clipboard image
   - Drag image to input area
 - **Voice input**: click microphone button to start recording → click again to stop → auto-transcribed into input field; press Esc during recording to cancel
+- **Workspace lock**: toolbar lock icon — choose **Auto / Manual paths / Agent self-declare** (see §4.10); chat header also opens the lock status panel
 - **Send/Stop button**:
   - Normal state shows send button (paper plane icon)
   - During streaming shows red Stop button — click to abort current reply
 
-### 4.3 Streaming Message Display
+### 4.3 Message Queue (Query Queue)
+
+While the Agent is **streaming a reply**, you can still type and send — messages enter the **queue for the current conversation** (shown above the input area) instead of being dropped.
+
+| Behavior | Description |
+|----------|-------------|
+| **Default queue** | New messages FIFO; after current turn `done`, the next item sends automatically |
+| **↵ Run now** | Return key button on a queued row: abort current stream (partial reply kept), continue on the **same SSE connection** with that message |
+| **Edit / reorder** | Queued items are editable and can move up/down; queue is limited during HITL approval (queue-only mode) |
+
+> Queue applies only to the **Admin chat page**, not the Service consumer page.
+
+### 4.4 Streaming Message Display
 
 AI replies display in streaming mode, containing the following block types:
 
@@ -315,28 +331,67 @@ AI replies display in streaming mode, containing the following block types:
 - Identified by Robot icon
 
 #### Approval Cards (HITL)
-- **File operation approval**: shows file modification diff preview, choose approve or reject
+- **File operation approval**: git-style hunk diff for `edit_file`; approve or reject
 - **Plan approval**: shows Agent's execution plan, can edit before approving or rejecting
 - Approval buttons use Check (approve) and X (reject) icons
 
-### 4.4 History Messages
+#### Streaming File Preview
+- `write_file` / `edit_file` show live code preview while LLM streams tool arguments (typewriter effect)
+- See pending content before HITL approval
+
+#### Scheduled Task Result Card
+- Scheduled task results use a dedicated blue card (distinct from tool calls)
+- Task metadata (name, status, output snippet) is collapsible
+
+### 4.5 History Messages
 
 - User messages appear on the right (pink-purple gradient bubble)
 - AI messages appear on the left (with jellyfish logo avatar)
 - History messages replay in interleaved order (thinking → text → tool → text → subagent → text…)
 - User attachments displayed as thumbnail gallery, click to enlarge
 
-### 4.5 Smart Scroll
+### 4.6 Smart Scroll
 
 - New messages auto-scroll to bottom
 - When user scrolls up to browse history, auto-scroll **pauses**
 - Returns to bottom, auto-scroll **resumes**
 
-### 4.6 Stream Recovery
+### 4.7 Stream Recovery
 
 - On backend crash / network interruption, already-generated partial content auto-persists (marked ⚠️ [Connection interrupted — saved generated content])
 - Switching back to a conversation still streaming in background shows yellow banner with **"Abort & Save"** and **"Refresh Status"** buttons
-- Cannot send new messages while streaming (prevents conflicts)
+- Cannot send new messages while streaming (prevents conflicts); use §4.3 queue to append follow-ups mid-stream
+
+### 4.8 YOLO Mode (Auto-approve)
+
+Enable **YOLO mode** in **Settings → General** to **auto-approve** HITL prompts (`write_file` / `edit_file` / `propose_plan`, etc.) in Admin chat.
+
+- **Admin only**; Service consumer pages have no HITL flow
+- State stored in browser `localStorage` per device
+- After auto-approvals in a conversation, a minimal orange `yolo` tag appears at the bottom of the input area
+
+### 4.9 @ File References
+
+Type `@` in the input to open a **file picker** (fuzzy search over `docs/`, `scripts/`, `generated/`, etc.). Selection inserts a `[[FILE:/path]]` chip.
+
+- On send, backend expands to `<<FILE:/path>>` for rendering and file panel navigation
+- Click file links in chat to reveal the path in the right file panel
+
+### 4.10 Workspace Lock
+
+Prevents multiple Agent processes (chat, scheduled tasks, subagents) from writing the same directories. Toolbar lock icon modes:
+
+| Mode | Behavior |
+|------|----------|
+| **Auto** | Prefer exclusive whole workspace; on conflict, lock idle top-level dirs |
+| **Manual** | Lock only paths you select (files or directories) |
+| **Agent** | No pre-lock; Agent calls `acquire_workspace` at runtime |
+
+Chat header **Lock** button shows active processes, locked paths, and manual release (does not abort the Agent).
+
+### 4.11 Left Query Navigation
+
+Floating short bars on the left: **one bar per user message**. Scroll highlights the visible query; click to jump (works with virtualized long sessions).
 
 ---
 
@@ -404,8 +459,9 @@ Contains three tabs (some tabs hidden by default, enable in **General → Advanc
 #### 6.1.1 Profile (User Profile)
 
 - Configure Agent's knowledge about you (investment preferences, professional background, personalization notes, etc.)
-- **Version management**: save any version, supports Diff comparison and one-click rollback
-- User profile injected into System Prompt via `{user_profile_context}` placeholder
+- **My personalization rules** (`custom_notes`): your handwritten rules, with **version history** (Diff / rollback / rename)
+- **Agent memory** (`agent_notes`): free text maintained by Agent via `update_personal_memory`; can be **locked** to block further Agent writes
+- Injected via `{user_profile_context}` as two sections: personalization rules + Agent memory
 
 #### 6.1.2 Operation Rules (System Prompt + Capability Prompts)
 
@@ -458,8 +514,8 @@ Configure subagents that the main Agent can call, enabling collaboration on comp
 
 | Category | Tools |
 |----------|-------|
-| General | `run_script` / `web_search` / `web_fetch` / `generate_image` / `generate_speech` / `generate_video` / `schedule_task` / `manage_scheduled_tasks` / `publish_service_task` / `send_message` |
-| Memory | `list_conversations` / `read_conversation` / `list_service_conversations` / `read_service_conversation` / `read_inbox` / `soul_list` / `soul_read` / `soul_write` / `soul_delete` |
+| General | `run_script` / `web_search` / `web_fetch` / `generate_image` / `generate_speech` / `generate_video` / `schedule_task` / `manage_scheduled_tasks` / `publish_service_task` / `send_message` / `spawn_child_task` |
+| Memory | `list_conversations` / `read_conversation` / `list_service_conversations` / `read_service_conversation` / `read_inbox` / `soul_list` / `soul_read` / `soul_write` / `soul_delete` / `list_task_trees` / `read_task_tree` |
 
 ### 6.3 Python Environment (per-user venv)
 
@@ -517,7 +573,11 @@ Each Admin can configure their own API Key, **taking priority over environment v
 |------|--------|
 | Anthropic | `anthropic_api_key` + `anthropic_base_url` |
 | OpenAI | `openai_api_key` + `openai_base_url` |
+| AWS Bedrock | `bedrock_api_key` + `bedrock_region` |
+| Kimi (Moonshot) | `kimi_api_key` + `kimi_base_url` |
+| MiniMax | `minimax_api_key` + `minimax_group_id` |
 | Tavily | `tavily_api_key` |
+| CloudsWay | `cloudsway_search_key` |
 | Multimedia (as needed) | `image_*` / `tts_*` / `video_*` / `s2s_*` / `stt_*` key + base_url |
 
 **Operations**:
@@ -544,7 +604,32 @@ Controls visibility of Advanced Tab in **Settings → Prompt**:
 
 > Off by default. Beginners don't need to see it, preventing accidental changes.
 
-#### 6.5.5 Batch Run (Embedded BatchRunner)
+#### 6.5.5 YOLO Mode
+
+See §4.8. Enable on the General page to auto-approve Admin HITL.
+
+#### 6.5.6 Data Backup
+
+**Path**: Settings → Data Backup
+
+- Export ZIP by module (filesystem / conversations / services / tasks / settings / API Keys)
+- Options: include media, export API Keys (plaintext in ZIP — keep confidential)
+- Import: **merge** (skip existing) or **overwrite** (snapshot to `users/{uid}.pre-restore-{ts}/`, password required)
+- ZIP manifest: `_openjellyfish_backup.json` (legacy `_jellyfishbot_backup.json` supported)
+
+#### 6.5.7 Usage Statistics
+
+**Path**: Settings → Usage
+
+View LLM token usage for your account (by model / provider / Service / API Key / channel / day). Data from `users/{uid}/llm_usage/` monthly JSONL.
+
+#### 6.5.8 Voice Frontend (LiveKit)
+
+**Path**: Settings → Voice
+
+Configure the realtime voice copilot (greeting, routing, fillers, STT/TTS/LLM providers). See §10.2. Requires deployer-provided LiveKit + voice worker.
+
+#### 6.5.9 Batch Run (Embedded BatchRunner)
 
 Batch execute Agent tasks through Excel files — suitable for data processing, batch analysis, etc.
 
@@ -629,11 +714,41 @@ Test conversation with the Service directly without leaving the management page.
 
 > ⚠️ Known issue: each new test creates a new API Key without automatic cleanup (orphan Keys). Must manually delete in the API Keys tab.
 
+#### 6.6.6 Usage Panel
+
+Service detail **Usage** module with Segmented tabs:
+
+| View | Content |
+|------|---------|
+| **Conversations** | Consumer conv list (web/api/wechat source), message count, view / delete |
+| **API calls** | Request-level access log (time, endpoint, key, status, latency), channel filter |
+| **Tokens** | Per-Service token stats (same V3 visualization as Settings → Usage) |
+
+#### 6.6.7 Consumer Chat Page Enhancements
+
+Standalone page `/s/{service_id}` (React):
+
+- **Multi-conversation drawer**: `localStorage` session list, survives refresh; switch loads history from backend
+- **Generated files panel**: header 📁 lists session `generated/` with short-lived signed token for preview/download
+- Welcome message + quick-question chips (configured in Service Basic Info)
+
+---
+
 ### 6.7 Scheduled Tasks
 
 **Path**: Settings → Scheduled Tasks
 
-Manage automatically scheduled tasks, divided into **Admin Tasks** and **Service Tasks** tabs.
+Manage scheduled automation in **Admin Tasks** and **Service Tasks** tabs. v2 uses **heap-driven scheduling** (~1s precision) and **file-tree storage** (`tasks/{root_id}/{child_id}/_meta.json`).
+
+#### 6.7.0 Views
+
+| View | Description |
+|------|-------------|
+| **List** | Sidebar shows **root tasks only**; spawn children show indent + `+N` count |
+| **Graph** | reactflow lineage graph; click node to select task |
+| **Timeline** | 24h / 7d / all swim-lane |
+
+Agent tasks may set an **execution model** (empty = Agent's model at creation). `spawn_child_task` creates children (inherits reply_to / permissions / timezone by default).
 
 #### 6.7.1 Admin Tasks
 
@@ -698,7 +813,7 @@ The **Run** button on the right of each task list row triggers an immediate exec
 
 **Path**: Settings → WeChat Integration
 
-Connect your **main Admin Agent** via WeChat iLink protocol, enabling direct WeChat conversations with your JellyfishBot.
+Connect your **main Admin Agent** via WeChat iLink protocol, enabling direct WeChat conversations with your OpenJellyfish.
 
 > This is completely **independent** of [§7 Service Channel](#7-service-channel-let-consumers-use-via-wechat-qr): Admin onboarding uses your main Agent (full permissions), Service channel serves Consumers (restricted permissions).
 
@@ -708,7 +823,7 @@ Connect your **main Admin Agent** via WeChat iLink protocol, enabling direct WeC
 2. Scan the QR code with WeChat (this is the iLink Bot protocol scan login).
 3. After successful scan:
    - Status automatically changes to **Connected**
-   - Sending messages to JellyfishBot in WeChat, the bot replies
+   - Sending messages to OpenJellyfish in WeChat, the bot replies
 4. **After first scan**, your WeChat account binding is persisted to `users/{your-username}/admin_wechat_session.json`, auto-restored after Docker / service restart.
 5. Active disconnect: click **Disconnect** button, or cancel authorization on WeChat side.
 
@@ -790,23 +905,27 @@ In Service Management → **WeChat Channel** tab you can:
 
 ### 8.1 Overview
 
-The Consumer layer serves external users and systems, accessing AI Agent capabilities authenticated with Service API Keys.
+The Consumer layer serves external users and systems via **Service API Key** authentication. Base URL and keys are **provided by your deployer** — do not use example domains or keys from this doc.
+
+Full integration guide: **[CONSUMER_API_INTEGRATION.md](CONSUMER_API_INTEGRATION.md)** (examples use `JF_BASE_URL` / `JF_API_KEY` env vars).
 
 ### 8.2 Authentication
 
-All Consumer API requests require in the HTTP header:
+All Consumer API requests require:
 
 ```
-Authorization: Bearer sk-svc-xxxxxxxxxxxxx
+Authorization: Bearer sk-svc-<provided-by-deployer>
 ```
 
 ### 8.3 API Endpoints
 
+> Replace `https://<your-deployment-domain>` with your instance URL.
+
 #### 8.3.1 Create Conversation
 
 ```bash
-curl -X POST http://your-host/api/v1/conversations \
-  -H "Authorization: Bearer sk-svc-xxx" \
+curl -X POST "https://<your-deployment-domain>/api/v1/conversations" \
+  -H "Authorization: Bearer sk-svc-<provided-by-deployer>" \
   -H "Content-Type: application/json" \
   -d '{"title": "New Conversation"}'
 ```
@@ -814,8 +933,8 @@ curl -X POST http://your-host/api/v1/conversations \
 #### 8.3.2 Send Message (Custom SSE)
 
 ```bash
-curl -X POST http://your-host/api/v1/chat \
-  -H "Authorization: Bearer sk-svc-xxx" \
+curl -X POST "https://<your-deployment-domain>/api/v1/chat" \
+  -H "Authorization: Bearer sk-svc-<provided-by-deployer>" \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
   -d '{"conversation_id": "conv-id", "message": "Hello"}'
@@ -826,8 +945,8 @@ SSE event types match Admin side: `token` / `thinking` / `tool_call` / `tool_res
 #### 8.3.3 OpenAI-Compatible Endpoint
 
 ```bash
-curl -X POST http://your-host/api/v1/chat/completions \
-  -H "Authorization: Bearer sk-svc-xxx" \
+curl -X POST "https://<your-deployment-domain>/api/v1/chat/completions" \
+  -H "Authorization: Bearer sk-svc-<provided-by-deployer>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "default",
@@ -836,9 +955,18 @@ curl -X POST http://your-host/api/v1/chat/completions \
   }'
 ```
 
-Fully compatible with OpenAI API format — directly replace `base_url` in existing OpenAI SDK code.
+Fully compatible with OpenAI API format. Response `usage` may be zeros; real token stats are in Admin **Settings → Usage**.
 
-#### 8.3.4 Multimodal Messages
+#### 8.3.4 Media Token (generated file access)
+
+```bash
+curl "https://<your-deployment-domain>/api/v1/conversations/{conv_id}/media-token" \
+  -H "Authorization: Bearer sk-svc-<provided-by-deployer>"
+```
+
+Returns a short-lived `token` for `<img src>` / download URLs (`?token=` query param).
+
+#### 8.3.5 Multimodal Messages
 
 Consumer supports sending images + text:
 
@@ -854,24 +982,24 @@ Consumer supports sending images + text:
 
 GPT-4o / Claude Sonnet/Opus support natively.
 
-#### 8.3.5 Get Conversation History
+#### 8.3.6 Get Conversation History
 
 ```bash
-curl http://your-host/api/v1/conversations/conv-id \
-  -H "Authorization: Bearer sk-svc-xxx"
+curl "https://<your-deployment-domain>/api/v1/conversations/conv-id" \
+  -H "Authorization: Bearer sk-svc-<provided-by-deployer>"
 ```
 
-#### 8.3.6 List Generated Files
+#### 8.3.7 List Generated Files
 
 ```bash
-curl http://your-host/api/v1/conversations/conv-id/files \
-  -H "Authorization: Bearer sk-svc-xxx"
+curl "https://<your-deployment-domain>/api/v1/conversations/conv-id/files" \
+  -H "Authorization: Bearer sk-svc-<provided-by-deployer>"
 
-# Download a file (query param carries key to support <img src>)
-GET /api/v1/conversations/conv-id/files/images/xxx.png?key=sk-svc-xxx
+# Download (token or key in query for <img src>)
+GET /api/v1/conversations/conv-id/files/images/xxx.png?token=<media-token>
 ```
 
-#### 8.3.7 User Attachments
+#### 8.3.8 User Attachments
 
 ```bash
 # User attachments stored in query_appendix/
@@ -883,8 +1011,8 @@ GET /api/v1/conversations/conv-id/attachments/images/abc.jpg
 Each Service has an accessible standalone chat web page:
 
 ```
-http://your-host/s/{service_id}
-http://your-host/s/{service_id}?key=sk-svc-xxx   # One-click access
+https://<your-deployment-domain>/s/{service_id}
+https://<your-deployment-domain>/s/{service_id}?key=sk-svc-<provided-by-deployer>   # One-click (equals sharing the key)
 ```
 
 The page is a React application (Vite multi-entry), FastAPI injects Service config + key before rendering. Key is written to localStorage then immediately cleared from URL.
@@ -910,7 +1038,7 @@ This matches the chat page markdown rendering convention. Consumer side needs no
 
 ## 9. Soul Memory System
 
-> Soul is JellyfishBot's core mechanism for Agents to "grow" long-term, inspired by giving the Agent a "soul" that remembers user preferences and conversation highlights.
+> Soul is OpenJellyfish's core mechanism for Agents to "grow" long-term, inspired by giving the Agent a "soul" that remembers user preferences and conversation highlights.
 
 ### 9.1 Concept
 
@@ -977,17 +1105,28 @@ After enabling Soul filesystem:
 - Click microphone button to start recording
 - Click again to stop → auto-transcribed into input field
 - Press **Esc** during recording to cancel (doesn't send)
-- No global keyboard shortcut (avoids breaking accessibility focus navigation)
-- Transcription depends on `STT_API_KEY` (defaults to OpenAI Whisper)
+- Transcription uses `STT_API_KEY` (default OpenAI Whisper; overridable in per-admin API Keys)
 
-### 10.2 Realtime Voice Conversation (S2S WebSocket)
+### 10.2 Realtime Voice Call (LiveKit)
 
-- Direct WebSocket connection to OpenAI Realtime API
-- Supports bidirectional streaming voice (speak → AI listens → AI streams reply)
-- Transparent tool calls + backend tool execution
-- API Key override via `S2S_API_KEY` / `S2S_BASE_URL`
+**Path**: Settings → Voice
 
-> ⚠️ The current React frontend realtime voice UI is still iterating. Can test via `/api/voice/ws` WebSocket endpoint with third-party clients.
+**LiveKit WebRTC** copilot for realtime conversation; complex tasks are delegated to the OpenJellyfish main Agent (same `thread_id` and conversation history as text chat).
+
+**Prerequisites**: deployer configures LiveKit Server, voice worker plugin, and env vars (`LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `VOICE_BRIDGE_SECRET`, etc.).
+
+**Tunable in Voice settings**:
+- Greeting, system prompt, routing policy, interruption rules
+- STT: OpenAI / Fish Audio / Alibaba Paraformer
+- Frontend LLM: same catalog as Chat (via Core OpenAI-compatible gateway)
+- TTS: OpenAI / Fish Audio / Alibaba CosyVoice
+
+Use **Test call** in Voice settings to try a session.
+
+### 10.3 Realtime Voice (S2S WebSocket, legacy)
+
+- WebSocket proxy to OpenAI Realtime API (`/api/voice/ws`)
+- For third-party clients; React UI primarily uses LiveKit (§10.2)
 
 ---
 
@@ -1145,11 +1284,27 @@ A: Scripts execute in a sandbox with the following restrictions:
 ### Q: Scheduled task not triggering?
 
 A:
-1. Check task's `next_run` field (visible in run records page)
-2. Confirm timezone is correct: **General → Timezone**
-3. Cron expressions interpreted in your configured timezone
-4. once type must include timezone suffix (e.g., `2026-12-31T09:00:00+08:00`)
-5. Scheduler checks every 30s, so execution may be delayed by seconds
+1. Check `next_run_at` (detail / graph node state)
+2. Confirm timezone: **Settings → General → Timezone**; tasks store `tz_offset_hours`
+3. Cron uses your timezone; `once` should include timezone suffix (e.g. `2026-12-31T09:00:00+08:00`)
+4. v2 heap scheduling (~1s); sidebar lists roots — children in graph view
+5. On OOM, set `DISABLE_SCHEDULER=1` or lower `SCHEDULER_MAX_CONCURRENT` (see Developer Guide)
+
+### Q: Message queue / interrupt not working?
+
+A: Queue and **↵ Run now** are Admin chat only; requires active stream on current conversation and no HITL wait. Interrupt keeps partial reply and continues on the same connection.
+
+### Q: Workspace lock blocks Agent writes?
+
+A: Open the lock panel in chat header — another process (scheduled task / other chat) may hold the path. Release manually (does not abort Agent) or wait for process end.
+
+### Q: How to back up user data?
+
+A: Prefer **Settings → Data Backup** ZIP export (§6.5.6). Manual backup:
+- **Local**: `users/` + `data/` (checkpoints.db, encryption.key)
+- **Docker**: `./data/users/` volume
+- **S3**: object storage + local `users/{uid}/` config
+- **Important**: back up `ENCRYPTION_KEY` or `data/encryption.key`
 
 ### Q: Inbox has messages but didn't auto-forward to my WeChat?
 
@@ -1158,14 +1313,6 @@ A:
 2. Check if `users/{your-username}/admin_wechat_session.json` exists
 3. Inbox Agent **intelligently evaluates** whether forwarding is worthwhile — not every message is forwarded
 4. View inbox agent run logs (visible in inbox detail page)
-
-### Q: How to back up user data?
-
-A:
-- **Local mode**: back up `users/` and `data/` directories (includes checkpoints.db, encryption.key)
-- **Docker mode**: back up `./data/users/` directory
-- **S3 mode**: S3 storage has built-in redundancy, but JSON configs remain local — must back up both local `users/{uid}/` (except `filesystem/`) and `data/`
-- **Important**: If you set `ENCRYPTION_KEY`, note that value; otherwise back up `data/encryption.key` (master key) — loss means all API Keys are unrecoverable
 
 ### Q: Tauri Desktop App on Windows reports `Cannot load native module 'Crypto.Util._cpuid_c'`?
 
@@ -1204,7 +1351,7 @@ A: Most components have migrated to `--jf-*` CSS variables. If you find missed o
 A:
 - **Desktop App**: "About / Tools" → "Log Directory", daily-rolling log files
 - **Command line**: see stdout directly in terminal, or `python launcher.py` subprocesses also write to `logs/{name}-YYYYMMDD.log`
-- **Docker**: `docker compose logs -f jellyfishbot`
+- **Docker**: `docker compose logs -f openjellyfish`
 
 ### Q: Docker deployment keeps restarting with `sqlite3.OperationalError: unable to open database file`?
 
@@ -1215,7 +1362,7 @@ A: **Data directory permission issue.** The container runs as `jellyfish` (uid=1
 ```bash
 mkdir -p ./data/users
 sudo chown -R 1000:1000 ./data
-docker compose restart jellyfishbot
+docker compose restart openjellyfish
 ```
 
 **Verify**:
@@ -1234,7 +1381,7 @@ A: Check in this order:
 1. **DNS**: `nslookup yourdomain.com` should resolve to the server's public IP; in the Cloudflare dashboard, confirm the A record is **Proxied (orange cloud)**.
 2. **Firewall / security group**: Port 80 must be open to the public (cloud provider's security group, `ufw status`).
 3. **Cloudflare SSL mode**: Must be **Flexible** (HTTPS at the edge, HTTP to origin). If you wrongly pick Full / Full(Strict) but the server only listens on port 80, you'll see infinite 301 redirects or a 525 error.
-4. **Is nginx really on :80?**: `docker compose ps` should show `jellyfishbot-nginx` as Up with `0.0.0.0:80->80/tcp`.
+4. **Is nginx really on :80?**: `docker compose ps` should show `openjellyfish-nginx` as Up with `0.0.0.0:80->80/tcp`.
 5. **Streaming output arrives in chunks instead of token-by-token**: The bundled nginx already disables `proxy_buffering` for `/api/chat`. If there is another reverse proxy (custom nginx / Caddy / Traefik) in front of the server, that layer must also disable buffering and enable WebSocket Upgrade, otherwise SSE will be buffered.
 
 ---

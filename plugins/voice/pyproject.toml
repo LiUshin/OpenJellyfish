@@ -1,7 +1,7 @@
 [project]
 name = "jellyfish-voice"
 version = "0.1.0"
-description = "JellyfishBot 实时语音前台插件(LiveKit Agents Worker)"
+description = "OpenJellyfish 实时语音前台插件(LiveKit Agents Worker)"
 requires-python = ">=3.10"
 dependencies = [
     # LiveKit Agents 1.6.x。锁定次版本(避免 API 漂移),允许补丁升级。

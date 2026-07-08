@@ -84,10 +84,29 @@ MEDIA_SUFFIXES = {
 }
 MEDIA_DIR_NAMES = {"generated", "images"}
 
-# Manifest written into the ZIP as `_jellyfishbot_backup.json` so importer
-# can validate origin + version.
-MANIFEST_NAME = "_jellyfishbot_backup.json"
+# Manifest written into the ZIP as `_openjellyfish_backup.json` so importer
+# can validate origin + version.  Legacy JellyfishBot exports used
+# `_jellyfishbot_backup.json` — import accepts both.
+MANIFEST_NAME = "_openjellyfish_backup.json"
+MANIFEST_NAME_LEGACY = "_jellyfishbot_backup.json"
+MANIFEST_KIND = "openjellyfish-user-backup"
+MANIFEST_KIND_LEGACY = "jellyfishbot-user-backup"
+_VALID_MANIFEST_KINDS = frozenset({MANIFEST_KIND, MANIFEST_KIND_LEGACY})
 MANIFEST_VERSION = 1
+
+
+def _manifest_name_in_zip(names: Iterable[str]) -> Optional[str]:
+    """Return the manifest entry name if present (new name preferred)."""
+    name_set = set(names)
+    if MANIFEST_NAME in name_set:
+        return MANIFEST_NAME
+    if MANIFEST_NAME_LEGACY in name_set:
+        return MANIFEST_NAME_LEGACY
+    return None
+
+
+def _is_manifest_entry(name: str) -> bool:
+    return name in (MANIFEST_NAME, MANIFEST_NAME_LEGACY)
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -266,7 +285,7 @@ def export_user_data(
         # Manifest first so it's easy to peek without unpacking.
         manifest = {
             "manifest_version": MANIFEST_VERSION,
-            "kind": "jellyfishbot-user-backup",
+            "kind": MANIFEST_KIND,
             "user_id": user_id,
             "created_at_unix": int(time.time()),
             "modules": selected,
@@ -425,10 +444,12 @@ def import_user_data(
         # Validate manifest if present (don't require it — be lenient with
         # backups produced manually).
         manifest_modules: Optional[List[str]] = None
-        if MANIFEST_NAME in zf.namelist():
+        manifest_entry = _manifest_name_in_zip(zf.namelist())
+        if manifest_entry:
             try:
-                m = json.loads(zf.read(MANIFEST_NAME).decode("utf-8"))
-                if m.get("kind") != "jellyfishbot-user-backup":
+                m = json.loads(zf.read(manifest_entry).decode("utf-8"))
+                kind = m.get("kind")
+                if kind not in _VALID_MANIFEST_KINDS:
                     result.warnings.append("manifest 'kind' mismatch — proceeding anyway")
                 manifest_modules = list(m.get("modules") or []) or None
             except Exception:
@@ -452,7 +473,7 @@ def import_user_data(
         # Stream-extract entries.
         for info in zf.infolist():
             name = info.filename
-            if name == MANIFEST_NAME:
+            if _is_manifest_entry(name):
                 continue
             if name == "api_keys.PLAINTEXT.json":
                 continue  # handled below

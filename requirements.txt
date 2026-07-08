@@ -1,4 +1,4 @@
-# JellyfishBot dependencies
+# OpenJellyfish dependencies
 
 # DeepAgents framework (LangChain Deep Agents)
 deepagents>=0.4.1

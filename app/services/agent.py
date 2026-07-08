@@ -350,8 +350,9 @@ def create_user_agent(
         create_web_tools, create_schedule_tool, create_manage_scheduled_tasks_tool,
         create_spawn_child_task_tool,
         create_publish_service_task_tool, create_list_files_sorted_tool,
-        create_move_file_tool, create_update_personal_memory_tool,
-        propose_plan, CAPABILITY_PROMPTS, PLAN_MODE_PROMPT,
+        create_move_file_tool, create_workspace_lock_tools,
+        create_update_personal_memory_tool,
+        propose_plan, CAPABILITY_PROMPTS, PLAN_MODE_PROMPT, WORKSPACE_LOCK_PROMPT,
     )
     from app.services.document_tools import create_document_tools
     from app.services.prompt import (
@@ -409,6 +410,7 @@ def create_user_agent(
         create_move_file_tool(user_id),
         create_update_personal_memory_tool(user_id),
     ]
+    tools.extend(create_workspace_lock_tools(user_id))
     # Document parsing tools (read_document + view_pdf_page_or_image) — always
     # injected. They are read-only and operate inside fs_dir; the docs capability
     # prompt is unconditionally appended below so the agent knows when to use them.
@@ -449,6 +451,7 @@ def create_user_agent(
         system_prompt += "\n" + _cap("soul_edit")
 
     tools.append(propose_plan)
+    system_prompt += "\n" + WORKSPACE_LOCK_PROMPT
 
     subagents = build_subagents_for_agent(user_id)
     resolved_model = _resolve_model(model, user_id=user_id)

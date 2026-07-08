@@ -38,7 +38,7 @@ export default function VoicePage() {
   const [configured, setConfigured] = useState(false);
   const [cfg, setCfg] = useState<VoiceAgentConfig | null>(null);
   const [callOpen, setCallOpen] = useState(false);
-  // 可选 LLM 模型(来自 JellyfishBot /api/models,仅保留 worker 支持的供应商)
+  // 可选 LLM 模型(来自 OpenJellyfish /api/models,仅保留 worker 支持的供应商)
   const [llmModels, setLlmModels] = useState<ModelInfo[]>([]);
 
   // fillers 用多行文本编辑(每行一句)
@@ -125,7 +125,7 @@ export default function VoicePage() {
       <Title level={4}>语音前台调音台</Title>
       <Paragraph type="secondary">
         配置实时语音「前台 Copilot」的人格、路由策略、填充语与打断行为。前台负责低延迟对话与
-        闲聊直答;需要查资料/读写文档/跑脚本的重活会委派给后台 JellyfishBot。改动保存后下一通通话即时生效。
+        闲聊直答;需要查资料/读写文档/跑脚本的重活会委派给后台 OpenJellyfish。改动保存后下一通通话即时生效。
       </Paragraph>
 
       {!configured && (

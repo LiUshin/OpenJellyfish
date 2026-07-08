@@ -138,6 +138,17 @@ def _load_meta(user_id: str, conv_id: str) -> Optional[Dict[str, Any]]:
 
 # ── public API ──────────────────────────────────────────────────────
 
+def get_conversation_title(user_id: str, conv_id: str) -> str:
+    """Cheap title lookup (reads only meta.json). Falls back to a short id."""
+    try:
+        meta = _load_meta(user_id, conv_id)
+        if meta and meta.get("title"):
+            return meta["title"]
+    except Exception:
+        pass
+    return f"对话·{conv_id[:8]}"
+
+
 def list_conversations(user_id: str) -> List[Dict[str, Any]]:
     """Return summary list (id/title/created/updated/message_count).
 
