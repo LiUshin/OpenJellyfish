@@ -2,6 +2,7 @@
  * 文件类型分类工具：根据文件名/扩展名判定渲染策略
  *
  * - media: 直接 <img>/<audio>/<video>/<iframe pdf> 渲染，不可编辑，不读取文本
+ * - office: docx/xlsx/pptx 纯前端预览（docx-preview / SheetJS / PptxViewJS），不可编辑
  * - markdown / html: 支持「预览 / 源码」切换，默认预览，源码可编辑
  * - csv / json: 支持「预览 / 源码」切换，预览为表格 / 高亮树，源码可编辑
  * - text: 普通文本/代码，单一 textarea 编辑
@@ -13,6 +14,9 @@ export type FileKind =
   | 'audio'
   | 'video'
   | 'pdf'
+  | 'docx'
+  | 'xlsx'
+  | 'pptx'
   | 'markdown'
   | 'html'
   | 'csv'
@@ -32,6 +36,10 @@ const EXT_KIND: Record<string, FileKind> = {
   avi: 'video', ogv: 'video',
   // pdf
   pdf: 'pdf',
+  // office (preview-only, client-side)
+  docx: 'docx',
+  xlsx: 'xlsx', xls: 'xlsx',
+  pptx: 'pptx',
   // markdown
   md: 'markdown', markdown: 'markdown', mdx: 'markdown',
   // html
@@ -84,17 +92,22 @@ export function isMediaKind(kind: FileKind): boolean {
   return kind === 'image' || kind === 'audio' || kind === 'video' || kind === 'pdf';
 }
 
+/** Office 文档：纯前端预览，不走文本 readFile，不可编辑 */
+export function isOfficeKind(kind: FileKind): boolean {
+  return kind === 'docx' || kind === 'xlsx' || kind === 'pptx';
+}
+
 /** 是否需要「预览 / 源码」切换头部按钮 */
 export function isToggleKind(kind: FileKind): boolean {
   return kind === 'markdown' || kind === 'html' || kind === 'csv' || kind === 'json';
 }
 
-/** 是否需要读取文本内容（媒体类一律不读） */
+/** 是否需要读取文本内容（媒体 / Office / binary 一律不读） */
 export function shouldLoadText(kind: FileKind): boolean {
-  return !isMediaKind(kind) && kind !== 'binary';
+  return !isMediaKind(kind) && !isOfficeKind(kind) && kind !== 'binary';
 }
 
-/** 工具栏是否显示「保存」按钮（媒体/binary 一律不显示） */
+/** 工具栏是否显示「保存」按钮（媒体 / Office / binary 一律不显示） */
 export function isEditableKind(kind: FileKind): boolean {
   return shouldLoadText(kind);
 }

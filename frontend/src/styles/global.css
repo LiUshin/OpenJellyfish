@@ -500,3 +500,19 @@ kbd {
   }
 }
 
+/* ── Office 纯前端预览（docx-preview） ─────────────────────────────── */
+.jf-docx-preview .jf-docx-wrapper {
+  background: transparent;
+  padding: 0;
+}
+.jf-docx-preview .jf-docx {
+  background: #fff;
+  color: #222;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
+  margin: 0 auto 16px;
+}
+.jf-docx-preview section.jf-docx {
+  /* docx-preview 分页 section */
+  overflow: hidden;
+}
+

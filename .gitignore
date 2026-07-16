@@ -69,7 +69,10 @@ tauri-launcher/bundle-resources/
 
 # Cursor project files
 .cursorrules
-.cursor/
+# Ignore everything in .cursor/ (e.g. mcp.json 含密钥) EXCEPT the tracked rules dir.
+# .cursor/rules/ 在 private(origin) 仓在线维护；public 发布时须显式排除(见 .cursor/rules/ops-notes.mdc)
+.cursor/*
+!.cursor/rules/
 
 # External/embedded repos
 wechatskill/

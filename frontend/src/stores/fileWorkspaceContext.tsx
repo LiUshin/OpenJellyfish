@@ -5,6 +5,7 @@ import {
   useEffect,
   useCallback,
   useRef,
+  useMemo,
   type ReactNode,
 } from 'react';
 import { App } from 'antd';
@@ -12,6 +13,18 @@ import * as api from '../services/api';
 import type { SplitMode } from '../components/SplitToggle';
 import { getFileKind, shouldLoadText } from '../utils/fileKind';
 import { pushRecentFile } from '../utils/recentFiles';
+
+/** 打开中的文件 tab（按打开顺序；拖拽可重排）。仅 active 的 content 渲染到预览区。 */
+export interface FileTab {
+  path: string;
+  content: string;
+  dirty: boolean;
+}
+
+export interface FileTabSummary {
+  path: string;
+  dirty: boolean;
+}
 
 interface FileWorkspaceState {
   fileBrowserOpen: boolean;
@@ -22,14 +35,23 @@ interface FileWorkspaceState {
   browserPath: string;
   setBrowserPath: (p: string) => void;
 
+  /** 当前激活的文件路径（兼容旧名 editingFile）。无 tab 时为 null。 */
   editingFile: string | null;
   editContent: string;
   editDirty: boolean;
   saving: boolean;
   openFile: (path: string) => Promise<void>;
   saveFile: () => Promise<void>;
+  /** 关闭全部 tab（抽屉 ESC / 清空预览）。任一 dirty 则确认。 */
   closeFile: (force?: boolean) => void;
   setEditContent: (s: string) => void;
+
+  /** 打开中的 tab 摘要（路径 + dirty），顺序即 tab 条顺序。 */
+  openTabs: FileTabSummary[];
+  activateTab: (path: string) => void;
+  /** 关闭单个 tab；dirty 时确认。关闭后激活右邻，否则左邻。 */
+  closeTab: (path: string, force?: boolean) => void;
+  reorderTabs: (fromIndex: number, toIndex: number) => void;
 
   /** 在 UI 内同时「打开文件 + 跳转浏览器到所在目录 + 打开文件浏览器面板」。
    *  用于聊天里 <<FILE:/abs/path>> tag 的点击响应：一次点击让用户既能编辑/预览文件，
@@ -65,6 +87,19 @@ function readSplitRatio(): number {
   return 0.5;
 }
 
+function parentDir(path: string): string {
+  if (!path || path === '/') return '/';
+  const trimmed = path.replace(/\/+$/, '');
+  const idx = trimmed.lastIndexOf('/');
+  if (idx <= 0) return '/';
+  return trimmed.slice(0, idx);
+}
+
+function basename(path: string): string {
+  const trimmed = path.replace(/\/+$/, '');
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1);
+}
+
 const Ctx = createContext<FileWorkspaceState | null>(null);
 
 export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
@@ -73,17 +108,31 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
   const [browserPath, setBrowserPath] = useState<string>('/');
 
-  const [editingFile, setEditingFile] = useState<string | null>(null);
-  const [editContent, setEditContentRaw] = useState('');
-  const [editDirty, setEditDirty] = useState(false);
+  const [tabs, setTabs] = useState<FileTab[]>([]);
+  const [activePath, setActivePath] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
 
   const [splitMode, setSplitModeRaw] = useState<SplitMode>(readSplitMode);
   const [splitRatio, setSplitRatioRaw] = useState(readSplitRatio);
 
-  const dirtyRef = useRef(false);
-  dirtyRef.current = editDirty;
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const activePathRef = useRef(activePath);
+  activePathRef.current = activePath;
+
+  const activeTab = useMemo(
+    () => (activePath ? tabs.find((t) => t.path === activePath) ?? null : null),
+    [tabs, activePath],
+  );
+  const editingFile = activePath;
+  const editContent = activeTab?.content ?? '';
+  const editDirty = activeTab?.dirty ?? false;
+
+  const openTabs: FileTabSummary[] = useMemo(
+    () => tabs.map(({ path, dirty }) => ({ path, dirty })),
+    [tabs],
+  );
 
   const setSplitMode = useCallback((m: SplitMode) => {
     setSplitModeRaw(m);
@@ -96,29 +145,62 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(LS_SPLIT_RATIO, String(clamped));
   }, []);
 
+  const enterSplit = useCallback(() => {
+    setSplitModeRaw((prev) => {
+      if (prev === 'chat') {
+        localStorage.setItem(LS_SPLIT_MODE, 'split');
+        return 'split';
+      }
+      return prev;
+    });
+  }, []);
+
   const setEditContent = useCallback((s: string) => {
-    setEditContentRaw(s);
-    setEditDirty(true);
+    const path = activePathRef.current;
+    if (!path) return;
+    setTabs((prev) =>
+      prev.map((t) => (t.path === path ? { ...t, content: s, dirty: true } : t)),
+    );
+  }, []);
+
+  const activateTab = useCallback((path: string) => {
+    if (!tabsRef.current.some((t) => t.path === path)) return;
+    setActivePath(path);
+  }, []);
+
+  const reorderTabs = useCallback((fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex) return;
+    setTabs((prev) => {
+      if (
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= prev.length ||
+        toIndex >= prev.length
+      ) {
+        return prev;
+      }
+      const next = [...prev];
+      const [item] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, item);
+      return next;
+    });
   }, []);
 
   const openFile = useCallback(async (path: string) => {
+    // 已打开：只激活，保留缓存 content/dirty（不重新拉文本）
+    if (tabsRef.current.some((t) => t.path === path)) {
+      setActivePath(path);
+      enterSplit();
+      pushRecentFile(path);
+      return;
+    }
+
     const fileName = path.split('/').pop() || path;
     const kind = getFileKind(fileName);
-    const enterSplit = () => {
-      setSplitModeRaw(prev => {
-        if (prev === 'chat') {
-          localStorage.setItem(LS_SPLIT_MODE, 'split');
-          return 'split';
-        }
-        return prev;
-      });
-    };
 
-    // 媒体 / binary：不调 readFile，避免大文件直接拉文本
     if (!shouldLoadText(kind)) {
-      setEditingFile(path);
-      setEditContentRaw('');
-      setEditDirty(false);
+      setTabs((prev) => [...prev, { path, content: '', dirty: false }]);
+      setActivePath(path);
       enterSplit();
       pushRecentFile(path);
       return;
@@ -126,55 +208,92 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
 
     try {
       const data = await api.readFile(path);
-      setEditingFile(path);
-      setEditContentRaw(data.content);
-      setEditDirty(false);
+      // 异步回来时若用户已打开同 path，只激活
+      if (tabsRef.current.some((t) => t.path === path)) {
+        setActivePath(path);
+        enterSplit();
+        pushRecentFile(path);
+        return;
+      }
+      setTabs((prev) => [...prev, { path, content: data.content, dirty: false }]);
+      setActivePath(path);
       enterSplit();
       pushRecentFile(path);
     } catch {
       message.error('打开文件失败');
     }
-  }, [message]);
+  }, [enterSplit, message]);
 
   const saveFile = useCallback(async () => {
-    if (!editingFile) return;
+    const path = activePathRef.current;
+    const tab = tabsRef.current.find((t) => t.path === path);
+    if (!path || !tab) return;
     setSaving(true);
     try {
-      await api.writeFile(editingFile, editContent);
-      setEditDirty(false);
+      await api.writeFile(path, tab.content);
+      setTabs((prev) =>
+        prev.map((t) => (t.path === path ? { ...t, dirty: false } : t)),
+      );
       message.success('已保存');
     } catch {
       message.error('保存失败');
     } finally {
       setSaving(false);
     }
-  }, [editingFile, editContent, message]);
+  }, [message]);
 
-  /** 计算 path 的父目录（始终以 '/' 开头）。 */
-  function parentDir(path: string): string {
-    if (!path || path === '/') return '/';
-    const trimmed = path.replace(/\/+$/, '');
-    const idx = trimmed.lastIndexOf('/');
-    if (idx <= 0) return '/';
-    return trimmed.slice(0, idx);
-  }
+  const closeTab = useCallback((path: string, force = false) => {
+    const tab = tabsRef.current.find((t) => t.path === path);
+    if (!tab) return;
 
-  function basename(path: string): string {
-    const trimmed = path.replace(/\/+$/, '');
-    return trimmed.slice(trimmed.lastIndexOf('/') + 1);
-  }
+    const finish = () => {
+      const prev = tabsRef.current;
+      const idx = prev.findIndex((t) => t.path === path);
+      const next = prev.filter((t) => t.path !== path);
+      setTabs(next);
+      setActivePath((ap) => {
+        if (ap !== path) return ap;
+        if (next.length === 0) return null;
+        return next[Math.min(idx, next.length - 1)].path;
+      });
+    };
+
+    if (!force && tab.dirty) {
+      modal.confirm({
+        title: '未保存更改',
+        content: `「${basename(path)}」有未保存的更改，确定关闭吗？`,
+        okText: '关闭',
+        cancelText: '取消',
+        onOk: finish,
+      });
+    } else {
+      finish();
+    }
+  }, [modal]);
+
+  const closeFile = useCallback((force = false) => {
+    const anyDirty = tabsRef.current.some((t) => t.dirty);
+    const finish = () => {
+      setTabs([]);
+      setActivePath(null);
+    };
+    if (!force && anyDirty) {
+      modal.confirm({
+        title: '未保存更改',
+        content: '有文件尚未保存，确定关闭全部标签吗？',
+        okText: '关闭全部',
+        cancelText: '取消',
+        onOk: finish,
+      });
+    } else {
+      finish();
+    }
+  }, [modal]);
 
   const revealInBrowser = useCallback(async (path: string, anchor?: string, isDir?: boolean) => {
     if (!path) return;
     const normalized = path.startsWith('/') ? path : '/' + path;
 
-    // Directory detection:
-    // 1. explicit flag (from @-mention chips),
-    // 2. trailing slash,
-    // 3. runtime metadata probe via parent directory listing for rendered chat
-    //    links such as <<FILE:/docs>> where markdown has no file metadata.
-    // When it's a folder, just navigate the FilePanel there — don't try to
-    // open it as a file (which would call api.readFile and show an error toast).
     const looksLikeDir = isDir === true || normalized.endsWith('/');
     if (looksLikeDir) {
       const dirPath = normalized.replace(/\/+$/, '') || '/';
@@ -194,20 +313,17 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
         setPendingAnchor(null);
         return;
       }
-      // If parent metadata says this is a file, skip directory probing and open it.
     } catch {
       // Parent listing may fail for stale/inaccessible paths; fall through to openFile.
     }
 
     setBrowserPath(parentDir(normalized));
     setFileBrowserOpen(true);
-    // Set anchor BEFORE openFile so MarkdownPreview's mount effect can pick it up
-    // synchronously when content is already cached.
     setPendingAnchor(anchor || null);
     try {
       await openFile(normalized);
     } catch {
-      // openFile 已经处理了 toast；这里继续保留浏览器跳转效果。
+      // openFile 已经处理了 toast
     }
   }, [openFile]);
 
@@ -215,9 +331,6 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     setPendingAnchor(null);
   }, []);
 
-  // 全局点击委托：聊天/文档里渲染的 [data-jf-file] 元素点击后，
-  // 让 markdown 渲染层（无 React 上下文）也能触发 revealInBrowser。
-  // 同时读取 [data-jf-anchor] 实现深链跳转（标题/PDF 页码）。
   useEffect(() => {
     const handler = (e: globalThis.MouseEvent) => {
       const target = e.target as HTMLElement | null;
@@ -236,24 +349,6 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     return () => document.removeEventListener('click', handler);
   }, [revealInBrowser]);
 
-  const closeFile = useCallback((force = false) => {
-    if (!force && dirtyRef.current) {
-      modal.confirm({
-        title: '未保存更改',
-        content: '文件有未保存的更改，确定关闭吗？',
-        okText: '关闭',
-        cancelText: '取消',
-        onOk: () => {
-          setEditingFile(null);
-          setEditDirty(false);
-        },
-      });
-    } else {
-      setEditingFile(null);
-      setEditDirty(false);
-    }
-  }, [modal]);
-
   const value: FileWorkspaceState = {
     fileBrowserOpen,
     setFileBrowserOpen,
@@ -267,6 +362,10 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     saveFile,
     closeFile,
     setEditContent,
+    openTabs,
+    activateTab,
+    closeTab,
+    reorderTabs,
     revealInBrowser,
     pendingAnchor,
     consumePendingAnchor,

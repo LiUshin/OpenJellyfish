@@ -7,10 +7,14 @@
  *
  * 这样 admin 与 service 共用同一份 StreamBlock 数据结构和同一份 StreamingMessage
  * 渲染组件，但各自管理事件流到 blocks 的转换（admin 走 streamContext，service 走这里）。
+ *
+ * ⚠️ flush 必须走指纹 clone（buildFingerprintedBlocks）：SSE 原地 mutate + memo 子组件，
+ * 若只 setBlocks([...sameRefs])，流式过程中 UI 不更新，结束才整段出现。
  */
 
 import { useCallback, useRef, useState } from 'react';
 import type { StreamBlock } from '../pages/Chat/types';
+import { buildFingerprintedBlocks } from '../pages/Chat/streamFlush';
 import { openChatStream, AuthError, type ServiceChatRequest } from './serviceApi';
 
 export interface UseServiceStreamReturn {
@@ -37,29 +41,48 @@ export function useServiceStream(opts: CallbackOpts = {}): UseServiceStreamRetur
   const [isStreaming, setIsStreaming] = useState(false);
 
   const blocksRef = useRef<StreamBlock[]>([]);
+  const emittedBlocksRef = useRef<StreamBlock[]>([]);
+  const emittedFingerprintsRef = useRef<string[]>([]);
   const rafRef = useRef<number>(0);
   const pendingRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+
+  const clearEmittedCache = useCallback(() => {
+    emittedBlocksRef.current = [];
+    emittedFingerprintsRef.current = [];
+  }, []);
+
+  const flushBlocksToReact = useCallback(() => {
+    const { next, nextFp } = buildFingerprintedBlocks(
+      blocksRef.current,
+      emittedBlocksRef.current,
+      emittedFingerprintsRef.current,
+    );
+    emittedBlocksRef.current = next;
+    emittedFingerprintsRef.current = nextFp;
+    setBlocks(next);
+  }, []);
 
   const scheduleFlush = useCallback(() => {
     if (pendingRef.current) return;
     pendingRef.current = true;
     rafRef.current = requestAnimationFrame(() => {
       pendingRef.current = false;
-      setBlocks([...blocksRef.current]);
+      flushBlocksToReact();
     });
-  }, []);
+  }, [flushBlocksToReact]);
 
   const flushNow = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
     pendingRef.current = false;
-    setBlocks([...blocksRef.current]);
-  }, []);
+    flushBlocksToReact();
+  }, [flushBlocksToReact]);
 
   const reset = useCallback(() => {
     blocksRef.current = [];
+    clearEmittedCache();
     flushNow();
-  }, [flushNow]);
+  }, [clearEmittedCache, flushNow]);
 
   const abort = useCallback(() => {
     abortRef.current?.abort();
@@ -70,6 +93,7 @@ export function useServiceStream(opts: CallbackOpts = {}): UseServiceStreamRetur
   const send = useCallback(
     async (apiKey: string, req: ServiceChatRequest) => {
       blocksRef.current = [];
+      clearEmittedCache();
       flushNow();
       setIsStreaming(true);
 
@@ -233,7 +257,7 @@ export function useServiceStream(opts: CallbackOpts = {}): UseServiceStreamRetur
         setIsStreaming(false);
       }
     },
-    [flushNow, scheduleFlush],
+    [clearEmittedCache, flushNow, scheduleFlush],
   );
 
   return { blocks, isStreaming, reset, send, abort };

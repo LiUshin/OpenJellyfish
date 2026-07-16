@@ -690,7 +690,14 @@
   font-size: 11px;
   color: var(--text-secondary);
 }
-.fileDownload {
+.fileActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.fileDownload,
+.filePreviewBtn {
   background: none;
   border: 1px solid var(--border);
   color: var(--accent);
@@ -699,8 +706,10 @@
   font-size: 13px;
   text-decoration: none;
   flex-shrink: 0;
+  cursor: pointer;
 }
-.fileDownload:hover {
+.fileDownload:hover,
+.filePreviewBtn:hover {
   background: var(--surface-hover);
 }
 .filesEmpty {
@@ -709,10 +718,63 @@
   color: var(--text-secondary);
   font-size: 13px;
 }
+
+/* Office 预览全屏层（盖在文件抽屉之上） */
+.officePreviewOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 24px;
+}
+.officePreviewPanel {
+  width: min(1100px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+.officePreviewHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.officePreviewTitle {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.officePreviewBody {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+}
+
 @media (max-width: 640px) {
   .filesDrawer {
     width: 100%;
     max-width: 100vw;
+  }
+  .officePreviewOverlay {
+    padding: 0;
+  }
+  .officePreviewPanel {
+    width: 100%;
+    border-radius: 0;
   }
 }
 

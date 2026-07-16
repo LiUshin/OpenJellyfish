@@ -3,53 +3,8 @@ import {
   type ReactNode,
 } from 'react';
 import type { StreamBlock, SubagentBlock } from '../pages/Chat/types';
+import { buildFingerprintedBlocks } from '../pages/Chat/streamFlush';
 import * as api from '../services/api';
-
-/**
- * 计算一个 block 的「内容指纹」——只要指纹不变，就认为该 block 的可见内容
- * 没有变化，flush 时复用上一帧的对象引用，从而让子组件的 React.memo 命中
- * bail-out，不重渲染已完成的历史 block。
- *
- * ⚠️ SSE 回调是原地 mutate（b.args += delta / last.content += token），
- * 所以不能靠对象引用判等；用长度 + 关键 flag 拼指纹足够区分「变没变」。
- */
-function blockFingerprint(b: StreamBlock): string {
-  switch (b.type) {
-    case 'thinking':
-      return `t:${b.content.length}:${b.collapsed ? 1 : 0}`;
-    case 'text':
-      return `x:${b.content.length}`;
-    case 'tool':
-      return `o:${b.name}:${b.done ? 1 : 0}:${b.args.length}:${b.result.length}:${b.resultCollapsed ? 1 : 0}`;
-    case 'subagent': {
-      let tlLen = 0;
-      for (const e of b.timeline) {
-        tlLen += (e.content?.length ?? 0) + (e.toolName?.length ?? 0) + (e.toolDone ? 1 : 0);
-      }
-      return `s:${b.done ? 1 : 0}:${b.status}:${b.content.length}:${b.tools.length}:${b.timeline.length}:${tlLen}:${b.collapsed ? 1 : 0}`;
-    }
-    case 'auto_approve':
-      return `a:${b.count}`;
-    default:
-      return '?';
-  }
-}
-
-/** 浅克隆一个 block（含内部数组），产生新引用让 memo 感知「内容变了」。 */
-function cloneBlock(b: StreamBlock): StreamBlock {
-  switch (b.type) {
-    case 'subagent':
-      return {
-        ...b,
-        tools: b.tools.map((t) => ({ ...t })),
-        timeline: b.timeline.map((e) => ({ ...e })),
-      };
-    case 'auto_approve':
-      return { ...b, actions: [...b.actions] };
-    default:
-      return { ...b };
-  }
-}
 
 export interface PlanStep {
   content: string;
@@ -127,28 +82,15 @@ export function StreamProvider({ children }: { children: ReactNode }) {
   const runContinuedRef = useRef<((convId: string, content: string, queueId?: string) => void) | null>(null);
 
   /**
-   * 把 blocksRef 的当前状态提交到 React state。逐个 block 比对指纹：
-   * 指纹未变 → 复用上一帧的对象引用（子组件 memo bail out，零重渲染）；
-   * 指纹变了 → cloneBlock 产生新引用（子组件重渲染该项）。
-   * 这样每帧实际重渲染的只有「正在变的最后一两个 block」，把整轮从
-   * O(n²) 降到 ~O(1) 重渲染。
+   * 把 blocksRef 的当前状态提交到 React state（指纹感知，见 streamFlush.ts）。
+   * 每帧实际重渲染的只有「正在变的最后一两个 block」，O(n²)→~O(1)。
    */
   function flushBlocksToReact() {
-    const raw = blocksRef.current;
-    const prevEmitted = emittedBlocksRef.current;
-    const prevFp = emittedFingerprintsRef.current;
-    const next: StreamBlock[] = new Array(raw.length);
-    const nextFp: string[] = new Array(raw.length);
-
-    for (let i = 0; i < raw.length; i++) {
-      const fp = blockFingerprint(raw[i]);
-      nextFp[i] = fp;
-      if (i < prevFp.length && prevFp[i] === fp && prevEmitted[i]) {
-        next[i] = prevEmitted[i];
-      } else {
-        next[i] = cloneBlock(raw[i]);
-      }
-    }
+    const { next, nextFp } = buildFingerprintedBlocks(
+      blocksRef.current,
+      emittedBlocksRef.current,
+      emittedFingerprintsRef.current,
+    );
     emittedBlocksRef.current = next;
     emittedFingerprintsRef.current = nextFp;
     setStreamBlocks(next);

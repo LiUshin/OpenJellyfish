@@ -38,7 +38,7 @@ const ICON_MAP: Record<string, string> = {
   js: '📜', ts: '📜', jsx: '📜', tsx: '📜',
   html: '🌐', htm: '🌐',
   css: '🎨', scss: '🎨', less: '🎨',
-  pdf: '📕', xlsx: '📗', xls: '📗',
+  pdf: '📕', xlsx: '📗', xls: '📗', docx: '📝', pptx: '📑',
   png: '🖼', jpg: '🖼', jpeg: '🖼', gif: '🖼', svg: '🖼', webp: '🖼',
   zip: '📦', rar: '📦', tar: '📦', gz: '📦',
 };

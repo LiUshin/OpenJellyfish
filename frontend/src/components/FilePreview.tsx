@@ -8,12 +8,15 @@ import {
   UnorderedListOutlined,
 } from '@ant-design/icons';
 import hljs from 'highlight.js/lib/core';
-import { useFileWorkspace } from '../stores/fileWorkspaceContext';
+import OfficePreview from './office/OfficePreview';
+import FileTabBar from './FileTabBar';
 import HeaderControls from './HeaderControls';
+import { useFileWorkspace } from '../stores/fileWorkspaceContext';
 import * as api from '../services/api';
 import {
   getFileKind,
   isMediaKind,
+  isOfficeKind,
   isToggleKind,
   isEditableKind,
   type FileKind,
@@ -588,21 +591,42 @@ export default function FilePreview() {
     saving,
     saveFile,
     closeFile,
+    closeTab,
     setEditContent,
+    openTabs,
+    activateTab,
+    reorderTabs,
   } = useFileWorkspace();
 
+  // 每个 tab 记住预览/源码模式；切走再回来不丢
+  const viewModeByPath = useRef<Record<string, ViewMode>>({});
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
+
   const fileName = editingFile ? editingFile.split('/').pop() || editingFile : '';
   const kind: FileKind = editingFile ? getFileKind(fileName) : 'text';
 
-  // 切换文件时重置 viewMode 为 preview
   useEffect(() => {
-    if (editingFile && isToggleKind(kind)) {
-      setViewMode('preview');
+    if (!editingFile) return;
+    if (isToggleKind(kind)) {
+      setViewMode(viewModeByPath.current[editingFile] || 'preview');
     }
   }, [editingFile, kind]);
 
-  if (!editingFile) return null;
+  const changeViewMode = useCallback(
+    (v: ViewMode) => {
+      setViewMode(v);
+      if (editingFile) viewModeByPath.current[editingFile] = v;
+    },
+    [editingFile],
+  );
+
+  const officeBuffer = useCallback(async () => {
+    if (!editingFile) return new ArrayBuffer(0);
+    const res = await api.downloadFile(editingFile);
+    return res.arrayBuffer();
+  }, [editingFile]);
+
+  if (!editingFile || openTabs.length === 0) return null;
 
   const showSaveBtn = isEditableKind(kind);
   const showToggle = isToggleKind(kind);
@@ -621,9 +645,18 @@ export default function FilePreview() {
     }
   };
 
+  // 只渲染当前激活 tab 的正文（非激活 tab 仅保留 content/dirty 缓存）
   let body: React.ReactNode = null;
   if (isMediaKind(kind)) {
     body = <MediaView path={editingFile} kind={kind} />;
+  } else if (isOfficeKind(kind)) {
+    body = (
+      <OfficePreview
+        kind={kind as 'docx' | 'xlsx' | 'pptx'}
+        getArrayBuffer={officeBuffer}
+        fileName={fileName}
+      />
+    );
   } else if (kind === 'binary') {
     body = <BinaryView path={editingFile} />;
   } else if (showToggle && viewMode === 'preview') {
@@ -632,7 +665,6 @@ export default function FilePreview() {
     else if (kind === 'csv') body = <CsvPreview content={editContent} />;
     else if (kind === 'json') body = <JsonPreview content={editContent} />;
   } else {
-    // text 或 toggle 类的源码视图
     body = (
       <TextEditor content={editContent} onChange={setEditContent} onCmdS={saveFile} />
     );
@@ -648,10 +680,17 @@ export default function FilePreview() {
         minWidth: 0,
       }}
     >
+      <FileTabBar
+        tabs={openTabs}
+        activePath={editingFile}
+        onActivate={activateTab}
+        onClose={(path) => closeTab(path)}
+        onReorder={reorderTabs}
+      />
       <div
         style={{
           padding: '0 14px',
-          height: 47,
+          height: 40,
           boxSizing: 'border-box',
           borderBottom: `1px solid ${C.border}`,
           display: 'flex',
@@ -673,25 +712,12 @@ export default function FilePreview() {
             />
           </Tooltip>
         )}
-        <span
-          style={{
-            color: C.text,
-            fontSize: 13,
-            fontWeight: 500,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            flex: 1,
-          }}
-        >
-          {fileName}
-          {editDirty && <span style={{ color: C.accent }}> ●</span>}
-        </span>
+        <div style={{ flex: 1, minWidth: 0 }} />
         {showToggle && (
           <Segmented
             size="small"
             value={viewMode}
-            onChange={(v) => setViewMode(v as ViewMode)}
+            onChange={(v) => changeViewMode(v as ViewMode)}
             options={[
               { label: '预览', value: 'preview' },
               { label: '源码', value: 'source' },
@@ -708,14 +734,24 @@ export default function FilePreview() {
             onClick={handleDownload}
           />
         </Tooltip>
-        <Tooltip title="关闭文件">
+        <Tooltip title="关闭当前标签">
           <Button
             type="text"
             size="small"
             icon={<CloseOutlined />}
             style={{ color: C.textSec }}
-            onClick={() => closeFile()}
+            onClick={() => closeTab(editingFile)}
           />
+        </Tooltip>
+        <Tooltip title="关闭全部标签">
+          <Button
+            type="text"
+            size="small"
+            style={{ color: C.textDim, fontSize: 11, flexShrink: 0 }}
+            onClick={() => closeFile()}
+          >
+            全部关闭
+          </Button>
         </Tooltip>
         <div style={{ width: 1, height: 16, background: C.border, flexShrink: 0 }} />
         <HeaderControls />
