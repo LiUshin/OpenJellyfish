@@ -10,6 +10,8 @@ import { StreamProvider } from './stores/streamContext';
 import { ThemeProvider, useTheme } from './stores/themeContext';
 import { FileWorkspaceProvider } from './stores/fileWorkspaceContext';
 import AppRouter from './router';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import SuperadminPage from './pages/Superadmin';
 
 /** Map i18n language → antd Locale bundle. Falls back to zhCN. */
 function pickAntdLocale(lang: string | undefined): Locale {
@@ -36,13 +38,16 @@ function ThemedApp() {
   return (
     <ConfigProvider theme={antdConfig} locale={antdLocale}>
       <AntdApp>
-        <AuthProvider>
+        <BrowserRouter><Routes>
+          <Route path="/superadmin" element={<SuperadminPage />} />
+          <Route path="/*" element={<AuthProvider>
           <StreamProvider>
             <FileWorkspaceProvider>
               <AppRouter />
             </FileWorkspaceProvider>
           </StreamProvider>
-        </AuthProvider>
+        </AuthProvider>} />
+        </Routes></BrowserRouter>
       </AntdApp>
     </ConfigProvider>
   );

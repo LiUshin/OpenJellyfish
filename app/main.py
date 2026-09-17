@@ -38,6 +38,8 @@ from app.services.agent import init_checkpointer
 from app.routes.auth import router as auth_router
 from app.routes.conversations import router as conversations_router
 from app.routes.chat import router as chat_router
+from app.routes.runtime_pilot import router as runtime_pilot_router
+from app.routes.runtime import router as runtime_router
 from app.routes.files import router as files_router
 from app.routes.scripts import router as scripts_router
 from app.routes.models import router as models_router
@@ -62,6 +64,10 @@ except ImportError:
     _WECHAT_AVAILABLE = False
     print("[OpenJellyfish] WeChat channel unavailable (missing qrcode/pycryptodome)")
 
+_WECHAT_ENABLED = _WECHAT_AVAILABLE and os.getenv("DISABLE_WECHAT_CHANNEL", "").strip().lower() not in (
+    "1", "true", "yes", "on",
+)
+
 
 app = FastAPI(
     title="OpenJellyfish API",
@@ -80,6 +86,10 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(conversations_router)
 app.include_router(chat_router)
+app.include_router(runtime_pilot_router)
+app.include_router(runtime_router)
+from app.routes.runtime import management_router
+app.include_router(management_router)
 app.include_router(files_router)
 app.include_router(scripts_router)
 app.include_router(models_router)
@@ -95,7 +105,7 @@ app.include_router(workspace_router)
 app.include_router(usage_router)
 app.include_router(voice_router)
 app.include_router(voice_live_router)
-if _WECHAT_AVAILABLE:
+if _WECHAT_ENABLED:
     app.include_router(wechat_api_router)
     app.include_router(wechat_admin_router)
     app.include_router(wechat_ui_router)
@@ -131,7 +141,19 @@ async def startup():
     from app.services.inbox import set_main_loop
     set_main_loop(asyncio.get_running_loop())
 
+    from app.core.host_auth import ensure_key
+    try:
+        ensure_key()
+    except (OSError, ValueError):
+        print('[OpenJellyfish] Host console key unavailable; check config/superadmin.key permissions')
     _apply_safe_startup()
+    from app.runtime.policy import enabled, DeploymentPolicy
+    if enabled():
+        DeploymentPolicy.from_env().ensure_supported()
+        if os.getenv('JELLYFISH_CODEX_PILOT') == '1':
+            raise RuntimeError('关闭 JELLYFISH_CODEX_PILOT 后再启用标准 Runtime；不要让两套进程刷新同一登录缓存')
+        from app.runtime.manager import get_runtime
+        get_runtime().runs.start()
 
     await init_checkpointer()
     print("[OpenJellyfish] Checkpointer initialized")
@@ -150,7 +172,7 @@ async def startup():
     else:
         print("[OpenJellyfish] Venv restore skipped at startup")
 
-    if _WECHAT_AVAILABLE:
+    if _WECHAT_ENABLED:
         from app.channels.wechat.session_manager import get_session_manager
         from app.channels.wechat.bridge import handle_wechat_message
         from app.channels.wechat.admin_router import restore_admin_sessions
@@ -167,11 +189,17 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    from app.runtime.manager import _manager
+    if _manager is not None:
+        await _manager.shutdown()
+    from app.runtime.pilot import _pilot
+    if _pilot is not None:
+        await _pilot.shutdown()
     from app.services.scheduler import get_scheduler
     if not _is_scheduler_disabled():
         await get_scheduler().stop()
 
-    if _WECHAT_AVAILABLE:
+    if _WECHAT_ENABLED:
         from app.channels.wechat.session_manager import get_session_manager
         from app.channels.wechat.admin_router import shutdown_admin_sessions
         await get_session_manager().shutdown()

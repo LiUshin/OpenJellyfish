@@ -20,6 +20,7 @@
 * service_id:     消费侧归属的 service（admin 主链路为 ""）
 * channel:        "web" | "api" | "wechat" | "scheduler" | "batch" | "voice"
 * conv_id:        归属对话（可空）
+* billing:        "hosted"（运营方付费）| "byok"（调用方自带凭据付费）
 
 捕获方式
 --------
@@ -72,12 +73,15 @@ def record_llm_usage(
     channel: str = "",
     conv_id: str = "",
     key_id: str = "",
+    billing: str = "hosted",
 ) -> None:
     """Append one LLM-call usage record. Swallows all exceptions.
 
     ``key_id`` 是消费侧 sk-svc API key 的标识（"key_xxxxxx"）；admin 主链路
     （web/wechat/scheduler/batch）没有 key，写 ""。provider 维度不单独存字段，
     聚合时从 ``model`` 前缀派生（catalog id 为 ``provider:model``）。
+
+    ``billing="byok"`` 的记录，token 由调用方自带的凭据付费，不构成 admin 成本。
     """
     if not admin_id:
         return
@@ -98,6 +102,7 @@ def record_llm_usage(
             "channel": channel or "",
             "conv_id": conv_id or "",
             "key_id": key_id or "",
+            "billing": billing or "hosted",
         }
         append_jsonl(path, rec)
     except Exception:
@@ -148,7 +153,8 @@ def aggregate_usage(
 ) -> Dict[str, Any]:
     """聚合当前 admin 自己的 token 用量（admin web 端「用量统计」用）。
 
-    返回 ``{total, by_model, by_service, by_key, by_provider, by_channel, by_day}``，
+    返回 ``{total, by_model, by_service, by_key, by_provider, by_channel, by_day,
+    by_billing}``，
     每个 by_* 为 ``[{name, calls, input_tokens, output_tokens, total_tokens}]``。
     ``by_day`` 按日期升序，其余按 total_tokens 降序。``name`` 是原始 id（service_id /
     key_id），友好名称映射由路由层补（避免本模块依赖 published）。
@@ -161,7 +167,8 @@ def aggregate_usage(
 
     total = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     buckets: Dict[str, Dict[str, Dict[str, int]]] = {
-        "model": {}, "service": {}, "key": {}, "provider": {}, "channel": {}, "day": {},
+        "model": {}, "service": {}, "key": {}, "provider": {}, "channel": {},
+        "day": {}, "billing": {},
     }
 
     def _add(dim: str, name: str, inp: int, out: int, tot: int) -> None:
@@ -198,6 +205,7 @@ def aggregate_usage(
             _add("service", str(rec.get("service_id", "") or ""), inp, out, tot)
             _add("key", str(rec.get("key_id", "") or ""), inp, out, tot)
             _add("channel", str(rec.get("channel", "") or "") or "(其它)", inp, out, tot)
+            _add("billing", str(rec.get("billing", "") or "hosted"), inp, out, tot)
             day = str(rec.get("ts", "") or "")[:10]
             if len(day) == 10:
                 _add("day", day, inp, out, tot)
@@ -219,6 +227,7 @@ def aggregate_usage(
         "by_provider": _sorted("provider"),
         "by_channel": _sorted("channel"),
         "by_day": _sorted("day", by_name=True),
+        "by_billing": _sorted("billing"),
     }
 
 
@@ -283,6 +292,7 @@ def _make_token_usage_callback(
     conv_id: str = "",
     model_hint: str = "",
     key_id: str = "",
+    billing: str = "hosted",
 ):
     """惰性构建 TokenUsageCallback 实例（避免在无 LLM 调用时导入 langchain）。"""
     from langchain_core.callbacks.base import BaseCallbackHandler
@@ -305,6 +315,7 @@ def _make_token_usage_callback(
                     channel=channel,
                     conv_id=conv_id,
                     key_id=key_id,
+                    billing=billing,
                 )
             except Exception:
                 pass
@@ -320,6 +331,7 @@ def build_usage_callbacks(
     conv_id: str = "",
     model_hint: str = "",
     key_id: str = "",
+    billing: str = "hosted",
 ) -> List[Any]:
     """返回注入 agent ``config["callbacks"]`` 的回调列表：
     Langfuse（若启用）+ token 用量回调（若有 admin_id）。
@@ -338,6 +350,7 @@ def build_usage_callbacks(
                     conv_id=conv_id,
                     model_hint=model_hint,
                     key_id=key_id,
+                    billing=billing,
                 )
             )
         except Exception:

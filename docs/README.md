@@ -14,6 +14,10 @@
 - 支持语音输入（单击麦克风开始/停止，自动转写填入输入框）
 - 支持图片上传与识别
 
+### 可选 Codex / Cursor 引擎
+
+v1.3.0 支持在管理员主聊天选择获授权的 Codex / Cursor 模型。部署方在 `/superadmin` 管理供应商连接并授权可信 admin；DeepAgents 保持默认。部署步骤、能力范围及恢复方法见 [标准运行模式](runtime-standard-mode.md) 和 [主机超管控制台](superadmin-console.md)。
+
 ### 文件系统
 
 - 每个用户拥有独立的虚拟文件系统，通过右上角按钮打开文件面板

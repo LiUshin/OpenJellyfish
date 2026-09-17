@@ -1045,7 +1045,7 @@ async def _run_script_task(user_id: str, config: Dict[str, Any]) -> dict:
         timeout=min(config.get("timeout", 60), _TASK_TIMEOUT_S),
         allowed_read_dirs=read_dirs,
         allowed_write_dirs=write_dirs,
-        unrestricted=superadmin_script_unrestricted(),
+        unrestricted=superadmin_script_unrestricted(user_id),
     )
 
     if result["error"]:

@@ -690,6 +690,16 @@ After key update, automatically calls `clear_agent_cache(user_id)` + `clear_cons
 
 ---
 
+### 4.11 Optional Codex / Cursor runtime
+
+`app/runtime/chat_adapters.py` dispatches existing chat endpoints to DeepAgents or the bound Codex/Cursor session. Old conversations without a runtime binding remain DeepAgents. External engines use a separate SQLite run/event store, a bounded queue, per-connection serialization and versioned model grants; they do not replace LangGraph checkpoints. Unknown or invalid bindings fail explicitly.
+
+`app/core/host_auth.py` authenticates the independent `host:owner` principal for `/api/superadmin/runtime`; `/superadmin` is the frontend entry. Registered admins use authorized connections through `/api/runtime` and the main chat. Profiles migrate from legacy owner accounts to host ownership; existing revocations are preserved. Do not add `JELLYFISH_OWNER_USER_ID` to new deployments.
+
+`ConnectionBackend` prewarms a bounded pool (default `MAX_CLIENTS=MAX_RUNNING`, maximum 16). A connection owns its client and credential lease; each turn rebinds actor, session, working directory, model and tools. `KEEP_WARM=0` disables prewarming. There is no active `JELLYFISH_RUNTIME_IDLE_SECONDS` setting. Only `trusted_shared + local` is supported on macOS/Linux with one API worker. Containerizing the application does not provide tenant isolation; multiple replicas must not share this local state.
+
+See [runtime operation](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-standard-mode.md) and [host console / Docker setup](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/superadmin-console.md). Regression command: `python -m unittest discover -s tests -p 'test_runtime*.py'`. Supplier-account acceptance is a separate step; unit tests and builds do not prove it.
+
 ## 5. Frontend Architecture
 
 ### 5.1 Directory Structure
@@ -1689,6 +1699,10 @@ Container has built-in health check (checks FastAPI `/docs` endpoint). Nginx onl
 Excludes `frontend/node_modules/` / `frontend/dist/` / `venv/` / `data/` / `.env` / `.git/`.
 
 ---
+
+### 14.6 Optional CLI build arguments
+
+Compose forwards `JELLYFISH_CODEX_CLI_VERSION` and `JELLYFISH_CURSOR_CLI_VERSION` as independent build arguments. Empty values skip installation. Set pinned versions in `.env`, run `docker compose up -d --build openjellyfish`, then `docker compose exec nginx nginx -s reload`. Runtime environment flags alone do not install executables. The image runs as UID 1000; keep `data/` writable and persistent, including `data/runtime` and `data/superadmin.key`. Custom binary paths must refer to executables inside the container.
 
 ## 15. Testing & Debugging
 

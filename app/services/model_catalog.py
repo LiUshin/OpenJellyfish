@@ -104,28 +104,43 @@ def get_catalog(user_id: Optional[str] = None) -> Dict[str, Any]:
     return out
 
 
-def _openrouter_catalog_entries(user_id: Optional[str]) -> List[Dict[str, Any]]:
-    """Build synthetic catalog rows from the Admin OpenRouter whitelist."""
+_AGGREGATOR_PREFIXES = ("openrouter:", "siliconflow:")
+
+
+def _aggregator_catalog_entries(user_id: Optional[str]) -> List[Dict[str, Any]]:
+    """Build synthetic catalog rows from the Admin aggregator whitelists.
+
+    Aggregators (OpenRouter, SiliconFlow) carry hundreds of models that change
+    weekly, so they are never listed in config/model_catalog.json — the Admin
+    picks the ones they want and those become catalog rows here.
+    """
     if not user_id:
         return []
     try:
-        from app.services.preferences import get_openrouter_enabled_models
-        enabled = get_openrouter_enabled_models(user_id)
+        from app.services.preferences import AGGREGATOR_PROVIDERS, get_enabled_models
     except Exception:
         return []
     rows: List[Dict[str, Any]] = []
-    for item in enabled:
-        slug = item.get("id") or ""
-        if not slug:
+    for provider in AGGREGATOR_PROVIDERS:
+        try:
+            enabled = get_enabled_models(user_id, provider)
+        except Exception:
             continue
-        rows.append({
-            "id": f"openrouter:{slug}",
-            "provider": "openrouter",
-            "display_name": item.get("name") or slug,
-            "tier": "thinking" if item.get("reasoning") else "high",
-            "reasoning": bool(item.get("reasoning")),
-            "openrouter_slug": slug,
-        })
+        for item in enabled:
+            slug = item.get("id") or ""
+            if not slug:
+                continue
+            row = {
+                "id": f"{provider}:{slug}",
+                "provider": provider,
+                "display_name": item.get("name") or slug,
+                "tier": "thinking" if item.get("reasoning") else "high",
+                "reasoning": bool(item.get("reasoning")),
+                "model_slug": slug,
+            }
+            if item.get("thinking_budget"):
+                row["thinking_budget"] = item["thinking_budget"]
+            rows.append(row)
     return rows
 
 
@@ -137,14 +152,14 @@ def list_models(
     """列出某 capability 下所有 model 条目。
 
     only_available=True 时按当前用户已配置凭据过滤（设置页选择器使用）。
-    LLM 额外合并 Admin 勾选的 OpenRouter 白名单模型。
+    LLM 额外合并 Admin 勾选的聚合商（OpenRouter / 硅基流动）白名单模型。
     """
     catalog = get_catalog(user_id)
     items: List[Dict[str, Any]] = list(catalog.get(capability) or [])
     if capability == "llm":
         # Whitelist entries override same id if somehow present in static catalog.
         by_id = {m.get("id"): m for m in items if m.get("id")}
-        for row in _openrouter_catalog_entries(user_id):
+        for row in _aggregator_catalog_entries(user_id):
             by_id[row["id"]] = row
         items = list(by_id.values())
     if only_available:
@@ -162,8 +177,8 @@ def find_model(model_id: str, user_id: Optional[str] = None) -> Optional[Dict[st
         for m in catalog.get(cap) or []:
             if m.get("id") == model_id:
                 return {**m, "capability": cap}
-    if model_id.startswith("openrouter:") and user_id:
-        for m in _openrouter_catalog_entries(user_id):
+    if user_id and model_id.startswith(_AGGREGATOR_PREFIXES):
+        for m in _aggregator_catalog_entries(user_id):
             if m.get("id") == model_id:
                 return {**m, "capability": "llm"}
     return None

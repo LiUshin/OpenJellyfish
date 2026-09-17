@@ -63,7 +63,9 @@ requests>=2.31.0
 croniter
 
 # S3-compatible storage (only used when STORAGE_BACKEND=s3)
-boto3>=1.34.0
+# 1.36.5+ : flexible-checksum config options actually apply to upload_file /
+# download_file, which S3-compatible backends (R2/MinIO/OSS) may need.
+boto3>=1.36.5
 aioboto3>=13.0.0
 
 # Finance data

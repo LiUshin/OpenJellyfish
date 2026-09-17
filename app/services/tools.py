@@ -650,7 +650,7 @@ def create_run_script_tool(user_id: str):
                 allowed_read_dirs=[ctx["docs_dir"]],
                 allowed_write_dirs=ctx["write_dirs"],
                 python_executable=get_user_python(user_id),
-                unrestricted=superadmin_script_unrestricted(),
+                unrestricted=superadmin_script_unrestricted(user_id),
             )
         if result["error"]:
             return f"执行失败: {result['error']}"

@@ -10,6 +10,74 @@ const API_BASE = window.location.origin;
 export interface ServiceChatRequest {
   conversation_id: string;
   message: string | unknown[];
+  provider?: string;
+  api_key?: string;
+  base_url?: string;
+  model?: string;
+  region?: string;
+}
+
+/**
+ * BYOK（sk-byok- 开头的 key）：主对话模型由调用方自付，凭据每次请求随 body 发送。
+ * 只存本机 localStorage，服务端不保存。
+ */
+export interface ByokCreds {
+  provider: string;
+  model: string;
+  api_key: string;
+  base_url?: string;
+  region?: string;
+}
+
+const BYOK_STORE_PREFIX = 'svc_byok_';
+
+export function isByokKey(key: string): boolean {
+  return key.startsWith('sk-byok-');
+}
+
+export function getStoredByok(serviceId: string): ByokCreds | null {
+  try {
+    const raw = localStorage.getItem(BYOK_STORE_PREFIX + serviceId);
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    if (p && p.provider && p.model && p.api_key) return p as ByokCreds;
+  } catch {
+    /* ignore corrupt store */
+  }
+  return null;
+}
+
+export function setStoredByok(serviceId: string, creds: ByokCreds): void {
+  try {
+    localStorage.setItem(BYOK_STORE_PREFIX + serviceId, JSON.stringify(creds));
+  } catch {
+    /* quota / private mode — 持久化失败不致命 */
+  }
+}
+
+export function clearStoredByok(serviceId: string): void {
+  localStorage.removeItem(BYOK_STORE_PREFIX + serviceId);
+}
+
+export interface ServiceModelOption {
+  id: string;
+  provider: string;
+  display_name: string;
+}
+
+export interface ServiceModelsInfo {
+  billing: 'hosted' | 'byok';
+  default_model: string;
+  models: ServiceModelOption[];
+  allowed_hosts: Record<string, string[]>;
+}
+
+/** 本 Key 可用的模型与计费模式（BYOK 填凭据表单时用）。 */
+export async function getServiceModels(apiKey: string): Promise<ServiceModelsInfo> {
+  const res = await fetch(`${API_BASE}/api/v1/models`, { headers: authHeaders(apiKey) });
+  if (res.status === 401) throw new AuthError('API Key 无效，请重新输入');
+  if (!res.ok) throw new Error(`获取模型列表失败: ${res.status}`);
+  return res.json();
 }
 
 export function getStoredKey(serviceId: string): string {
@@ -41,7 +109,7 @@ export function consumeKeyFromUrl(serviceId: string): string | null {
   return key;
 }
 
-function authHeaders(apiKey: string, json = false): HeadersInit {
+function authHeaders(apiKey: string, json = false): Record<string, string> {
   const h: Record<string, string> = { Authorization: `Bearer ${apiKey}` };
   if (json) h['Content-Type'] = 'application/json';
   return h;

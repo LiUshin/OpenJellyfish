@@ -64,8 +64,41 @@ def _sse(gen):
     )
 
 
+def _resolve_billing(ctx, req):
+    """按 key 的计费模式解析主对话模型凭据。
+
+    返回 ``(model_override, credentials_override)``；hosted key 两者都是 None，
+    行为与 BYOK 上线前完全一致。
+    """
+    billing = ctx.get("billing", "hosted")
+    if billing != "byok":
+        # 注意只挡凭据字段：OpenAI SDK 总会带 model，历史 hosted 调用一直被忽略，
+        # 这里若一并报错会打断既有集成。
+        if req.provider or req.api_key or req.base_url or req.region:
+            raise HTTPException(
+                status_code=400,
+                detail="该 Key 由运营方付费，不接受自带凭据（provider/api_key/base_url/region）",
+            )
+        return None, None
+
+    from app.services.byok import BYOKError, resolve_request_credentials
+    try:
+        return resolve_request_credentials(
+            admin_id=ctx["admin_id"],
+            svc_config=ctx.get("service_config", {}) or {},
+            provider=req.provider,
+            api_key=req.api_key,
+            model=req.model,
+            base_url=req.base_url,
+            region=req.region,
+        )
+    except BYOKError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 async def _record_stream(gen, *, admin_id: str, service_id: str, channel: str,
-                         key_id: str, conv_id: str, endpoint: str):
+                         key_id: str, conv_id: str, endpoint: str,
+                         billing: str = "hosted"):
     """Wrap an SSE generator: forwards events while recording total duration
     + ok 状态。流被客户端中断（GeneratorExit）也算 ok，因为 LLM 已经
     跑了；仅当生成器内部抛异常才标 ok=False。"""
@@ -85,6 +118,7 @@ async def _record_stream(gen, *, admin_id: str, service_id: str, channel: str,
             channel=channel, key_id=key_id, conv_id=conv_id,
             endpoint=endpoint, status_code=status_code,
             latency_ms=int((time.time() - start) * 1000), ok=ok,
+            billing=billing,
         )
 
 
@@ -342,6 +376,32 @@ async def _stream_openai_compat(agent, agent_input, config, ctx, conv_id, model_
 
 # ── routes ───────────────────────────────────────────────────────────
 
+@router.get("/models")
+async def api_consumer_models(ctx=Depends(get_service_context)):
+    """本 Key 可用的模型与计费模式。
+
+    byok Key 的持有者靠它知道 model / provider / base_url 能填什么，不必读文档。
+    """
+    from app.services.byok import allowed_hosts_map, allowed_models
+
+    admin_id = ctx["admin_id"]
+    svc_config = ctx.get("service_config", {}) or {}
+    billing = ctx.get("billing", "hosted")
+    if billing != "byok":
+        return {
+            "billing": billing,
+            "default_model": svc_config.get("model", ""),
+            "models": [],
+            "allowed_hosts": {},
+        }
+    return {
+        "billing": billing,
+        "default_model": svc_config.get("model", ""),
+        "models": allowed_models(admin_id),
+        "allowed_hosts": allowed_hosts_map(),
+    }
+
+
 @router.post("/conversations")
 async def api_create_conversation(
     req: CreateConsumerConversationRequest,
@@ -358,6 +418,7 @@ async def api_create_conversation(
         endpoint="POST /api/v1/conversations",
         status_code=200,
         latency_ms=int((time.time() - start) * 1000), ok=True,
+        billing=ctx.get("billing", "hosted"),
     )
     return conv
 
@@ -375,6 +436,8 @@ async def api_consumer_chat(req: ConsumerChatRequest, ctx=Depends(get_service_co
     admin_id = ctx["admin_id"]
     service_id = ctx["service_id"]
     conv_id = req.conversation_id
+    billing = ctx.get("billing", "hosted")
+    model_override, credentials_override = _resolve_billing(ctx, req)
 
     conv = get_consumer_conversation(admin_id, service_id, conv_id)
     if not conv:
@@ -383,14 +446,18 @@ async def api_consumer_chat(req: ConsumerChatRequest, ctx=Depends(get_service_co
 
     save_text = _extract_text(req.message)
     save_consumer_message(admin_id, service_id, conv_id, "user", save_text)
-    agent = create_consumer_agent(admin_id, service_id, conv_id, channel="web")
+    agent = create_consumer_agent(
+        admin_id, service_id, conv_id, channel="web",
+        model_override=model_override, credentials_override=credentials_override,
+    )
     thread_id = f"svc-{service_id}-{conv_id}"
     config = {
         "configurable": {"thread_id": thread_id},
         "callbacks": build_usage_callbacks(
             admin_id, service_id=service_id, channel="web", conv_id=conv_id,
-            model_hint=ctx.get("service_config", {}).get("model", ""),
+            model_hint=model_override or ctx.get("service_config", {}).get("model", ""),
             key_id=ctx.get("key_id", ""),
+            billing=billing,
         ),
     }
 
@@ -404,7 +471,7 @@ async def api_consumer_chat(req: ConsumerChatRequest, ctx=Depends(get_service_co
         inner,
         admin_id=admin_id, service_id=service_id,
         channel="web", key_id=ctx.get("key_id", ""), conv_id=conv_id,
-        endpoint="POST /api/v1/chat",
+        endpoint="POST /api/v1/chat", billing=billing,
     ))
 
 
@@ -413,7 +480,9 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
     admin_id = ctx["admin_id"]
     service_id = ctx["service_id"]
     svc_config = ctx.get("service_config", {})
-    model_name = svc_config.get("model", "unknown")
+    billing = ctx.get("billing", "hosted")
+    model_override, credentials_override = _resolve_billing(ctx, req)
+    model_name = model_override or svc_config.get("model", "unknown")
 
     conv_id = req.conversation_id
     if not conv_id:
@@ -437,18 +506,22 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
             admin_id, service_id,
             channel="api", key_id=ctx.get("key_id", ""), conv_id=conv_id,
             endpoint="POST /api/v1/chat/completions",
-            status_code=400, latency_ms=0, ok=False,
+            status_code=400, latency_ms=0, ok=False, billing=billing,
         )
         raise HTTPException(status_code=400, detail="No user message found")
 
     save_consumer_message(admin_id, service_id, conv_id, "user", last_user_msg)
-    agent = create_consumer_agent(admin_id, service_id, conv_id, channel="web")
+    agent = create_consumer_agent(
+        admin_id, service_id, conv_id, channel="web",
+        model_override=model_override, credentials_override=credentials_override,
+    )
     thread_id = f"svc-{service_id}-{conv_id}"
     config = {
         "configurable": {"thread_id": thread_id},
         "callbacks": build_usage_callbacks(
             admin_id, service_id=service_id, channel="api", conv_id=conv_id,
             model_hint=model_name, key_id=ctx.get("key_id", ""),
+            billing=billing,
         ),
     }
 
@@ -463,7 +536,7 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
             inner,
             admin_id=admin_id, service_id=service_id,
             channel="api", key_id=ctx.get("key_id", ""), conv_id=conv_id,
-            endpoint="POST /api/v1/chat/completions",
+            endpoint="POST /api/v1/chat/completions", billing=billing,
         ))
 
     # Non-streaming: collect full response
@@ -509,6 +582,7 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
             endpoint="POST /api/v1/chat/completions",
             status_code=200 if _ns_ok else 500,
             latency_ms=int((time.time() - _ns_start) * 1000), ok=_ns_ok,
+            billing=billing,
         )
 
     return {

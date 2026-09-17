@@ -333,6 +333,7 @@ export default function AdminServicesPage() {
   const [generatedKey, setGeneratedKey] = useState<string | null>(null);
   const [keyGenerating, setKeyGenerating] = useState(false);
   const [keyName, setKeyName] = useState('default');
+  const [keyBilling, setKeyBilling] = useState<'hosted' | 'byok'>('hosted');
 
   // wechat
   const [wcSessions, setWcSessions] = useState<WeChatSession[]>([]);
@@ -442,7 +443,7 @@ export default function AdminServicesPage() {
     if (!currentSvc) return;
     setKeyGenerating(true);
     try {
-      const result = await createServiceKey(currentSvc.id, keyName || 'default');
+      const result = await createServiceKey(currentSvc.id, keyName || 'default', keyBilling);
       setGeneratedKey(result.key);
     } catch (e: unknown) {
       message.error((e as Error).message);
@@ -720,6 +721,14 @@ export default function AdminServicesPage() {
         <code style={{ color: C.secondary, fontFamily: "'Cascadia Code',monospace", fontSize: 12 }}>
           {v}...
         </code>
+      ),
+    },
+    {
+      title: '计费', dataIndex: 'billing', key: 'billing',
+      render: (v: string) => (
+        v === 'byok'
+          ? <Tag color="gold">调用方自付</Tag>
+          : <Tag>运营方付费</Tag>
       ),
     },
     {
@@ -1290,7 +1299,12 @@ export default function AdminServicesPage() {
                 extra={
                   <Button
                     type="primary" size="small" icon={<Plus size={14} weight="bold" />}
-                    onClick={() => { setGeneratedKey(null); setKeyName('default'); setKeyModalOpen(true); }}
+                    onClick={() => {
+                      setGeneratedKey(null);
+                      setKeyName('default');
+                      setKeyBilling('hosted');
+                      setKeyModalOpen(true);
+                    }}
                     style={{ background: C.primary, borderColor: C.primary }}
                   >
                     创建 Key
@@ -1683,6 +1697,25 @@ export default function AdminServicesPage() {
                 placeholder="default"
               />
             </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>
+                计费方式
+              </label>
+              <Segmented
+                block
+                value={keyBilling}
+                onChange={v => setKeyBilling(v as 'hosted' | 'byok')}
+                options={[
+                  { label: '运营方付费', value: 'hosted' },
+                  { label: '调用方自付', value: 'byok' },
+                ]}
+              />
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.6 }}>
+                {keyBilling === 'hosted'
+                  ? '默认方式：模型开销记在本服务的凭据上。'
+                  : '调用方必须在每次请求里自带 provider / api_key（可选 base_url），并从本服务允许的模型中挑选。仅主对话模型由调用方付费，图片 / 联网 / TTS / 脚本仍走本服务凭据；该类 Key 不能创建定时任务。'}
+              </div>
+            </div>
             <Button
               type="primary" block loading={keyGenerating} onClick={handleGenerateKey}
               style={{ background: C.primary, borderColor: C.primary }}
@@ -1718,6 +1751,7 @@ export default function AdminServicesPage() {
                 />
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
                   ⚠ 任何拿到此链接的人都能直接以该 Key 身份对话；URL 包含密钥，请勿放入公共渠道。打开后浏览器会自动从 URL 抹除 Key 并存入本地。
+                  {keyBilling === 'byok' && ' 该 Key 为调用方自付，对方打开后还需填写自己的模型凭据才能开始对话。'}
                 </div>
               </div>
             )}

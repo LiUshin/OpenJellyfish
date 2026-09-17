@@ -134,12 +134,25 @@ def _verify_key_hash(raw_key: str, stored_hash: str) -> bool:
     return False
 
 
-def create_service_key(admin_id: str, service_id: str, name: str = "default") -> Optional[Dict[str, Any]]:
+BILLING_HOSTED = "hosted"
+BILLING_BYOK = "byok"
+BILLING_MODES = (BILLING_HOSTED, BILLING_BYOK)
+
+
+def normalize_billing(value: Any) -> str:
+    """未知/缺失一律按 hosted —— 绝不能因为脏数据把运营方付费的 key 误判成自付。"""
+    return value if value in BILLING_MODES else BILLING_HOSTED
+
+
+def create_service_key(admin_id: str, service_id: str, name: str = "default",
+                       billing: str = BILLING_HOSTED) -> Optional[Dict[str, Any]]:
     keys_file = _keys_path(admin_id, service_id)
     if not os.path.isfile(keys_file):
         return None
 
-    raw_key = "sk-svc-" + secrets.token_hex(24)
+    billing = normalize_billing(billing)
+    key_prefix = "sk-byok-" if billing == BILLING_BYOK else "sk-svc-"
+    raw_key = key_prefix + secrets.token_hex(24)
     prefix = raw_key[:12]
     key_id = "key_" + uuid.uuid4().hex[:6]
 
@@ -151,6 +164,7 @@ def create_service_key(admin_id: str, service_id: str, name: str = "default") ->
         "prefix": prefix,
         "key_hash": _hash_key(raw_key),
         "name": name,
+        "billing": billing,
         "created_at": datetime.now().isoformat(),
         "last_used_at": None,
     }
@@ -158,7 +172,7 @@ def create_service_key(admin_id: str, service_id: str, name: str = "default") ->
 
     atomic_json_save(keys_file, data, ensure_ascii=False, indent=2)
 
-    return {"id": key_id, "key": raw_key, "prefix": prefix, "name": name}
+    return {"id": key_id, "key": raw_key, "prefix": prefix, "name": name, "billing": billing}
 
 
 def list_service_keys(admin_id: str, service_id: str) -> List[Dict[str, Any]]:
@@ -169,6 +183,7 @@ def list_service_keys(admin_id: str, service_id: str) -> List[Dict[str, Any]]:
         data = json.load(f)
     return [
         {"id": k["id"], "prefix": k["prefix"], "name": k["name"],
+         "billing": normalize_billing(k.get("billing")),
          "created_at": k["created_at"], "last_used_at": k.get("last_used_at")}
         for k in data["keys"]
     ]
@@ -191,7 +206,7 @@ def delete_service_key(admin_id: str, service_id: str, key_id: str) -> bool:
 def verify_service_key(raw_key: str) -> Optional[Dict[str, Any]]:
     """
     Scan all users/services to find a matching key.
-    Returns {"admin_id", "service_id", "key_id", "service_config"} or None.
+    Returns {"admin_id", "service_id", "key_id", "billing", "service_config"} or None.
     """
     from app.core.security import USERS_DIR
     if not os.path.isdir(USERS_DIR):
@@ -219,6 +234,7 @@ def verify_service_key(raw_key: str) -> Optional[Dict[str, Any]]:
                         "admin_id": admin_id,
                         "service_id": svc_name,
                         "key_id": entry["id"],
+                        "billing": normalize_billing(entry.get("billing")),
                         "service_config": svc_config,
                     }
     return None

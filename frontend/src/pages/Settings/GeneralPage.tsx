@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Typography, Select, Spin, Tag, Switch, Input, Button, message, Collapse, Tooltip, Divider, Segmented } from 'antd';
+import { Typography, Select, Spin, Tag, Switch, Input, InputNumber, Button, message, Collapse, Tooltip, Divider, Segmented } from 'antd';
 import { Clock, PaintBrush, Sliders, Lightning, Key, Eye, EyeSlash, CheckCircle, XCircle, ArrowsClockwise, Translate, Faders, MagnifyingGlass } from '@phosphor-icons/react';
 import type { ModelVisibilityItem } from '../../types';
 import { useTranslation } from 'react-i18next';
@@ -10,6 +10,7 @@ import { getTzOffset, setTzOffset, tzLabel, fmtUserTime } from '../../utils/time
 import { useTheme, type UiStyle } from '../../stores/themeContext';
 import { getYoloMode, setYoloMode, YOLO_EVENT } from '../../utils/yoloMode';
 import LogoLoading from '../../components/LogoLoading';
+import RuntimeSettingsCard from '../../components/RuntimeSettingsCard';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const { Text } = Typography;
@@ -173,6 +174,15 @@ function ApiKeysCard() {
       ],
     },
     {
+      title: '硅基流动 (SiliconFlow)',
+      fields: [
+        { field: 'siliconflow_api_key', label: 'API Key', placeholder: 'sk-...',
+          helpUrl: 'https://cloud.siliconflow.cn/account/ak', helpText: t('general.apiKeysHelpText') },
+        { field: 'siliconflow_base_url', label: t('general.apiKeysBaseUrlOpt'),
+          placeholder: t('general.apiKeysBaseUrlSiliconFlow'), isUrl: true },
+      ],
+    },
+    {
       title: '搜索 (Tavily)',
       displayTitleKey: 'general.apiKeysSearchTavily',
       fields: [
@@ -258,6 +268,7 @@ function ApiKeysCard() {
     'MiniMax（语音/视频/对话）': 'minimax',
     'AWS Bedrock': 'bedrock',
     'OpenRouter': 'openrouter',
+    '硅基流动 (SiliconFlow)': 'siliconflow',
     '搜索 (Tavily)': 'tavily',
   };
   const platformConfigured = (masked?.platform_configured || {}) as Record<string, boolean>;
@@ -471,54 +482,70 @@ const PROVIDER_LABELS: Record<string, string> = {
   minimax: 'MiniMax',
   bedrock: 'AWS Bedrock',
   openrouter: 'OpenRouter',
+  siliconflow: '硅基流动 (SiliconFlow)',
 };
 
-function remoteSupportsReasoning(m: api.OpenRouterRemoteModel): boolean {
+/**
+ * OpenRouter publishes per-model capabilities, so reasoning can be pre-checked
+ * from the listing. SiliconFlow's /v1/models is the bare OpenAI shape with no
+ * capability data, so its models start off and the Admin decides.
+ */
+function remoteSupportsReasoning(m: api.AggregatorRemoteModel): boolean {
   const params = m.supported_parameters;
   if (!Array.isArray(params)) return false;
   return params.some(p => p === 'reasoning' || p === 'include_reasoning');
 }
 
-function OpenRouterModelsCard() {
+const DEFAULT_THINKING_BUDGET = 4096;
+
+function AggregatorModelsCard({
+  provider,
+  showThinkingBudget = false,
+}: {
+  provider: api.AggregatorProvider;
+  showThinkingBudget?: boolean;
+}) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
-  const [enabled, setEnabled] = useState<api.OpenRouterEnabledModel[]>([]);
-  const [remote, setRemote] = useState<api.OpenRouterRemoteModel[]>([]);
+  const [enabled, setEnabled] = useState<api.AggregatorEnabledModel[]>([]);
+  const [remote, setRemote] = useState<api.AggregatorRemoteModel[]>([]);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
+  const vendor = PROVIDER_LABELS[provider] || provider;
+
   const loadAll = async () => {
     setLoading(true);
     try {
       const [wl, models] = await Promise.all([
-        api.getOpenRouterEnabledModels(),
-        api.fetchOpenRouterRemoteModels(),
+        api.getAggregatorEnabledModels(provider),
+        api.fetchAggregatorRemoteModels(provider),
       ]);
       setEnabled(wl.models || []);
       setRemote(models);
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : t('general.openrouterLoadFailed'));
+      message.error(e instanceof Error ? e.message : t('general.aggregatorLoadFailed', { vendor }));
     }
     setLoading(false);
   };
 
-  useEffect(() => { void loadAll(); }, []);
+  useEffect(() => { void loadAll(); }, [provider]);
 
-  const enabledMap = enabled.reduce<Record<string, api.OpenRouterEnabledModel>>((acc, m) => {
+  const enabledMap = enabled.reduce<Record<string, api.AggregatorEnabledModel>>((acc, m) => {
     acc[m.id] = m;
     return acc;
   }, {});
 
-  const persist = async (next: api.OpenRouterEnabledModel[]) => {
+  const persist = async (next: api.AggregatorEnabledModel[]) => {
     setSaving(true);
     const prev = enabled;
     setEnabled(next);
     try {
-      const res = await api.setOpenRouterEnabledModels(next);
+      const res = await api.setAggregatorEnabledModels(provider, next);
       setEnabled(res.models || next);
-      message.success(t('general.openrouterSaved'));
+      message.success(t('general.aggregatorSaved', { vendor }));
     } catch {
       setEnabled(prev);
       message.error(t('common.saveFailed'));
@@ -526,9 +553,9 @@ function OpenRouterModelsCard() {
     setSaving(false);
   };
 
-  const handleToggle = (m: api.OpenRouterRemoteModel, on: boolean) => {
+  const handleToggle = (m: api.AggregatorRemoteModel, on: boolean) => {
     if (on) {
-      const row: api.OpenRouterEnabledModel = {
+      const row: api.AggregatorEnabledModel = {
         id: m.id,
         name: m.name || m.id,
         reasoning: enabledMap[m.id]?.reasoning ?? remoteSupportsReasoning(m),
@@ -544,14 +571,25 @@ function OpenRouterModelsCard() {
     void persist(enabled.map(m => (m.id === id ? { ...m, reasoning } : m)));
   };
 
+  const handleBudget = (id: string, budget: number | null) => {
+    if (!enabledMap[id]) return;
+    void persist(enabled.map(m => {
+      if (m.id !== id) return m;
+      const next = { ...m };
+      if (budget == null) delete next.thinking_budget;
+      else next.thinking_budget = budget;
+      return next;
+    }));
+  };
+
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
-      const models = await api.fetchOpenRouterRemoteModels();
+      const models = await api.fetchAggregatorRemoteModels(provider);
       setRemote(models);
-      message.success(t('general.openrouterRefreshed', { count: models.length }));
+      message.success(t('general.aggregatorRefreshed', { count: models.length }));
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : t('general.openrouterLoadFailed'));
+      message.error(e instanceof Error ? e.message : t('general.aggregatorLoadFailed', { vendor }));
     }
     setRefreshing(false);
   };
@@ -587,7 +625,7 @@ function OpenRouterModelsCard() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <MagnifyingGlass size={18} color={C.primary} />
           <Text style={{ color: C.text, fontSize: 14, fontWeight: 500 }}>
-            {t('general.openrouterModelsTitle')}
+            {t('general.aggregatorModelsTitle', { vendor })}
           </Text>
           {saving && <Spin size="small" />}
         </div>
@@ -597,18 +635,18 @@ function OpenRouterModelsCard() {
           onClick={() => void handleRefresh()}
           loading={refreshing}
         >
-          {t('general.openrouterRefresh')}
+          {t('general.aggregatorRefresh')}
         </Button>
       </div>
       <Text style={{ color: C.muted, fontSize: 12, display: 'block', marginBottom: 12 }}>
-        {t('general.openrouterModelsDesc')}
+        {t(`general.${provider}ModelsDesc`)}
       </Text>
 
       <Input
         size="small"
         allowClear
         prefix={<MagnifyingGlass size={14} color={C.muted} />}
-        placeholder={t('general.openrouterSearchPh')}
+        placeholder={t('general.aggregatorSearchPh')}
         value={query}
         onChange={e => setQuery(e.target.value)}
         style={{ marginBottom: 12 }}
@@ -617,7 +655,7 @@ function OpenRouterModelsCard() {
       {enabled.length > 0 && (
         <div style={{ marginBottom: 12 }}>
           <Text style={{ color: C.muted, fontSize: 11, display: 'block', marginBottom: 6 }}>
-            {t('general.openrouterEnabledCount', { count: enabled.length })}
+            {t('general.aggregatorEnabledCount', { count: enabled.length })}
           </Text>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {enabled.map(m => (
@@ -641,7 +679,9 @@ function OpenRouterModelsCard() {
       {loading ? (
         <Spin size="small" />
       ) : remote.length === 0 ? (
-        <Text style={{ color: C.muted, fontSize: 13 }}>{t('general.openrouterEmpty')}</Text>
+        <Text style={{ color: C.muted, fontSize: 13 }}>
+          {t('general.aggregatorEmpty', { vendor })}
+        </Text>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360, overflowY: 'auto' }}>
           {visible.map(m => {
@@ -672,10 +712,24 @@ function OpenRouterModelsCard() {
                   <Text style={{ color: C.muted, fontSize: 11 }}>{m.id}</Text>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                  {on && showThinkingBudget && reasoning && (
+                    <Tooltip title={t('general.aggregatorBudgetTip')}>
+                      <InputNumber
+                        size="small"
+                        min={128}
+                        max={32768}
+                        step={512}
+                        style={{ width: 88 }}
+                        placeholder={String(DEFAULT_THINKING_BUDGET)}
+                        value={enabledMap[m.id]?.thinking_budget ?? null}
+                        onChange={(v) => handleBudget(m.id, typeof v === 'number' ? v : null)}
+                      />
+                    </Tooltip>
+                  )}
                   {on && (
-                    <Tooltip title={t('general.openrouterReasoningTip')}>
+                    <Tooltip title={t(`general.${provider}ReasoningTip`)}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <Text style={{ color: C.muted, fontSize: 11 }}>{t('general.openrouterReasoning')}</Text>
+                        <Text style={{ color: C.muted, fontSize: 11 }}>{t('general.aggregatorReasoning')}</Text>
                         <Switch
                           size="small"
                           checked={reasoning}
@@ -695,7 +749,7 @@ function OpenRouterModelsCard() {
           })}
           {filtered.length > visible.length && (
             <Text style={{ color: C.muted, fontSize: 11, padding: '4px 10px' }}>
-              {t('general.openrouterTruncated', { shown: visible.length, total: filtered.length })}
+              {t('general.aggregatorTruncated', { shown: visible.length, total: filtered.length })}
             </Text>
           )}
         </div>
@@ -915,10 +969,12 @@ export default function GeneralPage() {
       </div>
 
       {/* API Keys */}
+      <RuntimeSettingsCard />
       <ApiKeysCard />
 
-      {/* OpenRouter whitelist (search latest + enable) */}
-      <OpenRouterModelsCard />
+      {/* Aggregator whitelists (search latest + enable) */}
+      <AggregatorModelsCard provider="openrouter" />
+      <AggregatorModelsCard provider="siliconflow" showThinkingBudget />
 
       {/* Model Visibility */}
       <ModelVisibilityCard />

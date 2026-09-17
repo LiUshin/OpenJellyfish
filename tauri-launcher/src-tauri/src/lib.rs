@@ -40,6 +40,8 @@ const KNOWN_ENV_KEYS: &[&str] = &[
     "BEDROCK_REGION",
     "OPENROUTER_API_KEY",
     "OPENROUTER_BASE_URL",
+    "SILICONFLOW_API_KEY",
+    "SILICONFLOW_BASE_URL",
     "KIMI_API_KEY",
     "KIMI_BASE_URL",
     "MINIMAX_API_KEY",
@@ -693,6 +695,20 @@ fn open_in_browser(state: State<'_, AppState>) -> Result<(), String> {
     open::that(&url).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn open_superadmin(state: State<'_, AppState>) -> Result<(), String> {
+    let port = *state.frontend_port.lock().unwrap();
+    open::that(format!("http://localhost:{}/superadmin", port)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_superadmin_key(state: State<'_, AppState>) -> Result<String, String> {
+    let root = state.project_dir.lock().unwrap().clone();
+    std::fs::read_to_string(root.join("config").join("superadmin.key"))
+        .map(|key| key.trim().to_string())
+        .map_err(|_| "请先启动服务以生成超管 key".to_string())
+}
+
 // ── About / Tools Commands ───────────────────────────────────────
 
 /// Open the project root directory (where `launcher.py`, `.env`, `users/` live).
@@ -1025,7 +1041,7 @@ async fn pack_backup(state: State<'_, AppState>) -> Result<BackupResult, String>
                 Ok(r) => r,
                 Err(_) => continue,
             };
-            if should_skip_path(rel) {
+            if rel == std::path::Path::new("config/superadmin.key") || rel.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".superadmin-")) || should_skip_path(rel) {
                 continue;
             }
             // Use forward slashes inside the ZIP (cross-platform convention).
@@ -1770,6 +1786,8 @@ pub fn run() {
             get_status,
             get_lan_ip,
             open_in_browser,
+            open_superadmin,
+            get_superadmin_key,
             install_pip_deps,
             open_project_dir,
             open_users_dir,

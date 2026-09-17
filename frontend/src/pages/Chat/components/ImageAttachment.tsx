@@ -15,6 +15,7 @@ interface ImageAttachmentProps {
   images: ImageItem[];
   onImagesChange: (images: ImageItem[]) => void;
   disabled?: boolean;
+  allowFiles?: boolean;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -29,6 +30,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
 async function processFiles(
   files: File[],
   current: ImageItem[],
+  allowFiles = false,
 ): Promise<ImageItem[]> {
   const remaining = MAX_IMAGES - current.length;
   if (remaining <= 0) {
@@ -36,7 +38,11 @@ async function processFiles(
     return current;
   }
 
-  const imageFiles = files.filter((f) => f.type.startsWith('image/')).slice(0, remaining);
+  const imageFiles = files.filter((f) => allowFiles || f.type.startsWith('image/')).slice(0, remaining);
+  if (allowFiles && (imageFiles.some(f => f.size > 8 * 1024 * 1024) || imageFiles.reduce((n, f) => n + f.size, 0) + current.reduce((n, f) => n + (f.dataUrl.split(',')[1]?.length || 0) * .75, 0) > 12 * 1024 * 1024)) {
+    message.error('附件限制：单个 8 MB，每条消息合计 12 MB');
+    return current;
+  }
   if (imageFiles.length === 0) return current;
 
   const newItems: ImageItem[] = await Promise.all(
@@ -58,7 +64,7 @@ export interface ImageAttachmentHandle {
 }
 
 const ImageAttachment = forwardRef<ImageAttachmentHandle, ImageAttachmentProps>(
-  function ImageAttachment({ images, onImagesChange, disabled }, ref) {
+  function ImageAttachment({ images, onImagesChange, disabled, allowFiles = false }, ref) {
     const inputRef = useRef<HTMLInputElement>(null);
 
     useImperativeHandle(ref, () => ({
@@ -67,10 +73,10 @@ const ImageAttachment = forwardRef<ImageAttachmentHandle, ImageAttachmentProps>(
 
     const handleFiles = useCallback(
       async (files: File[]) => {
-        const next = await processFiles(files, images);
+        const next = await processFiles(files, images, allowFiles);
         if (next !== images) onImagesChange(next);
       },
-      [images, onImagesChange],
+      [images, onImagesChange, allowFiles],
     );
 
     const handleDrop = useCallback(
@@ -79,11 +85,11 @@ const ImageAttachment = forwardRef<ImageAttachmentHandle, ImageAttachmentProps>(
         e.preventDefault();
         e.stopPropagation();
         const files = Array.from(e.dataTransfer.files).filter((f) =>
-          f.type.startsWith('image/'),
+          allowFiles || f.type.startsWith('image/'),
         );
         if (files.length > 0) handleFiles(files);
       },
-      [disabled, handleFiles],
+      [disabled, handleFiles, allowFiles],
     );
 
     const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -112,7 +118,7 @@ const ImageAttachment = forwardRef<ImageAttachmentHandle, ImageAttachmentProps>(
         <input
           ref={inputRef}
           type="file"
-          accept="image/*"
+          accept={allowFiles ? undefined : 'image/*'}
           multiple
           style={{ display: 'none' }}
           onChange={handleInputChange}
@@ -129,7 +135,7 @@ const ImageAttachment = forwardRef<ImageAttachmentHandle, ImageAttachmentProps>(
         <div className={styles.imageThumbnailBar}>
           {images.map((img, i) => (
             <div key={i} className={styles.imageThumbnailWrap}>
-              <img src={img.dataUrl} alt={img.name} className={styles.imageThumbnail} />
+              {img.dataUrl.startsWith('data:image/') ? <img src={img.dataUrl} alt={img.name} className={styles.imageThumbnail} /> : <span title={img.name} style={{ display: 'block', width: 100, padding: 8, overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.name}</span>}
               <button
                 className={styles.imageThumbnailRemove}
                 onClick={() => removeImage(i)}
@@ -145,7 +151,7 @@ const ImageAttachment = forwardRef<ImageAttachmentHandle, ImageAttachmentProps>(
         <input
           ref={inputRef}
           type="file"
-          accept="image/*"
+          accept={allowFiles ? undefined : 'image/*'}
           multiple
           style={{ display: 'none' }}
           onChange={handleInputChange}

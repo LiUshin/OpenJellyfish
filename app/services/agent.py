@@ -205,12 +205,19 @@ def _apply_empty_stream_guard(model):
     return model
 
 
-def _resolve_model(model_id: str, user_id: Optional[str] = None):
+def _resolve_model(model_id: str, user_id: Optional[str] = None,
+                   credentials: Optional[Dict[str, Any]] = None):
+    """构建 chat model。
+
+    ``credentials`` 由 BYOK（service key 的调用方自带凭据）传入，形状同
+    ``api_config.get_provider_credentials``；给了就完全取代该 provider 的
+    平台/Admin 凭据，且只在本次调用内使用，不落盘、不改环境变量。
+    """
     # Kimi（Moonshot）走 OpenAI-compat：去掉 kimi: 前缀，强制 model_provider=openai，
     # api_key/base_url 来自 get_provider_credentials("kimi")。
     if model_id.startswith("kimi:"):
         from app.core.api_config import get_provider_credentials
-        creds = get_provider_credentials("kimi", user_id=user_id)
+        creds = credentials or get_provider_credentials("kimi", user_id=user_id)
         if not creds.get("api_key"):
             raise RuntimeError("未配置 Kimi（Moonshot）API Key（设置页 → Kimi）")
         bare_model = model_id.split(":", 1)[1]
@@ -225,7 +232,7 @@ def _resolve_model(model_id: str, user_id: Optional[str] = None):
     # endpoint: https://api.minimax.io/anthropic
     if model_id.startswith("minimax:"):
         from app.core.api_config import get_provider_credentials
-        creds = get_provider_credentials("minimax", user_id=user_id)
+        creds = credentials or get_provider_credentials("minimax", user_id=user_id)
         if not creds.get("api_key"):
             raise RuntimeError("未配置 MiniMax API Key（设置页 → MiniMax）")
         bare_model = model_id.split(":", 1)[1]
@@ -233,30 +240,38 @@ def _resolve_model(model_id: str, user_id: Optional[str] = None):
             model=bare_model,
             model_provider="anthropic",
             api_key=creds["api_key"],
-            base_url="https://api.minimax.io/anthropic",
+            base_url=creds.get("base_url") or "https://api.minimax.io/anthropic",
         ))
 
-    # OpenRouter（OpenAI-compat 聚合）。catalog id = openrouter:{author}/{slug}
-    # reasoning 白名单项通过 extra_body.reasoning.enabled 开启；流式 thinking 走
-    # chat.py 已有的 additional_kwargs.reasoning_content / reasoning 通道。
-    if model_id.startswith("openrouter:"):
-        from app.core.api_config import get_provider_credentials
+    # OpenAI-compat 聚合商（OpenRouter / 硅基流动）。catalog id = {provider}:{slug}，
+    # 模型来自 Admin 白名单而非静态 catalog。两家只有「怎么开 thinking」不同：
+    # OpenRouter 用 reasoning.enabled，硅基流动用 enable_thinking + thinking_budget。
+    # 流式 thinking 两家都吐 reasoning_content，走 chat.py 已有的通道。
+    for _provider, _label in (("openrouter", "OpenRouter"), ("siliconflow", "硅基流动")):
+        if not model_id.startswith(f"{_provider}:"):
+            continue
+        from app.core.api_config import AGGREGATORS, get_provider_credentials
         from app.services.model_catalog import find_model
-        creds = get_provider_credentials("openrouter", user_id=user_id)
+        creds = credentials or get_provider_credentials(_provider, user_id=user_id)
         if not creds.get("api_key"):
-            raise RuntimeError("未配置 OpenRouter API Key（设置页 → OpenRouter）")
+            raise RuntimeError(f"未配置 {_label} API Key（设置页 → {_label}）")
         bare_model = model_id.split(":", 1)[1]
-        extra: Dict[str, Any] = {
+        kwargs: Dict[str, Any] = {
             "model": bare_model,
             "model_provider": "openai",
             "api_key": creds["api_key"],
-            "base_url": creds.get("base_url") or "https://openrouter.ai/api/v1",
+            "base_url": creds.get("base_url") or AGGREGATORS[_provider]["default_base"],
         }
         meta = find_model(model_id, user_id=user_id) or {}
-        if meta.get("reasoning"):
+        if _provider == "siliconflow":
+            from app.services.siliconflow import build_extra_body
+            extra_body = build_extra_body(bare_model, meta)
+            if extra_body:
+                kwargs["extra_body"] = extra_body
+        elif meta.get("reasoning"):
             # OpenRouter reasoning API: https://openrouter.ai/docs
-            extra["extra_body"] = {"reasoning": {"enabled": True}}
-        return _apply_empty_stream_guard(init_chat_model(**extra))
+            kwargs["extra_body"] = {"reasoning": {"enabled": True}}
+        return _apply_empty_stream_guard(init_chat_model(**kwargs))
 
     # AWS Bedrock（Bearer Token + InvokeModel REST）。
     # 支持 Anthropic Claude 4.5+ 系列模型，使用 bedrock-runtime 端点。
@@ -266,7 +281,7 @@ def _resolve_model(model_id: str, user_id: Optional[str] = None):
     if model_id.startswith("bedrock:"):
         from app.core.api_config import get_provider_credentials
         from app.services.bedrock import ChatBedrockInvoke
-        creds = get_provider_credentials("bedrock", user_id=user_id)
+        creds = credentials or get_provider_credentials("bedrock", user_id=user_id)
         if not creds.get("api_key"):
             raise RuntimeError("未配置 Bedrock API Key（设置页 → Bedrock）")
 
@@ -294,7 +309,11 @@ def _resolve_model(model_id: str, user_id: Optional[str] = None):
             max_tokens=16000,
         )
 
-    api_key, base_url = _get_llm_config(model_id, user_id=user_id)
+    if credentials:
+        api_key = credentials.get("api_key", "")
+        base_url = credentials.get("base_url") or None
+    else:
+        api_key, base_url = _get_llm_config(model_id, user_id=user_id)
     extra_kwargs: Dict[str, Any] = {}
     if base_url:
         extra_kwargs["base_url"] = base_url

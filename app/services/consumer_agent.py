@@ -579,9 +579,9 @@ def _create_consumer_script_tools(
     from app.services.script_runner import run_script as _run_script_impl
     from app.storage import get_storage_service
 
-    # scripts/ 物理根（与 consumer_script_execution 的 scripts_dir 一致），
-    # 用于"字面优先"存在性判断。
-    scripts_dir = os.path.join(get_user_filesystem_dir(admin_id), "scripts")
+    # 存在性判断走存储层，本地/S3 两种 backend 行为一致（S3 模式下没有
+    # 可 stat 的物理 scripts 根）。
+    storage = get_storage_service()
 
     def _norm_script_path(script_path: str) -> str:
         """归一化脚本路径。run_script 的 script_path 相对 scripts/ 根，但 agent 习惯
@@ -595,14 +595,11 @@ def _create_consumer_script_tools(
         if norm.startswith("scripts/"):
             stripped = norm[len("scripts/"):]
             try:
-                literal_full = os.path.realpath(os.path.join(scripts_dir, norm))
-                _sd = os.path.realpath(scripts_dir)
-                # 字面路径真实存在且未越界 → 按字面（嵌套 scripts/ 目录）
-                if os.path.isfile(literal_full) and (
-                    literal_full == _sd or literal_full.startswith(_sd + os.sep)
-                ):
+                # 字面路径真实存在 → 按字面（嵌套 scripts/ 目录）。
+                # is_file 内部做越界校验，越界返回 False。
+                if storage.is_file(admin_id, f"/scripts/{norm}"):
                     return norm
-            except (OSError, ValueError):
+            except (OSError, ValueError, PermissionError):
                 pass
             return stripped
         return norm
@@ -638,7 +635,6 @@ def _create_consumer_script_tools(
         norm_script_path = _norm_script_path(script_path)
 
         from app.services.venv_manager import get_user_python
-        storage = get_storage_service()
         with storage.consumer_script_execution(admin_id, service_id, conv_id, norm_script_path) as ctx:
             if "error" in ctx:
                 return f"执行失败: {ctx['error']}"
@@ -713,11 +709,15 @@ def create_consumer_agent(
     extra_capabilities: Optional[List[str]] = None,
     channel: str = "web",
     model_override: Optional[str] = None,
+    credentials_override: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Create (or return cached) agent for a consumer conversation.
 
     extra_capabilities: additional capabilities to inject (e.g. ["humanchat"]
     for scheduled tasks that need send_message).
+    credentials_override: BYOK —— 调用方自带的主对话模型凭据（见 services/byok.py）。
+        只作用于主模型；scheduler capability 会被剔除，因为定时任务日后由 Admin
+        凭据执行，不能让自付调用方留下由运营方买单的长期任务。
     channel: invocation context. One of:
         - "web"       — consumer 直连 SSE（/api/v1/chat），agent 输出直接流给浏览器，
                         send_message 工具在该上下文下**不**注入（即便 humanchat capability
@@ -742,7 +742,15 @@ def create_consumer_agent(
     ws_suffix = f"::{wechat_session_id}" if wechat_session_id else ""
     ch_suffix = f"::ch={channel}" if channel and channel != "web" else ""
     mdl_suffix = f"::m={model_override}" if model_override else ""
-    cache_key = f"consumer::{admin_id}::{service_id}::{conv_id}{ws_suffix}{extra_suffix}{ch_suffix}{mdl_suffix}"
+    # 只放不可逆指纹：明文 api_key 绝不进缓存键，但不同调用方的凭据必须落在不同条目上。
+    byok_suffix = ""
+    if credentials_override:
+        from app.services.byok import credentials_fingerprint
+        byok_suffix = f"::byok={credentials_fingerprint(model_id, credentials_override)}"
+    cache_key = (
+        f"consumer::{admin_id}::{service_id}::{conv_id}"
+        f"{ws_suffix}{extra_suffix}{ch_suffix}{mdl_suffix}{byok_suffix}"
+    )
     if cache_key in _consumer_agent_cache:
         _touch_consumer_agent_cache(cache_key)
         return _consumer_agent_cache[cache_key]
@@ -759,6 +767,8 @@ def create_consumer_agent(
         for cap in extra_capabilities:
             if cap not in capabilities:
                 capabilities.append(cap)
+    if credentials_override:
+        capabilities = [c for c in capabilities if c != "scheduler"]
     allowed_docs = svc_config.get("allowed_docs", ["*"])
     allowed_scripts = svc_config.get("allowed_scripts", ["*"])
     research_tools = svc_config.get("research_tools", False)
@@ -839,7 +849,8 @@ def create_consumer_agent(
         },
     ]
 
-    resolved_model = _resolve_model(model_id, user_id=admin_id)
+    resolved_model = _resolve_model(model_id, user_id=admin_id,
+                                    credentials=credentials_override)
 
     agent = create_deep_agent(
         model=resolved_model,

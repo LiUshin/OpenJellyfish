@@ -27,12 +27,18 @@ import {
   createConversation,
   getConversation,
   getMediaToken,
+  getServiceModels,
+  getStoredByok,
   getStoredKey,
+  isByokKey,
   loadConvStore,
   saveConvStore,
+  setStoredByok,
   setStoredKey,
+  type ByokCreds,
   type ConsumerMessage,
   type ConvMeta,
+  type ServiceModelOption,
 } from './serviceApi';
 import type { StreamBlock } from '../pages/Chat/types';
 import { useServiceStream } from './streamHandler';
@@ -141,6 +147,15 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
   });
   const [authError, setAuthError] = useState<string>('');
   const [keyInput, setKeyInput] = useState('');
+
+  // BYOK：sk-byok- 开头的 key 需要调用方自带主对话模型凭据（只存本机）。
+  const [byokCreds, setByokCreds] = useState<ByokCreds | null>(() =>
+    getStoredByok(config.service_id),
+  );
+  const [byokModels, setByokModels] = useState<ServiceModelOption[]>([]);
+  const [byokForm, setByokForm] = useState({ model: '', api_key: '', base_url: '' });
+  const [byokError, setByokError] = useState('');
+  const needsByok = !!apiKey && isByokKey(apiKey) && !byokCreds;
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageEntry[]>([]);
@@ -353,6 +368,42 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
     didInitRef.current = false;
   }
 
+  // ── BYOK：拉取本 Key 允许的模型，供凭据表单选择 ────────────────────
+  useEffect(() => {
+    if (!needsByok) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const info = await getServiceModels(apiKey);
+        if (cancelled) return;
+        setByokModels(info.models);
+        setByokForm((f) => ({
+          ...f,
+          model: f.model || info.default_model || info.models[0]?.id || '',
+        }));
+      } catch (err) {
+        if (!cancelled) setByokError((err as Error).message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [needsByok, apiKey]);
+
+  function handleByokSubmit() {
+    const model = byokForm.model.trim();
+    const key = byokForm.api_key.trim();
+    if (!model || !key) {
+      setByokError(t('service.byokIncomplete', '请选择模型并填写 API Key'));
+      return;
+    }
+    const provider = model.split(':', 1)[0];
+    const creds: ByokCreds = { provider, model, api_key: key };
+    const base = byokForm.base_url.trim();
+    if (base) creds.base_url = base;
+    setStoredByok(config.service_id, creds);
+    setByokCreds(creds);
+    setByokError('');
+  }
+
   function handleAuthSubmit() {
     const key = keyInput.trim();
     if (!key) {
@@ -451,9 +502,13 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
       setPendingImgs([]);
       setWelcomeDismissed(true);
 
-      void stream.send(apiKey, { conversation_id: convId, message: payload });
+      void stream.send(apiKey, {
+        conversation_id: convId,
+        message: payload,
+        ...(byokCreds ?? {}),
+      });
     },
-    [apiKey, conversationId, draft, pendingImgs, stream, createAndRegister],
+    [apiKey, byokCreds, conversationId, draft, pendingImgs, stream, createAndRegister],
   );
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -582,6 +637,56 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
             />
             {authError && <div className={styles.authError}>{authError}</div>}
             <button type="button" onClick={handleAuthSubmit}>
+              {t('service.authStart')}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (needsByok) {
+    return (
+      <div className={styles.page}>
+        <header className={styles.header}>
+          <div className={styles.headerLogo}>S</div>
+          <h1 className={styles.headerTitle}>{config.service_name}</h1>
+          {headerLangSwitcher}
+        </header>
+        <div className={styles.authOverlay}>
+          <div className={styles.authBox}>
+            <h2>{t('service.byokTitle', '填写你的模型凭据')}</h2>
+            <p>
+              {t(
+                'service.byokHint',
+                '该 Key 的对话由你自己的模型账号付费。凭据只保存在本浏览器，不会上传保存。',
+              )}
+            </p>
+            <select
+              value={byokForm.model}
+              onChange={(e) => setByokForm((f) => ({ ...f, model: e.target.value }))}
+            >
+              <option value="">{t('service.byokModelPlaceholder', '选择模型')}</option>
+              {byokModels.map((m) => (
+                <option key={m.id} value={m.id}>{m.display_name}</option>
+              ))}
+            </select>
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder={t('service.byokKeyPlaceholder', '你的模型 API Key')}
+              value={byokForm.api_key}
+              onChange={(e) => setByokForm((f) => ({ ...f, api_key: e.target.value }))}
+            />
+            <input
+              type="text"
+              autoComplete="off"
+              placeholder={t('service.byokBaseUrlPlaceholder', 'Base URL（可留空用默认）')}
+              value={byokForm.base_url}
+              onChange={(e) => setByokForm((f) => ({ ...f, base_url: e.target.value }))}
+            />
+            {byokError && <div className={styles.authError}>{byokError}</div>}
+            <button type="button" onClick={handleByokSubmit}>
               {t('service.authStart')}
             </button>
           </div>

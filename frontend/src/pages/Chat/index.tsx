@@ -17,6 +17,7 @@ import {
 } from '@phosphor-icons/react';
 import { useTranslation, Trans } from 'react-i18next';
 import * as api from '../../services/api';
+import * as runtimeApi from '../../services/runtime';
 import type { Conversation, Message } from '../../types';
 import StreamingMessage from './components/StreamingMessage';
 import ApprovalCard from './components/ApprovalCard';
@@ -45,6 +46,8 @@ import { getRecentFiles } from '../../utils/recentFiles';
 import { fuzzyMatch } from '../../utils/fuzzyMatch';
 import type { FileIndexEntry } from '../../services/api';
 import QueryQueuePanel from './components/QueryQueuePanel';
+import ChatModelSelect from '../../components/ChatModelSelect';
+import RuntimeConversation from './components/RuntimeConversation';
 import { newQueueItem, type QueryQueueItem } from './types/queryQueue';
 import styles from './chat.module.css';
 
@@ -123,6 +126,28 @@ export default function ChatPage() {
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConvId, setCurrentConvId] = useState<string | null>(null);
+  const [runtimeSessionId, setRuntimeSessionId] = useState<string | null>(null);
+  const [runtimeBinding, setRuntimeBinding] = useState<Conversation['runtime_binding']>(null);
+  const [newChoice, setNewChoice] = useState<runtimeApi.RuntimeChoice | null>(null);
+  const [runtimeProfiles, setRuntimeProfiles] = useState<runtimeApi.RuntimeProfile[]>([]);
+  const [catalogReady, setCatalogReady] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  useEffect(() => {
+    let disposed = false;
+    const load = async () => {
+      try {
+        const caps = await runtimeApi.capabilities();
+        if (caps.available) {
+          const [profiles, saved] = await Promise.all([runtimeApi.profiles(), runtimeApi.preferences()]);
+          if (!disposed) { setRuntimeProfiles(profiles); setNewChoice(prev => prev || (saved.runtime === 'deepagents' ? { runtime: 'deepagents' } : saved)); }
+        }
+      } catch (e) { if (!disposed) setCatalogError(e instanceof Error ? e.message : '模型列表加载失败'); }
+      finally { if (!disposed) setCatalogReady(true); }
+    };
+    void load();
+    return () => { disposed = true; };
+  }, []);
+  const creatingConversation = useRef(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingConv, setLoadingConv] = useState(false);
   const [inputValue, setInputValue] = useState('');
@@ -370,12 +395,17 @@ export default function ChatPage() {
     if (splitRef.current === 'file' && editingRef.current) setSplitMode('split');
     const seq = ++loadMessagesRef.current;
     setCurrentConvId(convId);
+    setRuntimeSessionId(null);
+    setRuntimeBinding(null);
     setMessages([]);
     setLoadingConv(true);
     try {
       const detail = await api.getConversation(convId);
       if (seq !== loadMessagesRef.current) return;
       setMessages(detail.messages || []);
+      setRuntimeSessionId(detail.runtime_session_id || null);
+      setRuntimeBinding(detail.runtime_binding);
+      if (detail.runtime_binding?.runtime === 'deepagents' && detail.runtime_binding.model) setSelectedModel(detail.runtime_binding.model);
       if (convId !== streamingConvId) {
         requestAnimationFrame(() => resetScroll());
       }
@@ -387,15 +417,17 @@ export default function ChatPage() {
     }
   }, [messageApi, resetScroll, streamingConvId, setSplitMode]);
 
-  async function handleNewChat() {
-    try {
-      const conv = await api.createConversation();
-      setConversations((prev) => [conv, ...prev]);
-      setCurrentConvId(conv.id);
-      setMessages([]);
-    } catch (e: unknown) {
-      messageApi.error(e instanceof Error ? e.message : t('chat.createConvFail'));
-    }
+  function handleNewChat() {
+    ++loadMessagesRef.current;
+    setLoadingConv(false);
+    setCurrentConvId(null);
+    setRuntimeSessionId(null);
+    setRuntimeBinding(null);
+    setMessages([]);
+    setInputValue('');
+    setAttachedImages([]);
+    fileTokenInputRef.current?.clear();
+    setMention({ active: false, triggerStart: -1, query: '', activeIndex: 0 });
   }
 
   async function handleDeleteConv(convId: string) {
@@ -407,6 +439,8 @@ export default function ChatPage() {
       setConversations((prev) => prev.filter((c) => c.id !== convId));
       if (currentConvId === convId) {
         setCurrentConvId(null);
+        setRuntimeSessionId(null);
+        setRuntimeBinding(null);
         setMessages([]);
       }
     } catch (e: unknown) {
@@ -629,6 +663,7 @@ export default function ChatPage() {
   }
 
   async function handleSend(text?: string) {
+    if (loadingConv || runtimeSessionId) return;
     const msg = text ?? inputValue.trim();
     const hasImages = attachedImages.length > 0;
     if (!msg && !hasImages) return;
@@ -682,15 +717,45 @@ export default function ChatPage() {
 
     let convId = currentConvId;
     if (!convId) {
+      if (creatingConversation.current) return;
+      creatingConversation.current = true;
+      const creationSeq = loadMessagesRef.current;
       try {
+        if (!catalogReady || catalogError) {
+          messageApi.error(catalogError || '正在加载模型，请稍后发送');
+          return;
+        }
+        const choice: runtimeApi.RuntimeChoice = newChoice?.runtime && newChoice.runtime !== 'deepagents'
+          ? newChoice : { runtime: 'deepagents', model: selectedModel || undefined };
         const title = msg ? msg.slice(0, 30) : t('chat.imgConvTitle');
-        const conv = await api.createConversation(title);
+        const conv = await api.createConversation(title, choice);
         setConversations((prev) => [conv, ...prev]);
         convId = conv.id;
+        if (conv.runtime_session_id) {
+          try {
+            await runtimeApi.turn(conv.id, crypto.randomUUID(), msg, choice.model, attachedImages.map(f => ({ name: f.name, data_url: f.dataUrl })));
+            if (creationSeq === loadMessagesRef.current) {
+              setInputValue('');
+              setAttachedImages([]);
+              fileTokenInputRef.current?.clear();
+            }
+          } finally {
+            if (creationSeq === loadMessagesRef.current) {
+              setCurrentConvId(conv.id);
+              setRuntimeSessionId(conv.runtime_session_id);
+              setRuntimeBinding(conv.runtime_binding);
+            }
+          }
+          return;
+        }
         setCurrentConvId(convId);
-      } catch {
-        messageApi.error(t('chat.createConvFail'));
+        setRuntimeSessionId(conv.runtime_session_id || null);
+        setRuntimeBinding(conv.runtime_binding);
+      } catch (e) {
+        messageApi.error(e instanceof Error ? e.message : t('chat.createConvFail'));
         return;
+      } finally {
+        creatingConversation.current = false;
       }
     }
 
@@ -835,7 +900,7 @@ export default function ChatPage() {
       <div className={styles.chatArea}>
         {/* 左侧 query 快速导航：悬浮在 chatArea 左侧垂直居中，脱离滚动容器，
             不随消息滚动消失；bar 数 = q 数，active 高亮，点击跳转。 */}
-        {userMarkers.length > 0 && (
+        {!runtimeSessionId && userMarkers.length > 0 && (
           <nav
             ref={queryNavRailRef}
             className={styles.queryNavRail}
@@ -872,6 +937,7 @@ export default function ChatPage() {
         </div>
 
         {/* Messages */}
+        {runtimeSessionId && currentConvId ? <RuntimeConversation key={runtimeSessionId} sid={runtimeSessionId} conversationId={currentConvId} history={messages} profiles={runtimeProfiles} onChanged={loadConversations} /> : <>
         <div className={styles.messagesContainer} ref={setScrollParentEl}>
           {loadingConv ? (
             <LogoLoading size={240} />
@@ -1037,6 +1103,7 @@ export default function ChatPage() {
           />
           <ImageAttachment
             ref={imageAttachRef}
+            allowFiles={!currentConvId && !!newChoice && newChoice.runtime !== 'deepagents'}
             images={attachedImages}
             onImagesChange={setAttachedImages}
             disabled={isStreaming && !allowInputWhileRunning}
@@ -1124,14 +1191,11 @@ export default function ChatPage() {
               </Tooltip>
             </Popover>
             <div style={{ flex: 1 }} />
-            <Select
-              value={selectedModel || undefined}
-              onChange={handleSelectModel}
-              className={styles.modelSelect}
-              size="small"
-              placeholder={t('chat.modelPlaceholder')}
-              options={models.map((m) => ({ value: m.id, label: m.name }))}
-              popupMatchSelectWidth={false}
+            <ChatModelSelect
+              value={!currentConvId && newChoice?.runtime !== 'deepagents' && newChoice ? newChoice : { runtime: 'deepagents', model: selectedModel }}
+              onChange={choice => { setNewChoice(choice); if (choice.runtime === 'deepagents' && choice.model) handleSelectModel(choice.model); }}
+              models={models} profiles={runtimeProfiles} bound={!!currentConvId}
+              loading={!catalogReady} disabled={!catalogReady || loadingConv}
             />
           </div>
           <div className={styles.inputWrapper} style={{ position: 'relative' }}>
@@ -1202,6 +1266,7 @@ export default function ChatPage() {
             </div>
           )}
         </div>
+        </>}
       </div>
       <WorkspaceLockPanel open={lockPanelOpen} onClose={() => setLockPanelOpen(false)} />
       <FileTreePicker

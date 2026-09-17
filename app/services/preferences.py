@@ -21,11 +21,18 @@ _DEFAULTS: Dict[str, Any] = {
     "language": "",
     # 用户主动隐藏的 LLM model ID 列表（不在对话框显示）。默认空 = 全部显示。
     "hidden_models": [],
-    # OpenRouter 白名单：从官方 models list 勾选开放的条目。
+    # 聚合商白名单：从厂商 models list 勾选开放的条目。
     # 形如 [{"id":"anthropic/claude-sonnet-4","name":"...","reasoning":true}, ...]
-    # Chat/Service 里以 catalog id ``openrouter:{id}`` 出现。
+    # Chat/Service 里以 catalog id ``{provider}:{id}`` 出现。
     "openrouter_enabled_models": [],
+    "siliconflow_enabled_models": [],
 }
+
+# 走「白名单 → synthetic catalog 条目」这条路的聚合商。与
+# ``api_config.AGGREGATORS`` 同集合，这里单列一份避免 core→services 反向依赖。
+AGGREGATOR_PROVIDERS = ("openrouter", "siliconflow")
+
+_ENABLED_MODELS_KEYS = {f"{p}_enabled_models" for p in AGGREGATOR_PROVIDERS}
 
 # capability_defaults 内允许的 key
 _CAPABILITY_KEYS = {"llm", "image", "tts", "video", "stt", "s2s"}
@@ -71,9 +78,8 @@ def get_tz_offset(user_id: str) -> float:
 def update_preferences(user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
     prefs = get_preferences(user_id)
     allowed_keys = {
-        "tz_offset_hours", "capability_defaults", "language",
-        "hidden_models", "openrouter_enabled_models",
-    }
+        "tz_offset_hours", "capability_defaults", "language", "hidden_models",
+    } | _ENABLED_MODELS_KEYS
     for k, v in updates.items():
         if k not in allowed_keys:
             continue
@@ -96,9 +102,9 @@ def update_preferences(user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         elif k == "hidden_models":
             if isinstance(v, list):
                 prefs["hidden_models"] = [m for m in v if isinstance(m, str)]
-        elif k == "openrouter_enabled_models":
+        elif k in _ENABLED_MODELS_KEYS:
             if isinstance(v, list):
-                prefs["openrouter_enabled_models"] = _normalize_openrouter_enabled(v)
+                prefs[k] = _normalize_enabled_models(v, k.split("_", 1)[0])
         else:
             prefs[k] = v
     path = _pref_path(user_id)
@@ -134,44 +140,56 @@ def set_hidden_models(user_id: str, hidden: list) -> None:
     update_preferences(user_id, {"hidden_models": hidden})
 
 
-def _normalize_openrouter_enabled(items: list) -> list:
-    """Sanitize whitelist entries to {id, name, reasoning}."""
+def _normalize_enabled_models(items: list, provider: str) -> list:
+    """Sanitize whitelist entries to {id, name, reasoning}.
+
+    ``thinking_budget`` is kept when present — SiliconFlow accepts it as a
+    per-request cap on chain-of-thought length, which is the main lever on cost
+    for its reasoning models.
+    """
     out = []
     seen = set()
+    prefix = f"{provider}:"
     for item in items:
         if isinstance(item, str):
-            mid = item.strip()
-            if not mid or mid in seen:
-                continue
-            seen.add(mid)
-            out.append({"id": mid, "name": mid, "reasoning": False})
-            continue
+            item = {"id": item}
         if not isinstance(item, dict):
             continue
         mid = str(item.get("id") or "").strip()
-        if not mid or mid in seen:
-            continue
-        # Strip accidental openrouter: prefix from stored slug
-        if mid.startswith("openrouter:"):
-            mid = mid.split(":", 1)[1]
+        # Strip an accidental provider prefix from the stored slug.
+        if mid.startswith(prefix):
+            mid = mid[len(prefix):]
         if not mid or mid in seen:
             continue
         seen.add(mid)
-        name = str(item.get("name") or item.get("display_name") or mid).strip() or mid
-        reasoning = bool(item.get("reasoning"))
-        out.append({"id": mid, "name": name, "reasoning": reasoning})
+        row = {
+            "id": mid,
+            "name": str(item.get("name") or item.get("display_name") or mid).strip() or mid,
+            "reasoning": bool(item.get("reasoning")),
+        }
+        budget = item.get("thinking_budget")
+        if isinstance(budget, bool):
+            budget = None
+        if isinstance(budget, (int, float)) and 128 <= int(budget) <= 32768:
+            row["thinking_budget"] = int(budget)
+        out.append(row)
     return out
 
 
-def get_openrouter_enabled_models(user_id: str) -> list:
-    """Return sanitized OpenRouter whitelist entries."""
-    raw = get_preferences(user_id).get("openrouter_enabled_models") or []
+def get_enabled_models(user_id: str, provider: str) -> list:
+    """Return sanitized whitelist entries for an aggregator provider."""
+    if provider not in AGGREGATOR_PROVIDERS:
+        return []
+    raw = get_preferences(user_id).get(f"{provider}_enabled_models") or []
     if not isinstance(raw, list):
         return []
-    return _normalize_openrouter_enabled(raw)
+    return _normalize_enabled_models(raw, provider)
 
 
-def set_openrouter_enabled_models(user_id: str, items: list) -> list:
-    """Replace OpenRouter whitelist; returns normalized list."""
-    prefs = update_preferences(user_id, {"openrouter_enabled_models": items})
-    return list(prefs.get("openrouter_enabled_models") or [])
+def set_enabled_models(user_id: str, provider: str, items: list) -> list:
+    """Replace an aggregator whitelist; returns the normalized list."""
+    if provider not in AGGREGATOR_PROVIDERS:
+        raise ValueError(f"unknown aggregator provider: {provider}")
+    key = f"{provider}_enabled_models"
+    prefs = update_preferences(user_id, {key: items})
+    return list(prefs.get(key) or [])

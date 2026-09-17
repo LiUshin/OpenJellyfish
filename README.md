@@ -119,6 +119,14 @@ docker compose up -d --build
 # Open http://localhost (Nginx port 80)
 ```
 
+#### Optional — Codex / Cursor for trusted teams
+
+v1.3.0 adds Codex and Cursor to the main admin chat. DeepAgents remains the default. On macOS/Linux, enable `JELLYFISH_RUNTIME_ENABLED=1` with one API worker; install the chosen CLI in the backend environment. Docker supports independent pinned build options for either CLI in `.env.example`.
+
+Open `/superadmin` and enter the host key obtained with `python3 launcher.py --superadmin-key` (Docker: `docker compose exec openjellyfish python launcher.py --superadmin-key`). Complete supplier login, probe models, then grant selected models to existing admins. Admins select an authorized engine/model in chat; they do not manage supplier credentials. Supplier accounts and quota are shared only within a trusted team; this mode is not OS isolation between tenants.
+
+Follow the [deployment and login guide](docs/superadmin-console.md) and [runtime scope / recovery guide](docs/runtime-standard-mode.md). Codex/Cursor currently serve admin web chat; Service, WeChat, scheduled tasks and voice keep their existing engine paths. Source updates do not imply new desktop installers have been published.
+
 ### 🏗️ Architecture
 
 ```
@@ -139,13 +147,15 @@ docker compose up -d --build
 └─────────────────────────────────────────────────────────────┘
 ```
 
+Release notes: [v1.3.0](docs/release-v1.3.0.md).
+
 ### 📚 Documentation
 
 | Document | Description |
 | --- | --- |
 | [Concepts](https://www.openjellyfish.ai/en/concepts) | Core terms: document-first agent, harness, portable intelligence |
-| [User Guide](docs/USER_GUIDE.md) | Full user guide (all features, WeChat, FAQ) |
-| [Developer Guide](docs/DEVELOPER_GUIDE.md) | Architecture, APIs, extension guide |
+| [User Guide](docs/USER_GUIDE_EN.md) | Full user guide (all features, WeChat, FAQ) |
+| [Developer Guide](docs/DEVELOPER_GUIDE_EN.md) | Architecture, APIs, extension guide |
 | [Filesystem Architecture](docs/filesystem-architecture.md) | Filesystem layout, JSON schemas, message flows |
 | [WeChat Integration](docs/wechat-integration-guide.md) | iLink WeChat integration deep-dive |
 
@@ -254,6 +264,16 @@ python generate_keys.py        # 生成注册码
 docker compose up -d --build   # 构建并启动
 # 访问 http://localhost（Nginx 端口 80）
 ```
+
+#### 可选：可信团队使用 Codex / Cursor
+
+v1.3.0 将 Codex 与 Cursor 接入管理员主聊天，DeepAgents 仍为默认。macOS / Linux 部署设 `JELLYFISH_RUNTIME_ENABLED=1`，保持单 API worker，并在后端执行环境安装所需 CLI。Docker 可在 `.env.example` 中按固定版本独立选装一种或两种 CLI，修改后需重建镜像。
+
+进入 `/superadmin`，输入 `python3 launcher.py --superadmin-key` 查看得到的主机 key（Docker 使用 `docker compose exec openjellyfish python launcher.py --superadmin-key`）。完成供应商登录、探测模型，再将指定模型授权给已有 admin。admin 在聊天中选择获授权的引擎 / 模型，不管理供应商凭据。共享账号和额度仅面向可信团队，不提供恶意租户之间的操作系统隔离。
+
+完整步骤见 [超管部署与登录](docs/superadmin-console.md)、[标准模式与故障恢复](docs/runtime-standard-mode.md)。Codex / Cursor 当前用于管理员 Web 聊天；Service、微信、定时任务和语音沿用原有执行路径。源码更新不代表已发布新版桌面安装包。
+
+版本说明：[v1.3.0](docs/release-v1.3.0.md)。
 
 ### 📚 项目文档
 

@@ -507,10 +507,14 @@ async def api_test_api_keys(req: dict, user=Depends(get_current_user)):
                 "error": "未配置我的 Key" if src == "user" else "未配置平台 Key",
             }
 
-    if provider in ("openrouter", "all"):
-        creds = get_provider_credentials("openrouter", user_id=user_id)
+    # OpenAI-compat aggregators all probe the same way: GET {base}/models.
+    from app.core.api_config import AGGREGATORS
+    for name in AGGREGATORS:
+        if provider not in (name, "all"):
+            continue
+        creds = get_provider_credentials(name, user_id=user_id)
         api_key = creds.get("api_key", "")
-        base_url = (creds.get("base_url") or "https://openrouter.ai/api/v1").rstrip("/")
+        base_url = (creds.get("base_url") or AGGREGATORS[name]["default_base"]).rstrip("/")
         if api_key:
             try:
                 async with _httpx.AsyncClient(timeout=15.0) as client:
@@ -518,12 +522,12 @@ async def api_test_api_keys(req: dict, user=Depends(get_current_user)):
                         f"{base_url}/models",
                         headers={"Authorization": f"Bearer {api_key}"},
                     )
-                results["openrouter"] = {"ok": resp.status_code == 200, "status": resp.status_code}
+                results[name] = {"ok": resp.status_code == 200, "status": resp.status_code}
             except Exception as e:
-                results["openrouter"] = {"ok": False, "error": str(e)[:200]}
+                results[name] = {"ok": False, "error": str(e)[:200]}
         else:
-            src = resolve_credential_source("openrouter", user_id)
-            results["openrouter"] = {
+            src = resolve_credential_source(name, user_id)
+            results[name] = {
                 "ok": False,
                 "error": "未配置我的 Key" if src == "user" else "未配置平台 Key",
             }
@@ -545,6 +549,7 @@ async def api_keys_status(user=Depends(get_current_user)):
         or minimax_llm_ok
         or has_provider("bedrock", user_id=user_id)
         or has_provider("openrouter", user_id=user_id)
+        or has_provider("siliconflow", user_id=user_id)
     )
     return {
         "has_llm": has_any_llm,
@@ -556,48 +561,75 @@ async def api_keys_status(user=Depends(get_current_user)):
         "has_minimax_full": has_provider("minimax", user_id=user_id),
         "has_bedrock": has_provider("bedrock", user_id=user_id),
         "has_openrouter": has_provider("openrouter", user_id=user_id),
+        "has_siliconflow": has_provider("siliconflow", user_id=user_id),
     }
 
 
-@router.get("/api/settings/openrouter/enabled-models")
-async def api_get_openrouter_enabled(user=Depends(get_current_user)):
-    """Admin OpenRouter whitelist (synthetic catalog entries)."""
-    from app.services.preferences import get_openrouter_enabled_models
-    return {"models": get_openrouter_enabled_models(user["user_id"])}
+# ── Aggregator model whitelists (OpenRouter / 硅基流动) ───────────
+#
+# These vendors resell hundreds of models that turn over constantly, so instead
+# of listing them in config/model_catalog.json the Admin picks the ones they
+# want and the picks become catalog entries.
+
+# Query params narrowing each vendor's /models listing to text chat models.
+_AGGREGATOR_LIST_PARAMS = {
+    "openrouter": {"output_modalities": "text"},
+    "siliconflow": {"type": "text", "sub_type": "chat"},
+}
 
 
-@router.put("/api/settings/openrouter/enabled-models")
-async def api_put_openrouter_enabled(req: dict, user=Depends(get_current_user)):
-    """Replace OpenRouter whitelist.
+def _require_aggregator(provider: str) -> str:
+    from app.services.preferences import AGGREGATOR_PROVIDERS
+    if provider not in AGGREGATOR_PROVIDERS:
+        raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
+    return provider
 
-    Body: {"models": [{"id":"anthropic/claude-sonnet-4","name":"...","reasoning":true}, ...]}
+
+@router.get("/api/settings/aggregators/{provider}/enabled-models")
+async def api_get_aggregator_enabled(provider: str, user=Depends(get_current_user)):
+    """Admin whitelist for one aggregator (synthetic catalog entries)."""
+    from app.services.preferences import get_enabled_models
+    return {"models": get_enabled_models(user["user_id"], _require_aggregator(provider))}
+
+
+@router.put("/api/settings/aggregators/{provider}/enabled-models")
+async def api_put_aggregator_enabled(
+    provider: str, req: dict, user=Depends(get_current_user),
+):
+    """Replace one aggregator's whitelist.
+
+    Body: {"models": [{"id":"Qwen/Qwen3-32B","name":"...","reasoning":true,
+                       "thinking_budget":4096}, ...]}
     """
-    from app.services.preferences import set_openrouter_enabled_models
+    from app.services.preferences import set_enabled_models
     from app.services.agent import clear_agent_cache
     from app.services.consumer_agent import clear_consumer_cache
 
+    _require_aggregator(provider)
     models = req.get("models") if isinstance(req, dict) else None
     if not isinstance(models, list):
         raise HTTPException(status_code=400, detail="models must be a list")
     user_id = user["user_id"]
-    saved = set_openrouter_enabled_models(user_id, models)
+    saved = set_enabled_models(user_id, provider, models)
     clear_agent_cache(user_id)
     clear_consumer_cache(admin_id=user_id)
     return {"success": True, "models": saved}
 
 
-@router.get("/api/settings/openrouter/remote-models")
-async def api_proxy_openrouter_models(user=Depends(get_current_user)):
-    """Optional CORS fallback: proxy OpenRouter GET /models using active credentials.
+@router.get("/api/settings/aggregators/{provider}/remote-models")
+async def api_proxy_aggregator_models(provider: str, user=Depends(get_current_user)):
+    """Proxy the vendor's GET /models with the active credentials.
 
-    Preferred path is frontend → openrouter.ai directly; this exists when browser
-    CORS blocks the public list endpoint.
+    SiliconFlow requires auth to list models, so this is the only path for it.
+    OpenRouter's list is public and the frontend prefers calling it directly;
+    this stays as the fallback for when browser CORS blocks that.
     """
     import httpx as _httpx
-    from app.core.api_config import get_provider_credentials
+    from app.core.api_config import AGGREGATORS, get_provider_credentials
 
-    creds = get_provider_credentials("openrouter", user_id=user["user_id"])
-    base_url = (creds.get("base_url") or "https://openrouter.ai/api/v1").rstrip("/")
+    _require_aggregator(provider)
+    creds = get_provider_credentials(provider, user_id=user["user_id"])
+    base_url = (creds.get("base_url") or AGGREGATORS[provider]["default_base"]).rstrip("/")
     headers = {}
     if creds.get("api_key"):
         headers["Authorization"] = f"Bearer {creds['api_key']}"
@@ -605,13 +637,13 @@ async def api_proxy_openrouter_models(user=Depends(get_current_user)):
         async with _httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(
                 f"{base_url}/models",
-                params={"output_modalities": "text"},
+                params=_AGGREGATOR_LIST_PARAMS.get(provider) or {},
                 headers=headers,
             )
         if resp.status_code != 200:
             raise HTTPException(
                 status_code=502,
-                detail=f"OpenRouter models HTTP {resp.status_code}: {resp.text[:300]}",
+                detail=f"{provider} models HTTP {resp.status_code}: {resp.text[:300]}",
             )
         return resp.json()
     except HTTPException:

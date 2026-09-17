@@ -5,8 +5,10 @@ Behaviour is identical to the original code so that STORAGE_BACKEND=local
 has zero regression risk.
 """
 
+import logging
 import os
 import shutil
+import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -15,12 +17,90 @@ from typing import Generator, List, Optional
 from app.core.settings import ROOT_DIR
 from app.core.path_security import safe_join
 from app.storage.base import StorageService, FileEntry
+from app.storage.config import sandbox_budget_bytes
+
+_log = logging.getLogger("storage.local")
 
 USERS_DIR = os.path.join(ROOT_DIR, "users")
 
 
 def _fs_root(user_id: str) -> str:
     return os.path.join(USERS_DIR, user_id, "filesystem")
+
+
+def _new_scratch_dir(user_id: str) -> str:
+    """Per-run scratch dir.
+
+    Lives under the owning user's directory so it is on the same mount as
+    users/ — hardlinking docs into it would fail with EXDEV from anywhere
+    else (in Docker, /app/data and /app/users are separate bind mounts).
+    Not part of any backup module, so it never ends up in an export.
+    """
+    base = os.path.join(USERS_DIR, user_id, ".scratch")
+    os.makedirs(base, exist_ok=True)
+    return tempfile.mkdtemp(prefix="run_", dir=base)
+
+
+def _replicate_tree(src: str, dest: str, *, writable: bool, budget: int) -> None:
+    """Reproduce `src` under `dest`, capped at `budget` bytes.
+
+    Read-only trees are hardlinked (free); writable ones are real copies so the
+    sandbox cannot modify the original.
+    """
+    os.makedirs(dest, exist_ok=True)
+    if not os.path.isdir(src):
+        return
+    used = 0
+    skipped: list[str] = []
+    for dirpath, _dirs, filenames in os.walk(src):
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            if os.path.islink(full):
+                continue  # never follow links out of the tree
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                continue
+            rel = os.path.relpath(full, src)
+            if used + size > budget:
+                skipped.append(rel)
+                continue
+            target = os.path.join(dest, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            try:
+                if writable:
+                    shutil.copy2(full, target)
+                else:
+                    os.link(full, target)
+            except OSError:
+                try:
+                    shutil.copy2(full, target)
+                except OSError as e:
+                    _log.warning("failed to materialize %s: %s", rel, e)
+                    continue
+            used += size
+    if skipped:
+        _log.warning(
+            "%d file(s) under %s not materialized (budget %d MB): %s",
+            len(skipped), src, budget // 1024 // 1024, skipped[:10],
+        )
+
+
+def _drain_tree(src: str, dest: str) -> None:
+    """Move everything under `src` into `dest`, overwriting collisions."""
+    if not os.path.isdir(src):
+        return
+    for dirpath, _dirs, filenames in os.walk(src):
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            target = os.path.join(dest, os.path.relpath(full, src))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            try:
+                if os.path.exists(target):
+                    os.remove(target)  # os.rename does not overwrite on Windows
+                shutil.move(full, target)
+            except OSError as e:
+                _log.error("failed to persist script output %s: %s", fn, e)
 
 
 def _consumer_gen_root(admin_id: str, service_id: str, conv_id: str) -> str:
@@ -304,13 +384,49 @@ class LocalStorageService(StorageService):
     def consumer_script_execution(
         self, admin_id: str, service_id: str, conv_id: str, script_path: str,
     ) -> Generator[dict, None, None]:
-        root = _fs_root(admin_id)
-        scripts_dir = os.path.join(root, "scripts")
-        docs_dir = os.path.join(root, "docs")
+        """Consumer scripts run against a scratch replica of the admin's
+        workspace, never the real one.
+
+        `run_script` always makes `scripts_dir` the cwd and adds it to the read
+        whitelist, so handing over the admin's real scripts/ would let any
+        consumer-triggered script overwrite the admin's scripts. The scratch
+        layout also makes `../docs/x.csv` and `../generated/out.png` resolve
+        the same way they do for admin runs and under the S3 backend.
+        """
+        admin_root = _fs_root(admin_id)
         consumer_gen = _consumer_gen_root(admin_id, service_id, conv_id)
         os.makedirs(consumer_gen, exist_ok=True)
-        yield {
-            "scripts_dir": scripts_dir,
-            "docs_dir": docs_dir,
-            "write_dirs": [scripts_dir, consumer_gen],
-        }
+
+        root = _new_scratch_dir(admin_id)
+        tmp_scripts = os.path.join(root, "scripts")
+        tmp_docs = os.path.join(root, "docs")
+        tmp_gen = os.path.join(root, "generated")
+        try:
+            budget = sandbox_budget_bytes()
+            _replicate_tree(
+                os.path.join(admin_root, "scripts"), tmp_scripts,
+                writable=True, budget=budget,
+            )
+            _replicate_tree(
+                os.path.join(admin_root, "docs"), tmp_docs,
+                writable=False, budget=budget,
+            )
+            os.makedirs(tmp_gen, exist_ok=True)
+            # The script being run is exempt from the budget.
+            clean = script_path.replace("\\", "/").lstrip("/")
+            local_script = os.path.join(tmp_scripts, *clean.split("/"))
+            origin = os.path.join(admin_root, "scripts", *clean.split("/"))
+            if not os.path.isfile(local_script) and os.path.isfile(origin):
+                os.makedirs(os.path.dirname(local_script), exist_ok=True)
+                shutil.copy2(origin, local_script)
+            yield {
+                "scripts_dir": tmp_scripts,
+                "docs_dir": tmp_docs,
+                "write_dirs": [tmp_scripts, tmp_gen],
+            }
+        finally:
+            try:
+                _drain_tree(tmp_gen, consumer_gen)
+            except Exception:
+                _log.exception("failed to persist consumer script output")
+            shutil.rmtree(root, ignore_errors=True)

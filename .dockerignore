@@ -37,3 +37,7 @@ docker-compose*.yml
 docs/
 *.md
 langfuse/
+
+# Deployment management credentials must never become image layers.
+config/superadmin.key
+config/.superadmin-*.key

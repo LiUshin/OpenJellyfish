@@ -172,7 +172,7 @@ def has_provider(provider: str, user_id: Optional[str] = None) -> bool:
     注意：``has_provider("minimax")`` 走严格判定（要求 group_id），用于 TTS/Video 路径；
     若仅判断 LLM 用 ``has_provider_credentials("minimax", capability="llm")`` 即可。
     """
-    if provider in ("kimi", "minimax", "doubao", "bedrock", "openrouter"):
+    if provider in ("kimi", "minimax", "doubao", "bedrock") or provider in AGGREGATORS:
         return has_provider_credentials(provider, user_id=user_id)
 
     source = resolve_credential_source(provider, user_id)
@@ -192,7 +192,22 @@ def has_provider(provider: str, user_id: Optional[str] = None) -> bool:
 _KIMI_DEFAULT_BASE = "https://api.moonshot.cn/v1"
 _DOUBAO_DEFAULT_REGION = "cn-beijing"
 _BEDROCK_DEFAULT_REGION = "us-east-1"
-_OPENROUTER_DEFAULT_BASE = "https://openrouter.ai/api/v1"
+
+# OpenAI-compat aggregators: identical credential shape (api_key + base_url),
+# identical env naming, and models come from a per-admin whitelist rather than
+# the static catalog. Adding another one only needs an entry here.
+AGGREGATORS: dict = {
+    "openrouter": {
+        "default_base": "https://openrouter.ai/api/v1",
+        "env_key": "OPENROUTER_API_KEY",
+        "env_base": "OPENROUTER_BASE_URL",
+    },
+    "siliconflow": {
+        "default_base": "https://api.siliconflow.cn/v1",
+        "env_key": "SILICONFLOW_API_KEY",
+        "env_base": "SILICONFLOW_BASE_URL",
+    },
+}
 
 
 def get_provider_credentials(
@@ -270,14 +285,18 @@ def get_provider_credentials(
             "region": os.getenv("BEDROCK_REGION", _BEDROCK_DEFAULT_REGION),
         }
 
-    if provider == "openrouter":
+    if provider in AGGREGATORS:
+        spec = AGGREGATORS[provider]
         if source == "user":
-            key = user_keys.get("openrouter_api_key", "")
-            base = (user_keys.get("openrouter_base_url", "") or _OPENROUTER_DEFAULT_BASE).rstrip("/")
+            key = user_keys.get(f"{provider}_api_key", "")
+            base = user_keys.get(f"{provider}_base_url", "")
         else:
-            key = os.getenv("OPENROUTER_API_KEY", "")
-            base = (os.getenv("OPENROUTER_BASE_URL", "") or _OPENROUTER_DEFAULT_BASE).rstrip("/")
-        return {"api_key": key, "base_url": base}
+            key = os.getenv(spec["env_key"], "")
+            base = os.getenv(spec["env_base"], "")
+        return {
+            "api_key": key,
+            "base_url": (base or spec["default_base"]).rstrip("/"),
+        }
 
     return {}
 
@@ -292,9 +311,7 @@ def has_provider_credentials(
     MiniMax 特殊：LLM（Anthropic-compat）只需 api_key；TTS/Video 才需要 group_id。
     """
     creds = get_provider_credentials(provider, user_id=user_id, capability=capability)
-    if provider in ("openai", "anthropic", "kimi", "openrouter"):
-        return bool(creds.get("api_key"))
-    if provider == "bedrock":
+    if provider in ("openai", "anthropic", "kimi", "bedrock") or provider in AGGREGATORS:
         return bool(creds.get("api_key"))
     if provider == "minimax":
         if capability == "llm":

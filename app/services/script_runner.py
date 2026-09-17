@@ -234,9 +234,10 @@ def get_script_runtime_stats() -> Dict[str, int]:
 _UNRESTRICTED_ENV = "SUPERADMIN_SCRIPT_UNRESTRICTED"
 
 
-def superadmin_script_unrestricted() -> bool:
-    """读取部署级超管免限制开关。默认关闭（保持现有全部限制）。"""
-    return os.environ.get(_UNRESTRICTED_ENV, "").strip().lower() in (
+def superadmin_script_unrestricted(user_id: str | None = None) -> bool:
+    """Only the explicitly bound host owner may use the deployment override."""
+    from app.core.roles import is_owner
+    return is_owner(user_id) and os.environ.get(_UNRESTRICTED_ENV, "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 

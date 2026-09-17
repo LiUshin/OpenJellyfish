@@ -1,5 +1,5 @@
-from typing import Any, Optional, Union
-from pydantic import BaseModel
+from typing import Any, Literal, Optional, Union
+from pydantic import BaseModel, Field
 
 
 class AuthRequest(BaseModel):
@@ -13,13 +13,23 @@ class RegisterRequest(BaseModel):
     reg_key: str
 
 
+class RuntimeChoice(BaseModel):
+    runtime: Literal['deepagents', 'codex', 'cursor'] = 'deepagents'
+    profile_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
+    model: str | None = Field(default=None, max_length=120)
+    image_mode: Literal['off', 'native'] = 'native'
+
+
 class CreateConversationRequest(BaseModel):
     title: str = "新对话"
+    runtime_choice: RuntimeChoice | None = None
+    context_paths: list[str] = Field(default_factory=list, max_length=20)
 
 
 class ChatRequest(BaseModel):
     conversation_id: str
     message: Any  # str or multimodal list [{"type":"text",...},{"type":"image_url",...}]
+    request_id: str | None = Field(default=None, pattern=r'^[a-zA-Z0-9_-]{16,80}$')
     model: Optional[str] = None
     capabilities: Optional[list] = None
     plan_mode: Optional[bool] = None

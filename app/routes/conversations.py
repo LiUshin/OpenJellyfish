@@ -33,7 +33,18 @@ async def api_list_conversations(user=Depends(get_current_user)):
 
 @router.post("")
 async def api_create_conversation(req: CreateConversationRequest, user=Depends(get_current_user)):
-    return create_conversation(user["user_id"], req.title)
+    from app.runtime.chat import choice, bind_conversation
+    actor = user['user_id']
+    binding = choice(actor, req.runtime_choice.model_dump() if req.runtime_choice else None)
+    conv = create_conversation(actor, req.title)
+    try:
+        return bind_conversation(actor, conv, binding, req.context_paths)
+    except (ValueError, FileNotFoundError) as exc:
+        delete_conversation(actor, conv['id'])
+        raise HTTPException(400, str(exc))
+    except Exception:
+        delete_conversation(actor, conv['id'])
+        raise
 
 
 @router.get("/{conv_id}")
@@ -48,6 +59,19 @@ async def api_get_conversation(conv_id: str, user=Depends(get_current_user)):
 @router.delete("/{conv_id}")
 async def api_delete_conversation(conv_id: str, user=Depends(get_current_user)):
     _validate_conv_id(conv_id)
+    conv = get_conversation(user['user_id'], conv_id)
+    if conv and conv.get('runtime_session_id'):
+        from app.runtime.manager import get_runtime
+        from app.runtime.store import TERMINAL
+        runtime = get_runtime()
+        session = runtime.runs.own('session', conv['runtime_session_id'], user['user_id'])
+        session['deleted'] = True
+        runtime.store.put('session', session)
+        for run in runtime.store.find('run', session_id=session['id'], actor_id=user['user_id']):
+            if run['status'] not in TERMINAL:
+                await runtime.runs.cancel(user['user_id'], run['id'])
+        if hasattr(runtime.backend, 'release'):
+            await runtime.backend.release(session_id=session['id'])
     if delete_conversation(user["user_id"], conv_id):
         return {"success": True}
     raise HTTPException(status_code=404, detail="对话不存在")

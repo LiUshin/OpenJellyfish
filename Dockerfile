@@ -14,18 +14,40 @@ COPY frontend/ ./
 RUN npm run build
 
 # -------------------- Stage 2: Production --------------------
-FROM python:3.11-slim
+FROM python:3.11-slim AS runtime-base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     ffmpeg \
+    git \
+    procps \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Optional, pinned Cursor CLI. Empty means no Cursor download or image overhead.
+ARG JELLYFISH_CURSOR_CLI_VERSION=""
+COPY scripts/install-cursor-cli.sh /tmp/install-cursor-cli.sh
+RUN if [ -n "$JELLYFISH_CURSOR_CLI_VERSION" ]; then \
+        sh /tmp/install-cursor-cli.sh "$JELLYFISH_CURSOR_CLI_VERSION"; \
+    fi \
+    && rm /tmp/install-cursor-cli.sh
+
+# Codex is independently optional; installing both CLIs is supported.
+ARG JELLYFISH_CODEX_CLI_VERSION=""
+COPY scripts/install-codex-cli.sh /tmp/install-codex-cli.sh
+RUN if [ -n "$JELLYFISH_CODEX_CLI_VERSION" ]; then \
+        sh /tmp/install-codex-cli.sh "$JELLYFISH_CODEX_CLI_VERSION"; \
+    fi \
+    && rm /tmp/install-codex-cli.sh
+
+FROM runtime-base AS production
 WORKDIR /app
+
+# Keep the management key in the existing persistent data volume.
+ENV JELLYFISH_SUPERADMIN_KEY_FILE=/app/data/superadmin.key
 
 # ---- Python 依赖 ----
 COPY requirements.txt .

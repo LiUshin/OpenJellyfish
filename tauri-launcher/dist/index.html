@@ -574,6 +574,14 @@ tr.used td { opacity: 0.4; }
       </div>
     </div>
 
+    <div class="glass-card" style="margin-top:20px">
+      <h3>超管控制台</h3>
+      <p style="color:var(--jf-text-muted);margin:8px 0 16px">连接 Codex / Cursor 套餐并授权给可信 admin。启动服务后可访问。</p>
+      <button class="btn btn-secondary btn-sm" onclick="invoke('open_superadmin').catch(e => showToast(String(e)))">打开超管页面</button>
+      <button class="btn btn-secondary btn-sm" onclick="showHostKey()">查看主机 key</button>
+      <input id="hostKey" type="password" readonly style="display:none;width:100%;margin-top:12px" aria-label="主机 key" onclick="this.select()">
+      <button id="hideHostKey" class="btn-text" style="display:none" onclick="document.getElementById('hostKey').value='';document.getElementById('hostKey').style.display='none';this.style.display='none'">清除显示</button>
+    </div>
     <div class="hero-control">
       <button class="power-btn" id="powerBtn" onclick="toggleApp()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10"/></svg>
@@ -1034,6 +1042,14 @@ function mockInvoke(cmd, args) {
 }
 
 // ── Navigation ──────────────────────────────────────────────────
+async function showHostKey() {
+  try {
+    const input = document.getElementById('hostKey');
+    input.value = await invoke('get_superadmin_key');
+    input.style.display = 'block'; input.focus(); input.select();
+    document.getElementById('hideHostKey').style.display = 'inline-block';
+  } catch (e) { showToast(String(e)); }
+}
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     const page = item.dataset.page;
@@ -1121,6 +1137,8 @@ const CONFIG_SCHEMA = [
     { key:'BEDROCK_REGION', label:'Bedrock Region', type:'text', ph:'us-east-1' },
     { key:'OPENROUTER_API_KEY', label:'OpenRouter API Key', type:'password', ph:'sk-or-...' },
     { key:'OPENROUTER_BASE_URL', label:'OpenRouter Base URL', type:'text', ph:'https://openrouter.ai/api/v1' },
+    { key:'SILICONFLOW_API_KEY', label:'硅基流动 API Key', type:'password', ph:'sk-...' },
+    { key:'SILICONFLOW_BASE_URL', label:'硅基流动 Base URL', type:'text', ph:'https://api.siliconflow.cn/v1' },
     { key:'KIMI_API_KEY', label:'Kimi (Moonshot) Key', type:'password', ph:'可选' },
     { key:'KIMI_BASE_URL', label:'Kimi Base URL', type:'text', ph:'https://api.moonshot.cn/v1' },
     { key:'MINIMAX_API_KEY', label:'MiniMax API Key', type:'password', ph:'可选' },

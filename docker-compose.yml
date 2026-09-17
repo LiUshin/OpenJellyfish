@@ -39,6 +39,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Opt in via .env, then rebuild; runtime env alone does not install a CLI.
+        JELLYFISH_CURSOR_CLI_VERSION: ${JELLYFISH_CURSOR_CLI_VERSION:-}
+        JELLYFISH_CODEX_CLI_VERSION: ${JELLYFISH_CODEX_CLI_VERSION:-}
     container_name: openjellyfish
     restart: unless-stopped
     # 不直接对外暴露端口，由 nginx 反向代理

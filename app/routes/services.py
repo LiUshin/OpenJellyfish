@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from app.deps import get_current_user
 from app.schemas.service import CreateServiceRequest, UpdateServiceRequest, CreateKeyRequest
 from app.services.published import (
+    BILLING_MODES,
     create_service, list_services, get_service, update_service, delete_service,
     create_service_key, list_service_keys, delete_service_key,
     list_consumer_conversations, get_consumer_conversation, delete_consumer_conversation,
@@ -70,7 +71,9 @@ async def api_delete_service(service_id: str, user=Depends(get_current_user)):
 async def api_create_key(service_id: str, req: CreateKeyRequest, user=Depends(get_current_user)):
     if not get_service(user["user_id"], service_id):
         raise HTTPException(status_code=404, detail="Service 不存在")
-    result = create_service_key(user["user_id"], service_id, req.name)
+    if req.billing not in BILLING_MODES:
+        raise HTTPException(status_code=400, detail="billing 必须是 hosted 或 byok")
+    result = create_service_key(user["user_id"], service_id, req.name, billing=req.billing)
     if not result:
         raise HTTPException(status_code=500, detail="Key 创建失败")
     return result

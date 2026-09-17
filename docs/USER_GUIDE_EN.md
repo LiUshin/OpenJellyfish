@@ -395,6 +395,14 @@ Floating short bars on the left: **one bar per user message**. Scroll highlights
 
 ---
 
+### 4.12 Codex / Cursor chat (optional)
+
+The default engine is DeepAgents. Once the deployment operator enables the runtime and grants a supplier connection, choose an authorized API / Codex / Cursor model in the chat input. The first message binds the chat to its engine and connection. You can change authorized models within that connection on later turns; changing engine or account requires a new chat.
+
+Codex / Cursor runs support streamed text and tools, per-request approval, cancellation, attachments, and generated-file previews/downloads. Closing the browser does not cancel a run; reopen the chat to restore output and pending approvals. Connections share supplier quota and execute one turn at a time. A failed or revoked connection does not silently fall back to another account or API provider.
+
+This optional path currently applies to admin web chat. Service/Consumer, WeChat, scheduled tasks and voice retain their existing execution paths. Codex native image generation has local API evidence; Cursor image generation and final image UI verification remain incomplete.
+
 ## 5. File Panel
 
 Click the 📁 button in the top right to open the file panel (available only on the chat page).
@@ -1036,6 +1044,10 @@ This matches the chat page markdown rendering convention. Consumer side needs no
 
 ---
 
+### Service Key billing: hosted / BYOK
+
+Billing is selected per API Key, so one Service can issue both operator-paid (`hosted`) and caller-paid (`byok`) keys. Existing keys default to hosted. Use `GET /api/v1/models` with the Service key to inspect its billing mode and permitted models/hosts. BYOK chat requests supply `provider`, `api_key`, and `model`, plus `base_url` / `region` when needed; provider, model and endpoint must pass validation. Hosted keys reject caller credential fields and keep the Service's configured model behavior. This API mode does not use shared Codex/Cursor login connections.
+
 ## 9. Soul Memory System
 
 > Soul is OpenJellyfish's core mechanism for Agents to "grow" long-term, inspired by giving the Agent a "soul" that remembers user preferences and conversation highlights.
@@ -1141,6 +1153,8 @@ Use **Test call** in Voice settings to try a session.
 | `ANTHROPIC_API_KEY` | Anthropic API key (Claude series) |
 | `OPENAI_API_KEY` | OpenAI API key (GPT + multimedia generation) |
 
+Other configured providers include `BEDROCK_API_KEY` / `BEDROCK_REGION`, `OPENROUTER_API_KEY`, and `SILICONFLOW_API_KEY`. SiliconFlow and OpenRouter models are enabled through the settings allowlist. Optional endpoint overrides are `OPENROUTER_BASE_URL` and `SILICONFLOW_BASE_URL`; see `.env.example`. These API credentials are independent of Codex/Cursor supplier login.
+
 ### 11.2 Provider Endpoint Overrides
 
 | Variable | Description |
@@ -1183,6 +1197,8 @@ When a capability needs a different API Key or endpoint from the main provider:
 
 > Note: JSON config files (users.json, conversations, etc.) currently remain on local disk. S3 mode only hosts the filesystem layer (`docs/`, `scripts/`, `generated/`, `soul/`).
 
+For Cloudflare R2, use `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` as `S3_ENDPOINT_URL`. An empty region resolves to `auto` for R2 and `us-east-1` otherwise. `S3_CHECKSUM_MODE=auto` uses `when_required` for custom endpoints; `S3_ADDRESSING_STYLE=path` is available for compatible deployments that require path addressing. Configure bucket CORS if the browser fetches signed URLs directly. See the full R2 example in `.env.example`.
+
 ### 11.6 Encryption Master Key
 
 | Variable | Description |
@@ -1217,6 +1233,16 @@ When a capability needs a different API Key or endpoint from the main provider:
 | `LANGCHAIN_API_KEY` | LangSmith API Key |
 
 ---
+
+### 11.10 Optional supplier runtimes
+
+Use `.env.example` as the configuration reference. Set `JELLYFISH_RUNTIME_ENABLED=1`, `JELLYFISH_RUNTIME_ACCESS_MODE=trusted_shared`, `JELLYFISH_RUNTIME_BACKEND=local`, and `UVICORN_WORKERS=1`. This requires macOS/Linux and the chosen CLI in the backend environment. With Docker, set either/both pinned build arguments `JELLYFISH_CODEX_CLI_VERSION=0.154.0` and `JELLYFISH_CURSOR_CLI_VERSION=2026.09.15-d2fe57e`, rebuild the application container, then reload Nginx. These are documented installation-tested versions, not a promise of full production validation.
+
+The operator reads the host key with `python3 launcher.py --superadmin-key` (Docker: `docker compose exec openjellyfish python launcher.py --superadmin-key`) and enters it at `/superadmin`. Log in to the supplier and grant selected models to existing admins. `JELLYFISH_OWNER_USER_ID` is obsolete. Native supplier login is separate from Jellyfish API keys.
+
+Runtime state defaults to `data/runtime`; Docker persists it through `/app/data`. Back up the database, credential vault and encryption key together. The host management key defaults to `config/superadmin.key` for direct deployment and `/app/data/superadmin.key` in Docker. A custom `JELLYFISH_SUPERADMIN_KEY_FILE` must be the same process environment variable for the backend and key CLI. The local backend is for trusted teams, including when the whole app runs in Docker; it is not per-tenant container isolation.
+
+See [deployment and login](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/superadmin-console.md) and [runtime limits and recovery](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-standard-mode.md).
 
 ## 12. FAQ
 

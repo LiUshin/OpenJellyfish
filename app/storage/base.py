@@ -234,9 +234,12 @@ class StorageService(ABC):
             scripts_dir  — local dir containing the script file
             docs_dir     — local dir for read-only docs
             write_dirs   — list of local dirs the script may write to
+            error        — present only when the script does not exist
 
-        In S3 mode: downloads the script to temp, and uploads generated/
-        results back to S3 on exit.
+        In S3 mode the scripts/ and docs/ trees are materialized into a scratch
+        directory (served from the local ETag cache where possible), and
+        anything written to generated/ is uploaded back on exit — including
+        when the script raised, timed out, or was cancelled.
         """
         ...
 

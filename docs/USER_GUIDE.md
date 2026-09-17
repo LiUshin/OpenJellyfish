@@ -391,6 +391,14 @@ chat 顶栏 **锁** 按钮可查看当前活跃进程、占用路径，并手动
 
 ---
 
+### 4.12 Codex / Cursor 对话（可选）
+
+默认引擎为 DeepAgents。部署方启用外部运行模式并授权连接后，在聊天输入区选择获授权的 API / Codex / Cursor 模型；首次发送绑定引擎和连接。同一连接可逐轮切换获授权模型，切换引擎或供应商账号需要新建对话。
+
+支持文本与工具流式输出、逐次审批、停止、附件和产物预览 / 下载。关闭浏览器不会取消任务，重新打开会话可恢复输出与待审批项。同一连接共享供应商额度并串行运行；连接失效或授权撤销时不会静默换账号或付费 API。
+
+此路径目前用于管理员 Web 聊天；Service/Consumer、微信、定时任务与语音沿用现有执行路径。Codex 原生生图有本机 API 验证，Cursor 真实生图与生图前端最终视觉验收仍未完成。
+
 ## 5. 文件面板
 
 点击右上角的 📁 按钮打开文件面板（仅对话页面可用）。
@@ -1032,6 +1040,10 @@ Agent 在 `send_message` 的文本中输出 `<<FILE:/generated/images/xxx.png>>`
 
 ---
 
+### Service Key 计费：hosted / BYOK
+
+计费方式按 API Key 指定，同一个 Service 可同时发放运营方付费（`hosted`）和调用方自付（`byok`）Key，旧 Key 默认保持 hosted。使用 Service Key 调用 `GET /api/v1/models` 可查看计费模式与允许的模型 / 主机。BYOK 聊天请求提供 `provider`、`api_key`、`model`，必要时加 `base_url` / `region`，并通过供应商、模型和端点校验；hosted Key 拒绝调用方凭据字段，保留服务原有模型配置行为。此 API 模式不复用共享 Codex / Cursor 登录连接。
+
 ## 9. Soul 记忆系统
 
 > Soul 是 OpenJellyfish 让 Agent 长期"成长"的核心机制，灵感来自给 Agent 一个"灵魂"，记住用户偏好和对话精华。
@@ -1137,6 +1149,8 @@ Memory & Soul Tab 中两个 Switch 下方各带可编辑的能力提示词，告
 | `ANTHROPIC_API_KEY` | Anthropic API 密钥（Claude 系列） |
 | `OPENAI_API_KEY` | OpenAI API 密钥（GPT + 多媒体生成） |
 
+也可配置 `BEDROCK_API_KEY` / `BEDROCK_REGION`、`OPENROUTER_API_KEY` 或 `SILICONFLOW_API_KEY`。硅基流动与 OpenRouter 模型需在设置页白名单中启用，可通过 `OPENROUTER_BASE_URL` / `SILICONFLOW_BASE_URL` 覆盖端点；示例见 `.env.example`。这些 API 凭据与 Codex / Cursor 供应商登录相互独立。
+
 ### 11.2 Provider 端点覆盖
 
 | 变量 | 说明 |
@@ -1179,6 +1193,8 @@ Memory & Soul Tab 中两个 Switch 下方各带可编辑的能力提示词，告
 
 > 注意：JSON 配置文件（users.json、conversations 等）目前仍走本地盘。S3 模式仅托管文件系统层（`docs/`、`scripts/`、`generated/`、`soul/`）。
 
+Cloudflare R2 的 `S3_ENDPOINT_URL` 使用 `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`。region 留空时 R2 自动使用 `auto`，其余使用 `us-east-1`；`S3_CHECKSUM_MODE=auto` 对自定义端点使用 `when_required`，需要路径寻址的兼容服务可配置 `S3_ADDRESSING_STYLE=path`。浏览器直接 fetch 签名 URL 时需配置桶 CORS，完整 R2 示例见 `.env.example`。
+
 ### 11.6 加密 Master Key
 
 | 变量 | 说明 |
@@ -1213,6 +1229,16 @@ Memory & Soul Tab 中两个 Switch 下方各带可编辑的能力提示词，告
 | `LANGCHAIN_API_KEY` | LangSmith API Key |
 
 ---
+
+### 11.10 可选供应商运行引擎
+
+以 `.env.example` 为配置入口。设置 `JELLYFISH_RUNTIME_ENABLED=1`、`JELLYFISH_RUNTIME_ACCESS_MODE=trusted_shared`、`JELLYFISH_RUNTIME_BACKEND=local`、`UVICORN_WORKERS=1`，要求 macOS / Linux，CLI 安装在后端执行环境内。Docker 可分别配置固定构建参数 `JELLYFISH_CODEX_CLI_VERSION=0.154.0`、`JELLYFISH_CURSOR_CLI_VERSION=2026.09.15-d2fe57e`，重建应用容器后重新加载 Nginx。这些版本有安装验证，不代表完整生产验收。
+
+部署方通过 `python3 launcher.py --superadmin-key` 查看主机 key（Docker 用 `docker compose exec openjellyfish python launcher.py --superadmin-key`），在 `/superadmin` 输入后登录供应商并向已有 admin 授权模型。`JELLYFISH_OWNER_USER_ID` 已废弃；供应商登录与 Jellyfish API Key 相互独立。
+
+运行数据默认位于 `data/runtime`，Docker 通过 `/app/data` 持久化。备份时同时保留数据库、凭据 vault 和加密密钥。主机管理 key 默认位于本机 `config/superadmin.key` 或 Docker `/app/data/superadmin.key`；自定义 `JELLYFISH_SUPERADMIN_KEY_FILE` 时必须给后端与 key CLI 提供相同的进程环境变量。local 后端只面向可信团队；把整套应用放进 Docker 不等于每租户容器隔离。
+
+完整步骤见 [部署与登录](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/superadmin-console.md)、[能力边界与恢复](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-standard-mode.md)。
 
 ## 12. 常见问题（FAQ）
 

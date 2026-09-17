@@ -99,7 +99,8 @@
   margin-bottom: 20px;
 }
 
-.authBox input {
+.authBox input,
+.authBox select {
   width: 100%;
   padding: 10px 14px;
   background: var(--bg);
@@ -110,7 +111,14 @@
   outline: none;
 }
 
-.authBox input:focus {
+/* BYOK 凭据表单是多字段，需要行间距；单字段的登录框不受影响。 */
+.authBox select + input,
+.authBox input + input {
+  margin-top: 10px;
+}
+
+.authBox input:focus,
+.authBox select:focus {
   border-color: var(--accent);
 }
 

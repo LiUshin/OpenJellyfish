@@ -25,4 +25,7 @@ async def api_login(req: AuthRequest):
 
 @router.get("/me")
 async def api_me(user=Depends(get_current_user)):
-    return user
+    from app.core.roles import role_for
+    from app.runtime.policy import DeploymentPolicy
+    return {**user, 'role': role_for(user['user_id']),
+            'runtime_capabilities': DeploymentPolicy.from_env().public(user['user_id'])}

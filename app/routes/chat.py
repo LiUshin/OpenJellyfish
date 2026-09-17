@@ -699,8 +699,7 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
             flush_langfuse()
 
 
-@router.post("/api/chat")
-async def api_chat(req: ChatRequest, user=Depends(get_current_user)):
+async def _deepagents_chat(req: ChatRequest, user):
     user_id = user["user_id"]
     username = user.get("username", user_id)
     conv_id = req.conversation_id
@@ -743,8 +742,7 @@ async def api_chat(req: ChatRequest, user=Depends(get_current_user)):
     ))
 
 
-@router.post("/api/chat/stop")
-async def api_chat_stop(req: StopChatRequest, user=Depends(get_current_user)):
+async def _deepagents_stop(req: StopChatRequest, user):
     user_id = user["user_id"]
     thread_id = f"{user_id}-{req.conversation_id}"
     if req.follow_up is not None:
@@ -798,12 +796,10 @@ async def api_chat_interrupt(conv_id: str, user=Depends(get_current_user)):
     }
 
 
-@router.post("/api/chat/resume")
-async def api_chat_resume(req: ResumeRequest, user=Depends(get_current_user)):
+async def _deepagents_resume(req: ResumeRequest, user):
     user_id = user["user_id"]
     username = user.get("username", user_id)
     conv_id = req.conversation_id
-
     agent = await _create_user_agent_bounded(
         user_id, model=req.model, capabilities=req.capabilities, username=username
     )
@@ -819,3 +815,21 @@ async def api_chat_resume(req: ResumeRequest, user=Depends(get_current_user)):
         agent, Command(resume={"decisions": req.decisions}), config,
         user_id, conv_id, yolo=bool(req.yolo), lock_label=lock_label,
     ))
+
+
+@router.post("/api/chat")
+async def api_chat(req: ChatRequest, user=Depends(get_current_user)):
+    from app.runtime.chat_adapters import dispatch
+    return await dispatch('start', req, user)
+
+
+@router.post("/api/chat/stop")
+async def api_chat_stop(req: StopChatRequest, user=Depends(get_current_user)):
+    from app.runtime.chat_adapters import dispatch
+    return await dispatch('stop', req, user)
+
+
+@router.post("/api/chat/resume")
+async def api_chat_resume(req: ResumeRequest, user=Depends(get_current_user)):
+    from app.runtime.chat_adapters import dispatch
+    return await dispatch('resume', req, user)

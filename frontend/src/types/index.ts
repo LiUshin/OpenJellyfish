@@ -15,6 +15,8 @@ export interface Conversation {
   created_at: string;
   updated_at: string;
   message_count?: number;
+  runtime_session_id?: string | null;
+  runtime_binding?: { runtime: string; model?: string; profile_id?: string } | null;
 }
 
 export interface MessageAttachment {
@@ -43,6 +45,8 @@ export interface ConversationDetail {
   id: string;
   title: string;
   messages: Message[];
+  runtime_session_id?: string | null;
+  runtime_binding?: Conversation['runtime_binding'];
 }
 
 export interface FileItem {
@@ -255,6 +259,8 @@ export interface ServiceKey {
   id: string;
   name: string;
   prefix: string;
+  /** hosted = 运营方付 LLM 费用；byok = 调用方请求时自带凭据 */
+  billing?: 'hosted' | 'byok';
   created_at: string;
   last_used_at?: string;
 }

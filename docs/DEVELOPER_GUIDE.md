@@ -690,6 +690,16 @@ Key 更新后自动调用 `clear_agent_cache(user_id)` + `clear_consumer_cache(a
 
 ---
 
+### 4.11 可选 Codex / Cursor Runtime
+
+`app/runtime/chat_adapters.py` 将现有聊天入口分派到 DeepAgents 或已绑定的 Codex / Cursor 会话。没有 runtime 绑定的旧会话仍走 DeepAgents。外部引擎使用独立 SQLite 运行与事件存储、有界队列、单连接串行和版本化模型授权，不替换 LangGraph checkpoints；未知或失效绑定直接报错。
+
+`app/core/host_auth.py` 为 `/api/superadmin/runtime` 验证独立的 `host:owner` 身份，前端入口为 `/superadmin`。注册 admin 通过 `/api/runtime` 和主聊天使用授权连接。旧 owner 连接迁移为主机所有，保留已有撤权记录；新部署不要配置 `JELLYFISH_OWNER_USER_ID`。
+
+`ConnectionBackend` 按连接预热有界客户端池（`MAX_CLIENTS` 默认等于 `MAX_RUNNING`，最大 16），连接持有客户端和凭据租约，每轮重新绑定 actor、会话、工作区、模型与工具。`KEEP_WARM=0` 关闭预热；当前没有生效的 `JELLYFISH_RUNTIME_IDLE_SECONDS` 配置。仅支持 macOS / Linux、单 API worker、`trusted_shared + local`。应用容器化不构成租户隔离，多副本不得共享这份本地状态。
+
+详见 [运行说明](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-standard-mode.md)、[主机控制台与 Docker 配置](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/superadmin-console.md)。回归命令：`python -m unittest discover -s tests -p 'test_runtime*.py'`。供应商真实账号验收需另行执行，单元测试与构建不代表该项通过。
+
 ## 5. 前端架构
 
 ### 5.1 目录结构
@@ -1705,6 +1715,10 @@ Cloudflare (SSL) → Nginx (:80) → Express (:3000) → FastAPI (:8000)
 排除 `frontend/node_modules/` / `frontend/dist/` / `venv/` / `data/` / `.env` / `.git/`。
 
 ---
+
+### 14.6 可选 CLI 构建参数
+
+Compose 将 `JELLYFISH_CODEX_CLI_VERSION` 与 `JELLYFISH_CURSOR_CLI_VERSION` 独立传入 Docker 构建，留空则跳过安装。在 `.env` 固定版本后执行 `docker compose up -d --build openjellyfish`，再执行 `docker compose exec nginx nginx -s reload`。单独打开运行时环境开关不会安装 CLI。镜像以 UID 1000 运行，确保 `data/` 可写并持久化，包括 `data/runtime` 和 `data/superadmin.key`；自定义可执行文件路径必须是容器内路径。
 
 ## 15. 测试与调试
 

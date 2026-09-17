@@ -23,7 +23,7 @@ async def api_run_script(req: RunScriptRequest, user=Depends(get_current_user)):
             timeout=req.timeout,
             allowed_read_dirs=[ctx["docs_dir"]],
             allowed_write_dirs=ctx["write_dirs"],
-            unrestricted=superadmin_script_unrestricted(),
+            unrestricted=superadmin_script_unrestricted(user["user_id"]),
         )
 
 

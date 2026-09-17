@@ -69,9 +69,12 @@ def record_request(
     status_code: int = 200,
     latency_ms: int = 0,
     ok: bool = True,
+    billing: str = "hosted",
 ) -> None:
     """Append one record. Swallows all exceptions — logging must never
-    break the user-facing request."""
+    break the user-facing request.
+
+    ``billing="byok"`` 表示这次调用的主对话模型由调用方自带凭据付费。"""
     try:
         now = datetime.now()
         path = _usage_path(admin_id, service_id, now.year, now.month)
@@ -84,6 +87,7 @@ def record_request(
             "status_code": int(status_code),
             "latency_ms": int(latency_ms),
             "ok": bool(ok),
+            "billing": billing or "hosted",
         }
         append_jsonl(path, rec)
     except Exception:

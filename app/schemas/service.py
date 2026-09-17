@@ -37,15 +37,29 @@ class UpdateServiceRequest(BaseModel):
 
 class CreateKeyRequest(BaseModel):
     name: str = "default"
+    # hosted = 运营方付 LLM 费用（默认，行为不变）；byok = 调用方请求时自带凭据
+    billing: str = "hosted"
 
 
-class ConsumerChatRequest(BaseModel):
+class ByokFields(BaseModel):
+    """调用方自带主对话模型凭据（仅 billing=byok 的 service key 可用）。
+
+    ``model`` 也用于 hosted key 之外的模型选择；``region`` 只对 bedrock 有意义。
+    """
+    provider: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+    region: Optional[str] = None
+
+
+class ConsumerChatRequest(ByokFields):
     """Custom SSE chat — mirrors admin /api/chat format."""
     conversation_id: str
     message: Any  # str or multimodal list
 
 
-class ConsumerCompletionsRequest(BaseModel):
+class ConsumerCompletionsRequest(ByokFields):
     """OpenAI-compatible /v1/chat/completions."""
     messages: list
     stream: bool = True

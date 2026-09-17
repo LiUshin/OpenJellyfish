@@ -181,6 +181,8 @@ def list_conversations(user_id: str) -> List[Dict[str, Any]]:
             "created_at": meta.get("created_at", ""),
             "updated_at": meta.get("updated_at", ""),
             "message_count": meta.get("message_count", 0),
+            "runtime_binding": meta.get("runtime_binding"),
+            "runtime_session_id": meta.get("runtime_session_id"),
         })
         seen.add(entry)
     out.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
@@ -223,6 +225,9 @@ def get_conversation(user_id: str, conv_id: str) -> Optional[Dict[str, Any]]:
     if not meta:
         return None
     messages = read_jsonl(_msgs_path(user_id, conv_id))
+    if meta.get('runtime_session_id'):
+        from app.runtime.chat import history
+        messages = history(user_id, meta['runtime_session_id'])
     out = dict(meta)
     out["messages"] = messages
     return out
@@ -233,6 +238,10 @@ def get_recent_messages(user_id: str, conv_id: str,
     """Efficient tail-read for short-term-memory injection.  Avoids
     loading the whole conversation when only the last few are needed."""
     _migrate_if_needed(user_id, conv_id)
+    meta = _load_meta(user_id, conv_id)
+    if meta and meta.get('runtime_session_id'):
+        from app.runtime.chat import history
+        return history(user_id, meta['runtime_session_id'])[-last_n:]
     return read_jsonl_tail(_msgs_path(user_id, conv_id), last_n)
 
 

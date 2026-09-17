@@ -31,8 +31,9 @@ _SECRET_FIELDS = {
     "doubao_secret_key",
     # AWS Bedrock (Bearer Token auth)
     "bedrock_api_key",
-    # OpenRouter (OpenAI-compat aggregator)
+    # OpenAI-compat aggregators
     "openrouter_api_key",
+    "siliconflow_api_key",
 }
 
 _URL_FIELDS = {
@@ -50,6 +51,7 @@ _URL_FIELDS = {
     # AWS Bedrock region
     "bedrock_region",
     "openrouter_base_url",
+    "siliconflow_base_url",
 }
 
 ALL_FIELDS = _SECRET_FIELDS | _URL_FIELDS
@@ -63,6 +65,7 @@ CREDENTIAL_SOURCE_PROVIDERS = (
     "minimax",
     "bedrock",
     "openrouter",
+    "siliconflow",
     "tavily",
     "doubao",
 )
@@ -76,6 +79,7 @@ _PROVIDER_KEY_FIELDS: Dict[str, tuple] = {
     "minimax": ("minimax_api_key",),
     "bedrock": ("bedrock_api_key",),
     "openrouter": ("openrouter_api_key",),
+    "siliconflow": ("siliconflow_api_key",),
     "tavily": ("tavily_api_key", "cloudsway_search_key"),
     "doubao": ("doubao_access_key",),
 }

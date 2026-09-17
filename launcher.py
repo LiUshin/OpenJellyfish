@@ -17,6 +17,8 @@ Usage:
   python launcher.py --port 9000     # specify backend port
 """
 
+from __future__ import annotations
+
 import argparse
 import atexit
 import datetime as _dt
@@ -418,7 +420,14 @@ def main():
                         help="Start backend only, no frontend")
     parser.add_argument("--skip-check", action="store_true",
                         help="Skip old instance detection")
+    parser.add_argument("--superadmin-key", action="store_true", help="Show the local host management key and exit")
+    parser.add_argument("--rotate-superadmin-key", action="store_true", help="Rotate the host key, revoke existing console access, and exit")
     args = parser.parse_args()
+    if args.superadmin_key or args.rotate_superadmin_key:
+        from app.core.host_auth import ensure_key
+        print(ensure_key(rotate=args.rotate_superadmin_key))
+        return
+
 
     backend_port = args.port
     frontend_port = args.frontend_port
@@ -474,6 +483,8 @@ def main():
     print("  🪼 OpenJellyfish 已启动！")
     print(f"     前端: http://localhost:{frontend_port}" if not args.backend_only else "     前端: 未启动")
     print(f"     后端: http://localhost:{backend_port}")
+    if not args.backend_only:
+        print(f"     超管: http://localhost:{frontend_port}/superadmin （key: python launcher.py --superadmin-key）")
     if lan_ip and not args.backend_only:
         print(f"     局域网: http://{lan_ip}:{frontend_port}")
     print(f"     模式: {'开发' if args.dev else '生产'}")

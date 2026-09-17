@@ -122,8 +122,8 @@ export async function listConversations(): Promise<Conversation[]> {
   return request('GET', '/conversations');
 }
 
-export async function createConversation(title = '新对话'): Promise<Conversation> {
-  return request('POST', '/conversations', { title });
+export async function createConversation(title = '新对话', runtime_choice?: import('./runtime').RuntimeChoice, context_paths: string[] = []): Promise<Conversation> {
+  return request('POST', '/conversations', { title, runtime_choice, context_paths });
 }
 
 export async function getConversation(convId: string): Promise<ConversationDetail> {
@@ -916,8 +916,9 @@ export async function listServiceKeys(serviceId: string): Promise<unknown[]> {
 export async function createServiceKey(
   serviceId: string,
   name: string,
+  billing: 'hosted' | 'byok' = 'hosted',
 ): Promise<{ key: string }> {
-  return request('POST', `/services/${serviceId}/keys`, { name });
+  return request('POST', `/services/${serviceId}/keys`, { name, billing });
 }
 
 export async function deleteServiceKey(
@@ -1072,15 +1073,20 @@ export async function getApiKeysStatus(): Promise<ApiKeysStatus> {
   return request('GET', '/settings/api-keys/status');
 }
 
-// ===== OpenRouter whitelist =====
+// ===== Aggregator model whitelists (OpenRouter / SiliconFlow) =====
 
-export interface OpenRouterEnabledModel {
+/** OpenAI-compat aggregators whose models come from a per-admin whitelist. */
+export type AggregatorProvider = 'openrouter' | 'siliconflow';
+
+export interface AggregatorEnabledModel {
   id: string;
   name: string;
   reasoning: boolean;
+  /** SiliconFlow only: cap on chain-of-thought tokens (128–32768). */
+  thinking_budget?: number;
 }
 
-export interface OpenRouterRemoteModel {
+export interface AggregatorRemoteModel {
   id: string;
   name?: string;
   description?: string;
@@ -1090,32 +1096,45 @@ export interface OpenRouterRemoteModel {
   [key: string]: unknown;
 }
 
-export async function getOpenRouterEnabledModels(): Promise<{ models: OpenRouterEnabledModel[] }> {
-  return request('GET', '/settings/openrouter/enabled-models');
+export async function getAggregatorEnabledModels(
+  provider: AggregatorProvider,
+): Promise<{ models: AggregatorEnabledModel[] }> {
+  return request('GET', `/settings/aggregators/${provider}/enabled-models`);
 }
 
-export async function setOpenRouterEnabledModels(
-  models: OpenRouterEnabledModel[],
-): Promise<{ success: boolean; models: OpenRouterEnabledModel[] }> {
-  return request('PUT', '/settings/openrouter/enabled-models', { models });
+export async function setAggregatorEnabledModels(
+  provider: AggregatorProvider,
+  models: AggregatorEnabledModel[],
+): Promise<{ success: boolean; models: AggregatorEnabledModel[] }> {
+  return request('PUT', `/settings/aggregators/${provider}/enabled-models`, { models });
 }
 
-/** Prefer browser → OpenRouter; fall back to backend proxy on CORS/network failure. */
-export async function fetchOpenRouterRemoteModels(): Promise<OpenRouterRemoteModel[]> {
-  const parse = (data: unknown): OpenRouterRemoteModel[] => {
-    const list = (data as { data?: OpenRouterRemoteModel[] })?.data;
+/**
+ * List the vendor's models.
+ *
+ * OpenRouter's catalogue is public, so the browser fetches it directly and only
+ * falls back to the backend proxy when CORS blocks it. SiliconFlow requires the
+ * API key to list models, so it always goes through the proxy.
+ */
+export async function fetchAggregatorRemoteModels(
+  provider: AggregatorProvider,
+): Promise<AggregatorRemoteModel[]> {
+  const parse = (data: unknown): AggregatorRemoteModel[] => {
+    const list = (data as { data?: AggregatorRemoteModel[] })?.data;
     return Array.isArray(list) ? list : [];
   };
-  try {
-    const resp = await fetch('https://openrouter.ai/api/v1/models?output_modalities=text', {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-    if (resp.ok) return parse(await resp.json());
-  } catch {
-    /* CORS / network — proxy below */
+  if (provider === 'openrouter') {
+    try {
+      const resp = await fetch('https://openrouter.ai/api/v1/models?output_modalities=text', {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      });
+      if (resp.ok) return parse(await resp.json());
+    } catch {
+      /* CORS / network — proxy below */
+    }
   }
-  const proxied = await request<unknown>('GET', '/settings/openrouter/remote-models');
+  const proxied = await request<unknown>('GET', `/settings/aggregators/${provider}/remote-models`);
   return parse(proxied);
 }
 

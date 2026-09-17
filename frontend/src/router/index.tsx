@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from '../stores/authContext';
 import AppLayout from '../layouts/AppLayout';
 import Login from '../pages/Login';
@@ -16,6 +16,7 @@ import BackupPage from '../pages/Settings/BackupPage';
 import VoicePage from '../pages/Settings/VoicePage';
 import UsagePage from '../pages/Settings/UsagePage';
 import ErrorBoundary from '../components/ErrorBoundary';
+import RuntimePilot from '../pages/RuntimePilot';
 import { Spin } from 'antd';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -66,7 +67,6 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 
 export default function AppRouter() {
   return (
-    <BrowserRouter>
       <Routes>
         <Route
           path="/login"
@@ -115,9 +115,9 @@ export default function AppRouter() {
             <Route path="general" element={<GeneralPage />} />
             <Route path="backup" element={<BackupPage />} />
           </Route>
+          <Route path="/runtime-pilot" element={<ErrorBoundary scope="runtime-pilot"><RuntimePilot /></ErrorBoundary>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-    </BrowserRouter>
   );
 }
