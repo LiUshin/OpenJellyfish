@@ -45,9 +45,9 @@ jobs:
           if [ "$PLATFORM" = "windows" ]; then
             echo 'matrix={"include":[{"os":"windows-latest","target":"x86_64-pc-windows-msvc","label":"Windows-x64"}]}' >> $GITHUB_OUTPUT
           elif [ "$PLATFORM" = "macos" ]; then
-            echo 'matrix={"include":[{"os":"macos-14","target":"aarch64-apple-darwin","label":"macOS-arm64"},{"os":"macos-15","target":"x86_64-apple-darwin","label":"macOS-x64"}]}' >> $GITHUB_OUTPUT
+            echo 'matrix={"include":[{"os":"macos-14","target":"aarch64-apple-darwin","label":"macOS-arm64"},{"os":"macos-15-intel","target":"x86_64-apple-darwin","label":"macOS-x64"}]}' >> $GITHUB_OUTPUT
           else
-            echo 'matrix={"include":[{"os":"macos-14","target":"aarch64-apple-darwin","label":"macOS-arm64"},{"os":"macos-15","target":"x86_64-apple-darwin","label":"macOS-x64"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","label":"Windows-x64"}]}' >> $GITHUB_OUTPUT
+            echo 'matrix={"include":[{"os":"macos-14","target":"aarch64-apple-darwin","label":"macOS-arm64"},{"os":"macos-15-intel","target":"x86_64-apple-darwin","label":"macOS-x64"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","label":"Windows-x64"}]}' >> $GITHUB_OUTPUT
           fi
 
       - id: tag
@@ -93,6 +93,22 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      # Embedded Python installs native extensions; use a native runner for each target.
+      - name: Verify native build architecture
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          python - <<'PYTHON'
+          import os, platform
+          target = os.environ["BUILD_TARGET"]
+          actual = {"amd64": "x86_64", "arm64": "aarch64"}.get(platform.machine().lower(), platform.machine().lower())
+          expected = target.split("-", 1)[0]
+          if actual != expected:
+              raise SystemExit(f"Native runner required: target={expected}, runner={actual}")
+          print(f"Native build architecture verified: {actual}")
+          PYTHON
 
       - name: Cache Cargo registry
         uses: actions/cache@v4

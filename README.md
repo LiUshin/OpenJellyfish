@@ -71,9 +71,9 @@ git merge   # fuse two agents into one
 
 Download the latest installer from [GitHub Releases](https://github.com/LiUshin/OpenJellyfish/releases/latest):
 
-- Windows: `JellyfishBot_x.y.z_x64-setup.exe`
-- macOS Apple Silicon: `JellyfishBot_x.y.z_aarch64.dmg`
-- macOS Intel: `JellyfishBot_x.y.z_x64.dmg`
+- Windows: `OpenJellyfish_x.y.z_x64-setup.exe`
+- macOS Apple Silicon: `OpenJellyfish_x.y.z_aarch64.dmg`
+- macOS Intel: `OpenJellyfish_x.y.z_x64.dmg`
 
 Install, open, enter your LLM API Key on the **Console** page, press **START**.
 The browser opens at `http://localhost:3000`. Register with a code from the
@@ -217,9 +217,9 @@ git merge   # 融合两个 Agent
 
 从 [GitHub Release](https://github.com/LiUshin/OpenJellyfish/releases/latest) 下载安装包：
 
-- Windows：`JellyfishBot_x.y.z_x64-setup.exe`
-- macOS Apple Silicon：`JellyfishBot_x.y.z_aarch64.dmg`
-- macOS Intel：`JellyfishBot_x.y.z_x64.dmg`
+- Windows：`OpenJellyfish_x.y.z_x64-setup.exe`
+- macOS Apple Silicon：`OpenJellyfish_x.y.z_aarch64.dmg`
+- macOS Intel：`OpenJellyfish_x.y.z_x64.dmg`
 
 安装并打开，在 **控制台** 页填入 LLM API Key，点击 **START**，浏览器自动打开
 `http://localhost:3000`，用 **注册码管理** 里的注册码创建账号即可。

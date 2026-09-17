@@ -16,4 +16,8 @@
 
 发布准备验证：111 项 Runtime 回归、4 项主机 key CLI 测试、本地存储 22 项、S3 模拟客户端 48 项、BYOK 32 项断言、硅基流动 58 项，以及应用前端与官网生产构建通过。前端仍有较大 bundle 提示。
 
-本轮未做新的供应商真实账号、EC2、完整生产 Docker 镜像或桌面安装包验收。历史 CLI / 原生能力验收范围见 [Cursor 状态](runtime-cursor-status.md)、[流式聊天](runtime-streaming-chat.md) 与 [超管部署说明](superadmin-console.md)。本次发布源码到 main，不创建桌面 Release 标签或安装包。
+本轮未做新的供应商真实账号、EC2、完整生产 Docker 镜像或桌面安装包验收。历史 CLI / 原生能力验收范围见 [Cursor 状态](runtime-cursor-status.md)、[流式聊天](runtime-streaming-chat.md) 与 [超管部署说明](superadmin-console.md)。初次发布只更新了 main 源码。后续安装包由公开仓 `v1.3.0` 标签触发 Windows x64、macOS arm64 和 macOS x64 构建，完成状态与下载以 GitHub Release 附件为准。
+
+## 安装包构建
+
+Intel Mac 使用原生 `macos-15-intel` runner，避免在 ARM runner 上安装 x64 Python 原生依赖；构建开始前检查 runner 与目标架构一致。安装包命名为 `OpenJellyfish_1.3.0_x64-setup.exe`、`OpenJellyfish_1.3.0_aarch64.dmg` 和 `OpenJellyfish_1.3.0_x64.dmg`。构建成功不等于在所有目标机器上完成安装启动验收。
