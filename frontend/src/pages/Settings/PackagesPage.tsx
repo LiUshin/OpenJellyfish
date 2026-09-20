@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import SettingsLoadError from '../../components/SettingsLoadError';
+import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { Input, Button, Table, Space, Typography, Tag, message, Popconfirm, Spin } from 'antd';
 import { Package, Plus, Trash, ArrowsClockwise, MagnifyingGlass } from '@phosphor-icons/react';
 import { useTranslation, Trans } from 'react-i18next';
@@ -13,6 +14,9 @@ export default function PackagesPage() {
   const isMobile = useIsMobile();
   const [packages, setPackages] = useState<PackageInfo[]>([]);
   const [venvReady, setVenvReady] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const requestSequence = useRef(0);
+  useEffect(() => () => { ++requestSequence.current; }, []);
   const [loading, setLoading] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [uninstalling, setUninstalling] = useState<string | null>(null);
@@ -28,15 +32,18 @@ export default function PackagesPage() {
   }, [packages, searchTerm]);
 
   const load = useCallback(async () => {
+    const sequence = ++requestSequence.current;
+    setLoadError(false);
     setLoading(true);
     try {
       const res = await api.listPackages();
+      if (sequence !== requestSequence.current) return;
       setPackages(res.packages);
       setVenvReady(res.venv_ready);
     } catch {
-      message.error(t('packages.loadFail'));
+      if (sequence === requestSequence.current) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (sequence === requestSequence.current) setLoading(false);
     }
   }, [t]);
 
@@ -57,7 +64,7 @@ export default function PackagesPage() {
 
   const handleInstall = async () => {
     const pkg = newPkg.trim();
-    if (!pkg) return;
+    if (!pkg || installing) return;
     setInstalling(true);
     setOutput(null);
     try {
@@ -111,6 +118,7 @@ export default function PackagesPage() {
           <Button
             size="small" type="text" danger
             icon={<Trash size={14} />}
+            aria-label={t('packages.uninstallConfirm', { pkg: record.name })}
             loading={uninstalling === record.name}
           />
         </Popconfirm>
@@ -119,27 +127,24 @@ export default function PackagesPage() {
   ];
 
   return (
-    <div style={{
-      padding: isMobile ? '16px 12px 24px' : '24px 32px',
-      paddingLeft: isMobile ? 52 : undefined,
-      maxWidth: 960, margin: '0 auto', width: '100%',
-    }}>
+    <div className="settings-page packages-settings">
       <Space align="center" size={10} style={{ marginBottom: 6, flexWrap: 'wrap' }}>
         <Package size={22} weight="duotone" color="var(--jf-accent)" />
         <Text strong style={{ fontSize: 16, color: 'var(--jf-text)' }}>{t('packages.title')}</Text>
-        {venvReady ? (
+        {!loading && !loadError && venvReady ? (
           <Tag color="green" style={{ fontSize: 10 }}>{t('packages.ready')}</Tag>
-        ) : (
+        ) : !loading && !loadError ? (
           <Tag color="orange" style={{ fontSize: 10 }}>{t('packages.notReady')}</Tag>
-        )}
+        ) : null}
       </Space>
       <Paragraph style={{ color: 'var(--jf-text-muted)', fontSize: 13, marginBottom: 16 }}>
-        {t('packages.intro')}
+        {t('settingsDesign.packageHint')}
       </Paragraph>
 
-      {!venvReady && (
+      {loadError && <SettingsLoadError onRetry={() => void load()} />}
+      {!loading && !loadError && !venvReady && (
         <div style={{
-          background: 'var(--jf-bg-raised)', borderRadius: 'var(--jf-radius-lg)', padding: 24, marginBottom: 16,
+          background: 'var(--jf-bg-panel)', borderRadius: 'var(--jf-radius-lg)', padding: 24, marginBottom: 16,
           textAlign: 'center', border: '1px solid var(--jf-border)',
         }}>
           <Package size={40} weight="duotone" color="var(--jf-accent)" style={{ marginBottom: 12 }} />
@@ -161,7 +166,7 @@ export default function PackagesPage() {
       {venvReady && (
         <>
           <div style={{
-            background: 'var(--jf-bg-raised)', borderRadius: 'var(--jf-radius-lg)', padding: '16px 20px', marginBottom: 16,
+            background: 'var(--jf-bg-panel)', borderRadius: 'var(--jf-radius-lg)', padding: '16px 20px', marginBottom: 16,
             border: '1px solid var(--jf-border)',
           }}>
             <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12, marginBottom: 8, display: 'block' }}>
@@ -171,6 +176,7 @@ export default function PackagesPage() {
             </Text>
             <Space.Compact style={{ width: '100%' }}>
               <Input
+                aria-label={t('packages.installPlaceholder')}
                 value={newPkg}
                 onChange={(e) => setNewPkg(e.target.value)}
                 placeholder={t('packages.installPlaceholder')}
@@ -200,6 +206,8 @@ export default function PackagesPage() {
             </pre>
           )}
 
+          <div className="settings-list-panel">
+          <h2 className="settings-section-heading">{t('settingsDesign.installed')}</h2>
           <div style={{
             display: 'flex',
             justifyContent: 'space-between',
@@ -209,6 +217,7 @@ export default function PackagesPage() {
           }}>
             <Input
               prefix={<MagnifyingGlass size={14} color="var(--jf-text-dim)" />}
+              aria-label={t('packages.searchPlaceholder')}
               placeholder={t('packages.searchPlaceholder')}
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
@@ -244,9 +253,9 @@ export default function PackagesPage() {
               size="small"
               pagination={{ pageSize: 20, showSizeChanger: false, simple: isMobile }}
               scroll={isMobile ? { x: 'max-content' } : undefined}
-              style={{ background: 'var(--jf-bg-raised)', borderRadius: 'var(--jf-radius-md)' }}
+              style={{ background: 'var(--jf-bg-panel)', borderRadius: 'var(--jf-radius-md)' }}
             />
-          </Spin>
+          </Spin></div>
         </>
       )}
     </div>

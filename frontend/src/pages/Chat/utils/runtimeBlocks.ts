@@ -23,12 +23,20 @@ export function appendRuntimeEvent(previous: StreamBlock[], event: RuntimeEvent)
     if (block && type === 'business_tool' && payload.status === 'running' && block.done) { block = undefined; index = -1; }
     block = block ? { ...block } : { type: 'tool', event_key: key, name: payload.name || (payload.kind === 'other' ? payload.command : undefined) || payload.kind || '工具', args: '', result: '', done: false, resultCollapsed: true };
     block.name = ({ webSearch: '网页搜索', search: '网页搜索', imageGeneration: '生成图片', fetch: '读取网页' } as Record<string, string>)[block.name] || block.name;
-    if (payload.command) block.args = payload.command.slice(0, 8000);
+    if (payload.name) block.name = payload.name;
+    const display = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    if ('input' in payload) { block.args = display(payload.input); block.has_input = true; }
+    else if (payload.command && !block.has_input) block.args = payload.command;
+    if ('result' in payload) block.result = display(payload.result);
+    if (payload.result_delta) block.result += payload.result_delta;
+    if (payload.changes) block.changes = payload.changes;
+    if ('exit_code' in payload) block.exit_code = payload.exit_code;
+    if (payload.status) block.status = payload.status;
     const states: Record<string, string> = { completed: '已完成', failed: '失败', cancelled: '已取消', declined: '已拒绝' };
-    if (payload.status && states[payload.status]) { block.done = true; block.result = states[payload.status]; }
+    if (payload.status && states[payload.status]) { block.done = true; block.result ||= states[payload.status]; }
     if (index < 0) blocks.push(block); else blocks[index] = block;
   } else if (['completed', 'failed', 'cancelled'].includes(type)) {
-    return blocks.map(block => block.type === 'tool' && !block.done ? { ...block, done: true, result: '本轮已结束；未收到工具完成事件' } : block);
+    return blocks.map(block => block.type === 'tool' && !block.done ? { ...block, done: true, status: 'unknown', result: block.result || '本轮已结束；未收到工具完成事件' } : block);
   }
   return blocks;
 }

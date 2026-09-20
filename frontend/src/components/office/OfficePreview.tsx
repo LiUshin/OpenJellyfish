@@ -1,8 +1,10 @@
-import { useCallback } from 'react';
+import { useCallback, lazy, Suspense } from 'react';
 import type { FileKind } from '../../utils/fileKind';
-import DocxPreview from './DocxPreview';
-import XlsxPreview from './XlsxPreview';
-import PptxPreview from './PptxPreview';
+import RoutePending from '../RoutePending';
+import ErrorBoundary from '../ErrorBoundary';
+const DocxPreview = lazy(() => import('./DocxPreview'));
+const XlsxPreview = lazy(() => import('./XlsxPreview'));
+const PptxPreview = lazy(() => import('./PptxPreview'));
 import type { OfficeBufferSource } from './types';
 
 export type { OfficeBufferSource } from './types';
@@ -18,7 +20,6 @@ export default function OfficePreview({ kind, getArrayBuffer, fileName }: Props)
   // 稳定引用：父组件若每次 inline 新函数会导致重复解析；这里仍信任父级 memo/callback
   const source = useCallback(() => getArrayBuffer(), [getArrayBuffer]);
 
-  if (kind === 'docx') return <DocxPreview getArrayBuffer={source} fileName={fileName} />;
-  if (kind === 'xlsx') return <XlsxPreview getArrayBuffer={source} fileName={fileName} />;
-  return <PptxPreview getArrayBuffer={source} fileName={fileName} />;
+  const Preview = kind === 'docx' ? DocxPreview : kind === 'xlsx' ? XlsxPreview : PptxPreview;
+  return <ErrorBoundary key={kind} scope="office-preview"><Suspense fallback={<RoutePending />}><Preview getArrayBuffer={source} fileName={fileName} /></Suspense></ErrorBoundary>;
 }

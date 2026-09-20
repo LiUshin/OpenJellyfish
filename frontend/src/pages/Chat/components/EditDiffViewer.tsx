@@ -22,7 +22,7 @@ import { useTranslation } from 'react-i18next';
 import i18n from '../../../i18n';
 import * as api from '../../../services/api';
 import { computeUnifiedDiff, lineDiff, type DiffLine, type DiffHunk } from '../../../utils/unifiedDiff';
-import { escapeHtml } from '../markdown';
+import { escapeHtml, fileRevealEnabled } from '../markdown';
 import '../markdown';
 import styles from '../chat.module.css';
 
@@ -107,7 +107,7 @@ function HunkHeader({ hunk }: { hunk: DiffHunk }) {
   );
 }
 
-function DiffLineRow({ line, lang }: { line: DiffLine; lang?: string }) {
+export function DiffLineRow({ line, lang }: { line: DiffLine; lang?: string }) {
   const cls =
     line.type === 'add' ? styles.diffRowAdd
       : line.type === 'del' ? styles.diffRowDel
@@ -216,7 +216,7 @@ export default function EditDiffViewer({
       <div className={styles.streamFileHeader}>
         <div className={styles.streamFileHeaderLeft}>
           <FileCode size={16} weight="duotone" />
-          <span className={styles.streamFilePath} title={filePath}>{filePath}</span>
+          {fileRevealEnabled() ? <button type="button" className={styles.filePathButton} data-jf-file={filePath} title="在右侧预览文件">{filePath}</button> : <span className={styles.streamFilePath}>{filePath}</span>}
           {lang && <span className={styles.streamFileLang}>{lang}</span>}
         </div>
         <div className={styles.streamFileHeaderRight}>

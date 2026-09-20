@@ -19,6 +19,7 @@ saves from O(N) into O(1).
 """
 
 import os
+import re
 import json
 import uuid
 import hashlib
@@ -44,6 +45,9 @@ def _services_dir(admin_id: str) -> str:
 
 
 def _service_dir(admin_id: str, service_id: str) -> str:
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', service_id or ''):
+        from fastapi import HTTPException
+        raise HTTPException(400, 'Service ID 无效')
     return os.path.join(_services_dir(admin_id), service_id)
 
 
@@ -56,7 +60,15 @@ def _keys_path(admin_id: str, service_id: str) -> str:
 
 
 def _conv_dir(admin_id: str, service_id: str, conv_id: str) -> str:
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', conv_id or ''):
+        from fastapi import HTTPException
+        raise HTTPException(400, 'Service 会话 ID 无效')
     return os.path.join(_service_dir(admin_id, service_id), "conversations", conv_id)
+
+
+def consumer_conversation_exists(admin_id: str, service_id: str, conv_id: str) -> bool:
+    root = _conv_dir(admin_id, service_id, conv_id)
+    return os.path.isfile(os.path.join(root, 'meta.json')) or os.path.isfile(os.path.join(root, 'messages.json'))
 
 
 # ── Service CRUD ─────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ import {
   type DragEvent, type MouseEvent as ReactMouseEvent,
   type ClipboardEvent, type KeyboardEvent,
 } from 'react';
-import { Button, Input, Tooltip, Spin, App, Dropdown, Progress, Drawer } from 'antd';
+import { Button, Input, Tooltip, Spin, App, Dropdown, Progress, Drawer, Alert } from 'antd';
 import type { MenuProps } from 'antd';
 import { useIsMobile } from '../hooks/useMediaQuery';
 import {
@@ -259,18 +259,22 @@ export default function FilePanel() {
     document.addEventListener('mouseup', onUp);
   }, [panelWidth]);
 
+  const fileLoadSequence = useRef(0);
+  const [fileLoadError, setFileLoadError] = useState(false);
+  useEffect(() => () => { ++fileLoadSequence.current; }, []);
   const loadFiles = useCallback(async (path: string) => {
+    const sequence = ++fileLoadSequence.current;
     setLoadingFiles(true);
+    setFileLoadError(false);
     try {
       const items = await api.listFiles(path);
-      setFiles(items);
+      if (sequence === fileLoadSequence.current) setFiles(items);
     } catch {
-      message.error('加载文件列表失败');
-      setFiles([]);
+      if (sequence === fileLoadSequence.current) { setFileLoadError(true); setFiles([]); }
     } finally {
-      setLoadingFiles(false);
+      if (sequence === fileLoadSequence.current) setLoadingFiles(false);
     }
-  }, [message]);
+  }, []);
 
   useEffect(() => {
     if (fileBrowserOpen) loadFiles(currentPath);
@@ -959,7 +963,7 @@ export default function FilePanel() {
       }}>
         {currentPath !== '/' && (
           <Tooltip title="返回上级（也可拖文件到这里 → 移到上一级）">
-            <Button
+            <Button aria-label="返回上级（也可拖文件到这里 → 移到上一级）"
               type="text" size="small" icon={<ArrowLeftOutlined />}
               style={{ color: C.textSec }}
               onClick={() => navigate(parentDir(currentPath))}
@@ -983,6 +987,7 @@ export default function FilePanel() {
                     maxWidth: 80, background: 'none', border: 'none', padding: '2px 3px',
                     borderRadius: 'var(--jf-radius-sm)',
                   }}
+                  aria-label={i === 0 ? '工作区根目录' : seg}
                   onClick={() => !isLast && navigate(segPath)}
                   onDragOver={onCrumbDragOver}
                   onDrop={(e) => onCrumbDrop(e, segPath)}
@@ -993,7 +998,7 @@ export default function FilePanel() {
             );
           })}
         </div>
-        <Tooltip title="刷新"><Button type="text" size="small" icon={<ReloadOutlined />} style={{ color: C.textSec }} onClick={() => loadFiles(currentPath)} /></Tooltip>
+        <Tooltip title="刷新"><Button aria-label="刷新" type="text" size="small" icon={<ReloadOutlined />} style={{ color: C.textSec }} onClick={() => loadFiles(currentPath)} /></Tooltip>
         <Dropdown
           trigger={['click']}
           menu={{
@@ -1003,13 +1008,13 @@ export default function FilePanel() {
           }}
         >
           <Tooltip title={`排序：${SORT_OPTIONS.find(o => o.key === sortKey)?.label ?? ''}`}>
-            <Button type="text" size="small" icon={<SortAscendingOutlined />} style={{ color: C.textSec }} />
+            <Button aria-label="排序文件" type="text" size="small" icon={<SortAscendingOutlined />} style={{ color: C.textSec }} />
           </Tooltip>
         </Dropdown>
-        <Tooltip title="新建文件"><Button type="text" size="small" icon={<PlusOutlined />} style={{ color: C.textSec }} onClick={handleCreateFile} /></Tooltip>
-        <Tooltip title="新建文件夹"><Button type="text" size="small" icon={<FolderAddOutlined />} style={{ color: C.textSec }} onClick={handleCreateFolder} /></Tooltip>
-        <Tooltip title="上传文件"><Button type="text" size="small" icon={<UploadOutlined />} style={{ color: C.textSec }} onClick={() => fileInputRef.current?.click()} /></Tooltip>
-        <Tooltip title="上传文件夹"><Button type="text" size="small" icon={<FolderOpenOutlined />} style={{ color: C.textSec }} onClick={() => folderInputRef.current?.click()} /></Tooltip>
+        <Tooltip title="新建文件"><Button aria-label="新建文件" type="text" size="small" icon={<PlusOutlined />} style={{ color: C.textSec }} onClick={handleCreateFile} /></Tooltip>
+        <Tooltip title="新建文件夹"><Button aria-label="新建文件夹" type="text" size="small" icon={<FolderAddOutlined />} style={{ color: C.textSec }} onClick={handleCreateFolder} /></Tooltip>
+        <Tooltip title="上传文件"><Button aria-label="上传文件" type="text" size="small" icon={<UploadOutlined />} style={{ color: C.textSec }} onClick={() => fileInputRef.current?.click()} /></Tooltip>
+        <Tooltip title="上传文件夹"><Button aria-label="上传文件夹" type="text" size="small" icon={<FolderOpenOutlined />} style={{ color: C.textSec }} onClick={() => folderInputRef.current?.click()} /></Tooltip>
         <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }}
           onChange={(e) => { if (e.target.files) handleUpload(e.target.files); e.target.value = ''; }}
         />
@@ -1018,7 +1023,7 @@ export default function FilePanel() {
           {...({ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
         />
         <Tooltip title="关闭面板">
-          <Button type="text" size="small" icon={<CloseOutlined />}
+          <Button aria-label="关闭面板" type="text" size="small" icon={<CloseOutlined />}
             style={{ color: C.textSec }}
             onClick={() => setFileBrowserOpen(false)}
           />
@@ -1040,25 +1045,25 @@ export default function FilePanel() {
           <span>已选 {selected.size} 项</span>
           <div style={{ flex: 1 }} />
           <Tooltip title="复制 (Ctrl+C)">
-            <Button type="text" size="small" icon={<CopyOutlined />} onClick={copySelection} style={{ color: C.textSec }} />
+            <Button aria-label="复制 (Ctrl+C)" type="text" size="small" icon={<CopyOutlined />} onClick={copySelection} style={{ color: C.textSec }} />
           </Tooltip>
           <Tooltip title="剪切 (Ctrl+X)">
-            <Button type="text" size="small" icon={<ScissorOutlined />} onClick={cutSelection} style={{ color: C.textSec }} />
+            <Button aria-label="剪切 (Ctrl+X)" type="text" size="small" icon={<ScissorOutlined />} onClick={cutSelection} style={{ color: C.textSec }} />
           </Tooltip>
           <Tooltip title="发送到…">
-            <Button type="text" size="small" icon={<ExportOutlined />}
+            <Button aria-label="发送到…" type="text" size="small" icon={<ExportOutlined />}
               onClick={() => setFolderPickerOpen({ paths: selectedAbsPaths, mode: 'move' })}
               style={{ color: C.textSec }}
             />
           </Tooltip>
           <Tooltip title="打包 zip 下载">
-            <Button type="text" size="small" icon={<FileZipOutlined />}
+            <Button aria-label="打包 zip 下载" type="text" size="small" icon={<FileZipOutlined />}
               onClick={() => handleZipDownload(selectedAbsPaths)}
               style={{ color: C.textSec }}
             />
           </Tooltip>
           <Tooltip title="删除 (Del)">
-            <Button type="text" size="small" icon={<DeleteOutlined />}
+            <Button aria-label="删除 (Del)" type="text" size="small" icon={<DeleteOutlined />}
               onClick={() => handleDeletePaths(selectedAbsPaths)}
               style={{ color: C.danger }}
             />
@@ -1146,7 +1151,8 @@ export default function FilePanel() {
           if (e.target === e.currentTarget) clearSelection();
         }}
       >
-        {loadingFiles ? (
+        {fileLoadError ? <Alert type="error" showIcon message="加载文件列表失败" style={{ margin: 12 }}
+          action={<Button size="small" onClick={() => void loadFiles(currentPath)}>重试</Button>} /> : loadingFiles ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, color: C.textDim, gap: 8, fontSize: 13, padding: '40px 0' }}>
             <Spin indicator={<LoadingOutlined />} />
           </div>
@@ -1231,7 +1237,7 @@ export default function FilePanel() {
                 {isHovered && !isRenaming && selected.size <= 1 && (
                   <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
                     <Tooltip title="重命名">
-                      <Button type="text" size="small" icon={<EditOutlined style={{ fontSize: 11 }} />}
+                      <Button aria-label="重命名" type="text" size="small" icon={<EditOutlined style={{ fontSize: 11 }} />}
                         style={{ color: C.textDim, width: 22, height: 22, minWidth: 22 }}
                         onClick={(e) => { e.stopPropagation(); setRenaming(item.name); setRenameValue(item.name); }}
                       />
@@ -1247,7 +1253,7 @@ export default function FilePanel() {
                       />
                     </Tooltip>
                     <Tooltip title="删除">
-                      <Button type="text" size="small" icon={<DeleteOutlined style={{ fontSize: 11 }} />}
+                      <Button aria-label="删除" type="text" size="small" icon={<DeleteOutlined style={{ fontSize: 11 }} />}
                         style={{ color: C.danger, width: 22, height: 22, minWidth: 22 }}
                         onClick={(e) => { e.stopPropagation(); handleDeletePaths([itemAbsPath]); }}
                       />

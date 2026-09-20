@@ -1,0 +1,328 @@
+.work {
+  margin: 0 0 12px;
+  min-width: 0;
+  color: var(--jf-text-muted);
+  border: 1px solid var(--jf-border);
+  border-radius: var(--jf-radius-md, 10px);
+  background: var(--jf-bg-panel);
+  overflow: hidden;
+}
+
+.summary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 13px;
+  color: inherit;
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.summary:hover {
+  background: rgba(var(--jf-primary-rgb), .055);
+}
+
+.summary > svg:first-child {
+  flex-shrink: 0;
+  color: var(--jf-primary);
+}
+
+.summaryLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.count, .elapsed {
+  flex-shrink: 0;
+  color: var(--jf-text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.caret, .caretOpen {
+  flex-shrink: 0;
+  transition: transform 140ms ease;
+}
+
+.caret {
+  transform: rotate(-90deg);
+}
+
+.viewport {
+  max-height: min(26rem, 58dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--jf-border) transparent;
+  overflow-anchor: none;
+  border-top: 1px solid var(--jf-border);
+}
+
+.timeline {
+  padding: 8px 12px 12px 23px;
+  position: relative;
+}
+
+.timeline::before {
+  content: '';
+  position: absolute;
+  top: 16px;
+  bottom: 18px;
+  left: 12px;
+  width: 1px;
+  background: var(--jf-border);
+}
+
+.entry {
+  position: relative;
+  min-width: 0;
+  margin: 6px 0;
+}
+
+.entry::before {
+  content: '';
+  position: absolute;
+  left: -13px;
+  top: 10px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--jf-text-dim);
+}
+
+.note {
+  padding: 7px 0;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--jf-text-dim);
+}
+
+.progressText.progressText {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 3px 0;
+  line-height: 1.7;
+  font-size: 13px;
+  color: var(--jf-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.progressText :is(p, ul, ol, pre) {
+  margin: 5px 0;
+}
+
+.progressText pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.groupSummary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--jf-text-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  padding: 7px 0;
+}
+
+.groupSummary span:first-of-type {
+  flex: 1;
+}
+
+.groupBody {
+  padding: 2px 0 2px 6px;
+}
+
+.tool {
+  margin: 3px 0;
+}
+
+.toolButton {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--jf-text-muted);
+  padding: 6px 4px;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.toolButton:hover {
+  background: rgba(var(--jf-primary-rgb), .06);
+  color: var(--jf-text);
+}
+
+.toolName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.toolState {
+  color: var(--jf-text-dim);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.toolButton svg {
+  flex-shrink: 0;
+}
+
+.tool[data-outcome='running'] .toolButton > svg:first-child {
+  color: var(--jf-primary);
+  animation: spin 1.2s linear infinite;
+}
+
+.tool[data-outcome='failed'] .toolButton {
+  color: var(--jf-error, #ef7070);
+}
+
+.toolDetails {
+  margin: 5px 0 8px 22px;
+  border-left: 2px solid var(--jf-border);
+  padding-left: 10px;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.toolDetails code {
+  color: var(--jf-text-dim);
+}
+
+.toolDetails pre {
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 7px 0;
+}
+
+.toolDetails h5 {
+  font: inherit;
+  color: var(--jf-text-dim);
+  margin: 12px 0 4px;
+}
+
+.latest {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 8px auto;
+  padding: 5px 10px;
+  border: 1px solid var(--jf-border);
+  border-radius: 12px;
+  background: var(--jf-bg-raised);
+  color: var(--jf-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.partial {
+  font-size: 11px;
+  color: var(--jf-text-dim);
+  margin: 8px 0;
+}
+
+.pixels {
+  display: grid;
+  grid-template-columns: repeat(5, 2px);
+  grid-template-rows: repeat(5, 2px);
+  gap: 1px;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  margin: 2px;
+}
+
+.pixels i {
+  background: var(--jf-primary);
+  border-radius: .5px;
+  animation: pixel 1.4s ease-in-out infinite;
+}
+
+:global([data-style='terminal']) .pixels {
+  filter: drop-shadow(0 0 4px rgba(var(--jf-primary-rgb), .65));
+}
+
+:global([data-style='terminal']) .work[data-work-phase='working'] {
+  box-shadow: inset 0 0 15px rgba(var(--jf-primary-rgb), .035), 0 0 7px rgba(var(--jf-primary-rgb), .09);
+}
+
+.summary:focus-visible, .toolButton:focus-visible, .groupSummary:focus-visible, .latest:focus-visible, .viewport:focus-visible {
+  outline: 2px solid var(--jf-primary);
+  outline-offset: -2px;
+}
+
+@keyframes pixel {
+  0%, 100% {
+    opacity: .18;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 600px) {
+  .summary {
+    gap: 6px;
+    padding: 10px;
+  }
+  .count {
+    display: none;
+  }
+  .timeline {
+    padding-right: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pixels i, .tool[data-outcome='running'] .toolButton > svg:first-child {
+    animation: none;
+  }
+  .pixels i:nth-child(3n) {
+    opacity: .3;
+  }
+  .caret, .caretOpen {
+    transition: none;
+  }
+}
+
+.progressText :is(img, video, audio) {
+  max-width: 100%;
+}
+
+.progressText table {
+  display: block;
+  overflow-x: auto;
+}

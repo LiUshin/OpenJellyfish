@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { Suspense, useState, useCallback, useRef, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Layout, Button, Avatar, Tooltip, Drawer } from 'antd';
 import {
@@ -14,6 +14,8 @@ import FilePreview from '../components/FilePreview';
 import ApiKeyWarning from '../components/ApiKeyWarning';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import * as api from '../services/api';
+import RoutePending from '../components/RoutePending';
+import workspace from './workspace.module.css';
 import { setLanguage, currentLang, type SupportedLang } from '../i18n';
 
 const { Sider, Content } = Layout;
@@ -36,6 +38,7 @@ export default function AppLayout() {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
+  const [sidebarSlot, setSidebarSlot] = useState<HTMLDivElement | null>(null);
   const isSettings = location.pathname.startsWith('/settings');
 
   // Reconcile UI language with the user's stored preference once after sign-in.
@@ -108,11 +111,18 @@ export default function AppLayout() {
   const dividerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
 
+  const dividerCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => { dividerCleanup.current?.(); }, []);
   const onDividerDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    dividerCleanup.current?.();
     const container = contentRef.current;
     if (!container) return;
 
+    let frame = 0;
+    let latestRatio: number | null = null;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
 
@@ -120,14 +130,19 @@ export default function AppLayout() {
       const rect = container.getBoundingClientRect();
       const x = ev.clientX - rect.left;
       const ratio = x / rect.width;
-      setSplitRatio(ratio);
+      latestRatio = ratio;
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; if (latestRatio !== null) setSplitRatio(latestRatio); });
     };
     const onUp = () => {
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
+      cancelAnimationFrame(frame);
+      if (latestRatio !== null) setSplitRatio(latestRatio);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      dividerCleanup.current = null;
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     };
+    dividerCleanup.current = onUp;
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }, [setSplitRatio]);
@@ -140,11 +155,12 @@ export default function AppLayout() {
       <div
         style={{
           flexShrink: 0,
-          padding: '7px 16px',
+          padding: isCollapsed ? '12px 0' : '7px 16px',
+          flexDirection: isCollapsed ? 'column' : 'row',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
-          height: 47,
+          height: isCollapsed ? 96 : 52,
           boxSizing: 'border-box',
         }}
       >
@@ -172,11 +188,12 @@ export default function AppLayout() {
         )}
         {/* Language switcher sits to the left of the Settings/Back button so
             it's always visible from the chat sidebar (per UX requirement). */}
-        <LanguageSwitcher variant="icon" placement="bottom" />
+        {!isCollapsed && <LanguageSwitcher variant="icon" placement="bottom" />}
         {isSettings ? (
           <Tooltip title={t('common.back')} placement="right">
             <Button
               type="text"
+              aria-label={t('common.back')}
               icon={<ArrowLeft size={20} />}
               style={{ color: 'var(--jf-text-muted)', flexShrink: 0 }}
               onClick={() => navigate('/')}
@@ -186,6 +203,7 @@ export default function AppLayout() {
           <Tooltip title={t('settings.title')} placement="right">
             <Button
               type="text"
+              aria-label={t('settings.title')}
               icon={<GearSix size={20} />}
               style={{ color: 'var(--jf-text-muted)', flexShrink: 0 }}
               onClick={() => navigate('/settings')}
@@ -194,7 +212,7 @@ export default function AppLayout() {
         )}
       </div>
 
-      <div id="sider-slot" style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }} />
+      <div id="sider-slot" ref={setSidebarSlot} style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', visibility: isCollapsed ? 'hidden' : undefined }} />
 
       {/* Bottom: Brand + dark/light toggle */}
       <div
@@ -202,39 +220,23 @@ export default function AppLayout() {
           display: 'flex',
           alignItems: 'center',
           gap: 6,
-          padding: '16px 20px 12px',
+          padding: isCollapsed ? '12px 8px' : '16px 16px 12px',
+          flexDirection: isCollapsed ? 'column' : 'row',
           flexShrink: 0,
         }}
       >
-        <img
-          src="/media_resources/jellyfishlogo.png"
-          alt=""
-          width={32}
-          height={32}
-          style={{ flexShrink: 0, objectFit: 'contain', display: 'block', cursor: isMobile ? 'default' : 'pointer' }}
-          onClick={() => { if (!isMobile) setCollapsed(!collapsed); }}
-        />
-        {!isCollapsed && (
-          <span
-            style={{
-              color: 'var(--jf-text)',
-              fontWeight: 600,
-              fontSize: 15,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              flex: 1,
-              cursor: isMobile ? 'default' : 'pointer',
-            }}
-            onClick={() => { if (!isMobile) setCollapsed(!collapsed); }}
-          >
-            OpenJellyfish
-          </span>
-        )}
+        <button type="button" className={workspace.brandButton}
+          aria-label={isMobile ? 'OpenJellyfish' : t(isCollapsed ? 'header.expandSidebar' : 'header.collapseSidebar')}
+          title={isMobile ? undefined : t(isCollapsed ? 'header.expandSidebar' : 'header.collapseSidebar')}
+          onClick={() => { if (!isMobile) setCollapsed(!collapsed); }}>
+          <img src="/media_resources/jellyfishlogo.png" alt="" width={28} height={28} />
+          {!isCollapsed && <span>OpenJellyfish</span>}
+        </button>
         <Tooltip title={isDark ? t('header.switchToLight') : t('header.switchToDark')} placement="top">
           <Button
             type="text"
             size="small"
+            aria-label={isDark ? t('header.switchToLight') : t('header.switchToDark')}
             icon={isDark ? <Sun size={16} /> : <Moon size={16} />}
             style={{
               color: 'var(--jf-text-muted)',
@@ -249,10 +251,11 @@ export default function AppLayout() {
           />
         </Tooltip>
       </div>
-      <div style={{ flexShrink: 0, padding: '0 16px 12px' }}>
+      <div style={{ flexShrink: 0, padding: isCollapsed ? '0 8px 12px' : '0 16px 12px' }}>
         <Tooltip title={t('common.logout')} placement="right">
           <Button
             type="text"
+            aria-label={t('common.logout')}
             icon={<SignOut size={18} />}
             style={{ color: 'var(--jf-text-muted)', width: '100%', justifyContent: isCollapsed ? 'center' : 'flex-start' }}
             onClick={logout}
@@ -265,7 +268,7 @@ export default function AppLayout() {
   );
 
   return (
-    <Layout style={{ height: '100vh', background: 'var(--jf-bg-deep)' }}>
+    <Layout style={{ height: '100dvh', background: 'var(--jf-bg-deep)' }}>
       <ApiKeyWarning />
 
       {isMobile ? (
@@ -304,7 +307,7 @@ export default function AppLayout() {
           style={{
             background: 'var(--jf-bg-panel)',
             borderRight: '1px solid var(--jf-border)',
-            transition: 'width 0.3s ease-in-out',
+            transition: 'width 0.18s ease-out',
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
@@ -372,26 +375,33 @@ export default function AppLayout() {
             flexDirection: 'column',
             overflow: 'hidden',
           }}>
-            <Outlet />
+            <Suspense fallback={<RoutePending />}><Outlet context={{ sidebarSlot, closeNavigation: () => setNavDrawerOpen(false) }} /></Suspense>
           </div>
 
           {/* Resizable divider — desktop only, hidden on mobile (preview becomes Drawer) */}
           {!isMobile && showChat && showPreview && (
             <div
               ref={dividerRef}
+              className={workspace.divider}
+              role="separator" aria-orientation="vertical" tabIndex={0}
+              aria-label={t('header.resizePanels')} title={t('header.resizePanelsHint')}
+              aria-valuemin={15} aria-valuemax={85} aria-valuenow={Math.round(splitRatio * 100)}
+              onDoubleClick={() => setSplitRatio(0.5)}
+              onKeyDown={event => {
+                const next = event.key === 'ArrowLeft' ? splitRatio - 0.025 : event.key === 'ArrowRight' ? splitRatio + 0.025
+                  : event.key === 'Home' ? 0.15 : event.key === 'End' ? 0.85 : event.key === 'Enter' ? 0.5 : null;
+                if (next !== null) { event.preventDefault(); setSplitRatio(next); }
+              }}
               onMouseDown={onDividerDown}
               style={{
                 width: 5,
                 flexShrink: 0,
                 cursor: 'col-resize',
-                background: 'var(--jf-border)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 transition: 'background 0.15s',
               }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'var(--jf-primary)'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'var(--jf-border)'; }}
             >
               <div style={{
                 width: 3,

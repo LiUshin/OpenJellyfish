@@ -24,14 +24,15 @@
 }
 
 .sidebarHeader {
-  padding: 12px 12px;
+  padding: 16px 12px 10px;
   flex-shrink: 0;
 }
 
 .newChatBtn {
   width: 100%;
   border-radius: var(--jf-radius-md) !important;
-  border: 1px dashed var(--jf-border-strong) !important;
+  height: 38px;
+  border: 1px solid rgba(var(--jf-primary-rgb), 0.3) !important;
   background: rgba(var(--jf-primary-rgb), 0.06) !important;
   color: var(--jf-text-muted) !important;
   font-weight: 500;
@@ -53,7 +54,7 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px;
+  padding: 0 8px 8px;
   scrollbar-width: thin;
   scrollbar-color: var(--jf-border-strong) transparent;
 }
@@ -69,14 +70,13 @@
 
 .convItem {
   position: relative;
-  padding: 10px 12px 10px 14px;
+  padding: 0 6px 0 0;
   margin-bottom: 4px;
   border-radius: var(--jf-radius-md);
-  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 2px;
   color: var(--jf-text);
   font-size: 13px;
   border: 1px solid transparent;
@@ -132,7 +132,8 @@
   transition: opacity var(--jf-duration) var(--jf-ease);
 }
 
-.convItem:hover .convDelete {
+.convItem:hover .convDelete,
+.convItem:focus-within .convDelete {
   opacity: 0.65;
 }
 
@@ -157,7 +158,7 @@
 
 .chatHeader {
   padding: 0 16px;
-  height: 47px;
+  height: 52px;
   box-sizing: border-box;
   border-bottom: 1px solid var(--jf-border);
   background: var(--jf-bg-panel);
@@ -194,9 +195,9 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  /* 左 padding 留 38px gutter：给悬浮 query 导航列（.queryNavRail）让位，
+  /* 左 padding 留 48px gutter：给悬浮 query 导航列（QueryNavigation）让位，
      消息正文不被横线/高亮遮挡。右侧保持 24px。 */
-  padding: 20px 24px 20px 38px;
+  padding: 28px max(24px, calc((100% - 928px) / 2)) 28px max(48px, calc((100% - 880px) / 2));
   scroll-behavior: auto;
   position: relative;
   background: var(--jf-bg-deep);
@@ -205,37 +206,6 @@
 /* 滚动到对应消息时的对齐余量（scrollToIndex align:start 用）。 */
 .messagesContainer [data-jf-msg-index] {
   scroll-margin-top: 12px;
-}
-
-/* 左侧 query 快速导航列：悬浮在 .chatArea 左侧垂直居中，脱离滚动容器，
-   不随消息滚动消失。bar 多到放不下时列内自身滚动（overflow-y:auto + 居中）。 */
-.queryNavRail {
-  position: absolute;
-  left: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 6;
-  width: 28px;
-  max-height: 70vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 0;
-  overflow-y: auto;
-  overflow-x: visible;
-  scrollbar-width: none;
-}
-
-.queryNavRail::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-}
-
-.queryNavRailItem {
-  display: flex;
-  justify-content: center;
-  flex-shrink: 0;
 }
 
 /* 间距用 padding-bottom 而非 margin-bottom：react-virtuoso v4 用 offsetHeight 测量
@@ -289,6 +259,7 @@
 }
 
 .messageAvatar[data-role='user'] {
+  color: var(--jf-text-on-primary);
   background: var(--jf-user-avatar-bg);
 }
 
@@ -299,7 +270,7 @@
 .messageBody {
   flex: 1;
   min-width: 0;
-  max-width: 85%;
+  max-width: 100%;
 }
 
 /* User bubble: outlined style, right-aligned, asymmetric radius */
@@ -365,7 +336,7 @@
   border-radius: var(--jf-radius-md) var(--jf-radius-bubble) var(--jf-radius-bubble) var(--jf-radius-md);
   padding: 14px 18px;
   font-size: 14px;
-  line-height: 1.65;
+  line-height: 1.8;
   word-break: break-word;
   color: var(--jf-text);
   box-shadow: var(--jf-shadow-float);
@@ -1168,18 +1139,18 @@
 /* ========== Input ========== */
 
 .inputArea {
-  padding: 16px 20px;
-  border-top: 1px solid var(--jf-border);
-  background: var(--jf-bg-panel);
+  padding: 12px max(20px, calc((100% - 940px) / 2)) 14px;
+  background: var(--jf-bg-deep);
   flex-shrink: 0;
-  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.2);
+  min-width: 0;
 }
 
 .inputToolbar {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 0 4px 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--jf-border);
   flex-wrap: wrap;
 }
 
@@ -1200,7 +1171,8 @@
   border-radius: var(--jf-radius-md);
   border: none;
   background: transparent;
-  color: var(--jf-text-dim);
+  color: var(--jf-text-muted);
+  flex-shrink: 0;
   cursor: pointer;
   transition:
     background var(--jf-duration) var(--jf-ease),
@@ -1226,21 +1198,29 @@
   flex-direction: row;
   gap: 10px;
   align-items: center;
-  background: var(--jf-bg-raised);
-  border: 1px solid var(--jf-border);
+  background: transparent;
+  border: 0;
   border-radius: var(--jf-radius-lg);
-  padding: 6px 8px 6px 16px;
-  box-shadow: var(--jf-shadow-float);
+  min-height: 76px;
+  position: relative;
+  padding: 12px;
+  box-shadow: none;
   transition:
     border-color var(--jf-duration) var(--jf-ease),
     box-shadow var(--jf-duration) var(--jf-ease);
 }
 
-.inputWrapper:focus-within {
-  border-color: rgba(var(--jf-primary-rgb), 0.55);
-  box-shadow:
-    var(--jf-shadow-float),
-    0 0 0 1px rgba(var(--jf-primary-rgb), 0.15);
+.composerCard {
+  border: 1px solid var(--jf-border-strong);
+  border-radius: var(--jf-radius-lg);
+  background: var(--jf-bg-panel);
+  box-shadow: var(--jf-shadow-float);
+  transition: border-color var(--jf-duration) var(--jf-ease), box-shadow var(--jf-duration) var(--jf-ease);
+}
+
+.composerCard:focus-within {
+  border-color: rgba(var(--jf-primary-rgb), 0.65);
+  box-shadow: 0 0 0 2px rgba(var(--jf-primary-rgb), 0.08), 0 0 18px rgba(var(--jf-primary-rgb), 0.08);
 }
 
 .imageAttachmentRoot {
@@ -1303,7 +1283,8 @@
   transition: opacity var(--jf-duration) var(--jf-ease);
 }
 
-.imageThumbnailWrap:hover .imageThumbnailRemove {
+.imageThumbnailWrap:hover .imageThumbnailRemove,
+.imageThumbnailWrap:focus-within .imageThumbnailRemove {
   opacity: 1;
 }
 
@@ -2127,6 +2108,7 @@
 
 .streamFileHeader {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -2142,8 +2124,10 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 180px;
 }
+
+.streamFileHeaderLeft > svg { flex-shrink: 0; }
 
 .streamFilePath {
   overflow: hidden;
@@ -2221,6 +2205,7 @@
 /* ==================== EditDiffViewer (git-style 带上下文 diff) ==================== */
 
 .streamFileHeaderRight {
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3024,14 +3009,8 @@
   }
 
   .messagesContainer {
-    /* 移动端左 gutter 收到 30px（悬浮导航列收窄到 24px）。 */
-    padding: 14px 14px 24px 30px;
-  }
-
-  .queryNavRail {
-    left: 2px;
-    width: 24px;
-    max-height: 60vh;
+    /* 移动端为左侧问答导航保留 44px。 */
+    padding: 14px 14px 24px 44px;
   }
 
   .messageBubble,
@@ -3047,7 +3026,7 @@
   }
 
   .messageBody {
-    max-width: 94%;
+    max-width: 100%;
   }
 
   .inputArea {
@@ -3058,7 +3037,7 @@
 
   .inputToolbar {
     gap: 2px;
-    padding: 0 2px 6px;
+    padding: 6px;
   }
 
   .inputToolbarDivider {
@@ -3121,3 +3100,97 @@
   }
 }
 
+
+
+.filePathButton {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--jf-primary);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.filePathButton:hover { text-decoration: underline; }
+.filePathButton:focus-visible { outline: 2px solid var(--jf-primary); outline-offset: 3px; }
+
+/* Workspace polish — preserve the theme palette and terminal glow. */
+.sidebarSearch { padding: 0 12px 12px; }
+.sidebarSearch :global(.ant-input-affix-wrapper) { font-size: 12px; background: var(--jf-bg-deep); }
+.sidebarSearch :global(.ant-input-prefix) { color: var(--jf-text-muted); margin-right: 7px; }
+.convListLabel { display: flex; justify-content: space-between; padding: 4px 16px 10px; font-size: 11px; color: var(--jf-text-muted); }
+.convListLabel > span:last-child { font-variant-numeric: tabular-nums; color: var(--jf-text-dim); }
+.convSelect { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; min-height: 42px; padding: 10px 6px 10px 14px; text-align: left; color: inherit; background: none; border: 0; border-radius: inherit; font: inherit; cursor: pointer; }
+.convEmpty { padding: 24px 12px; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; font-size: 12px; color: var(--jf-text-muted); }
+.convSelect:focus-visible, .capBtn:focus-visible, .suggestionChip:focus-visible { outline: 2px solid var(--jf-primary); outline-offset: -2px; }
+.capBtn:disabled { opacity: .4; cursor: not-allowed; }
+.capBtn:disabled:hover { background: transparent; color: var(--jf-text-muted); }
+.composerHint { padding: 8px 4px 0; font-size: 11px; line-height: 1.5; color: var(--jf-text-muted); text-align: center; }
+.composerTools { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; }
+.composerModel { margin-left: auto; min-width: 0; max-width: 100%; }
+.composerSend { display: flex; gap: 6px; align-self: flex-end; flex-shrink: 0; }
+.runtimeConnection { padding: 8px 24px; font-size: 12px; border-bottom: 1px solid rgba(var(--jf-border-rgb), .45); }
+.runMeta { margin: -8px 0 28px 44px; font-size: 11px; overflow-wrap: anywhere; }
+.runMeta :global(.ant-typography) { font-size: 11px; }
+.runMeta :global(.ant-tag) { font-size: 10px; line-height: 18px; margin-inline-end: 0; }
+.composerStatus { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 0 4px 10px; color: var(--jf-text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.backgroundHint { margin-left: auto; font-size: 11px; }
+.statusDot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--jf-primary); box-shadow: 0 0 8px rgba(var(--jf-primary-rgb), .55); }
+@media (hover: none) {
+  .convDelete { opacity: .65; }
+  .imageThumbnailRemove { opacity: 1; }
+}
+@media (max-width: 767px) {
+  .composerHint { font-size: 10px; padding-top: 6px; }
+  .runtimeConnection { padding: 7px 14px; }
+  .runMeta { margin-left: 38px; }
+  .capBtn { min-width: 32px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .messageBubble, .messageBubbleUser, .emptyIcon { animation: none; }
+  .composerCard, .convItem, .convItem::before, .capBtn { transition: none; }
+}
+
+.composerSend :global(.ant-btn:disabled) { opacity: .4; box-shadow: none; }
+
+/* Publish workspace: task-first onboarding, quieter chrome, clear recovery. */
+.emptyState { align-items: stretch; width: min(100%, 780px); margin: 0 auto; padding: clamp(24px, 5vh, 64px) 8px 28px; min-height: 0; gap: 0; }
+.welcomeBrand { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+.welcomeBrand span { font: 10px -apple-system, BlinkMacSystemFont, sans-serif; font-weight: 550; letter-spacing: .16em; color: var(--jf-text-muted); }
+.welcomeBrand img { object-fit: contain; width:48px; height:48px; }
+.welcomeHeading { font-size: clamp(28px, 3.1vw, 40px); line-height: 1.35; letter-spacing: -.045em; color: var(--jf-text); margin: 0 0 16px; font-weight: 560; }
+.welcomeDescription { max-width: 550px; color: var(--jf-text-muted); line-height: 1.8; font-size: 14px; margin: 0 0 36px; }
+.starterGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.starterCard { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 9px; text-align: left; border: 1px solid var(--jf-border); border-radius: 16px; background: var(--jf-bg-panel); color: var(--jf-text-muted); padding: 24px; cursor: pointer; font: inherit; transition: border-color .16s, background .16s, box-shadow .16s; }
+.starterCard:hover { border-color: var(--jf-border-strong); background:var(--jf-bg-raised); box-shadow:0 4px 16px rgba(0,0,0,.04); }
+.starterCard:focus-visible { outline: 2px solid var(--jf-primary); outline-offset: 3px; }
+.starterCard strong { color: var(--jf-text); font-size: 14px; font-weight: 600; }
+.starterCard > span:last-child { font-size: 12px; line-height: 1.6; }
+.starterIcon { color: var(--jf-primary); margin-bottom: 12px; display: inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:10px; background:rgba(var(--jf-primary-rgb),.055); }
+.starterArrow { position: absolute; right: 24px; top: 30px; opacity: .5; }
+.welcomeFootnote { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; justify-content: space-between; margin-top: 18px; color: var(--jf-text-muted); font-size: 11px; line-height: 1.7; }
+.welcomeFootnote button { display: inline-flex; align-items: center; gap: 4px; color: var(--jf-primary); border: 0; background: none; cursor: pointer; font: inherit; padding: 8px 0; }
+.recoveryState { max-width: 600px; margin: 64px auto; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+.newChatBtn { height: 40px; color: var(--jf-text) !important; text-align: left; justify-content: flex-start; padding-inline: 14px; }
+.convItem.active { box-shadow: none; }
+.chatHeader { background: var(--jf-bg-deep); }
+.composerCard { border-radius: 18px; box-shadow: 0 8px 32px rgba(0,0,0,.08); }
+.composerHint { color: var(--jf-text-muted); }
+@media (max-width: 600px) {
+  .emptyState { padding: 20px 0 24px; }
+  .welcomeBrand { margin-bottom: 12px; }
+  .welcomeBrand img { width: 44px; height: 44px; }
+  .welcomeHeading { font-size: 26px; }
+  .welcomeDescription { margin-bottom: 20px; font-size: 13px; }
+  .starterGrid { gap: 8px; }
+  .starterCard { padding: 14px; gap: 7px; }
+  .starterCard strong { font-size: 13px; }
+  .starterIcon { margin-bottom: 4px; width:28px; height:28px; border-radius:8px; }
+  .starterArrow { top: 17px; right: 12px; }
+  .welcomeFootnote { gap: 0; }
+  .recoveryState { margin: 24px 0; }
+}
+
+@media(prefers-reduced-motion:reduce) { .starterCard { transition:none; } }

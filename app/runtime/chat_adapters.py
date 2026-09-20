@@ -36,7 +36,7 @@ class DeepAgentsChatAdapter:
 
 class ExternalChatAdapter:
     async def start(self, req, user, meta):
-        run = enqueue_chat(user['user_id'], req.conversation_id, req.request_id, req.message, model=req.model)
+        run = enqueue_chat(user['user_id'], req.conversation_id, req.request_id, req.message, model=req.model, yolo=bool(req.yolo))
         return events_response(get_runtime(), user['user_id'], run['id'], legacy=True)
 
     async def stop(self, req, user, meta):

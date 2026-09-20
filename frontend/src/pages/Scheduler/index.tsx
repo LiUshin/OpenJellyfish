@@ -1,3 +1,4 @@
+import SettingsLoadError from '../../components/SettingsLoadError';
 import { useState, useEffect, useMemo } from 'react';
 import {
   App, Tabs, Button, Tag, Modal, Form, Input, Select, Checkbox,
@@ -368,6 +369,8 @@ export default function SchedulerPage() {
   const [serviceTasks, setServiceTasks] = useState<TaskData[]>([]);
   const [currentTask, setCurrentTask] = useState<TaskData | null>(null);
   const [activeTab, setActiveTab] = useState('admin');
+  const [taskErrors, setTaskErrors] = useState({ admin: false, service: false });
+  const [serviceLoading, setServiceLoading] = useState(true);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -417,17 +420,21 @@ export default function SchedulerPage() {
   /* ── Data loading ── */
 
   const loadTasks = async () => {
+    setTaskErrors(v => ({ ...v, admin: false }));
     setLoading(true);
     try {
       setTasks(await listSchedulerTasks() as TaskData[]);
-    } catch (e: unknown) { msg.error((e as Error).message); }
+    } catch { setTaskErrors(v => ({ ...v, admin: true })); }
     finally { setLoading(false); }
   };
 
   const loadServiceTasks = async () => {
+    setServiceLoading(true);
+    setTaskErrors(v => ({ ...v, service: false }));
     try {
       setServiceTasks(await svcRequest<TaskData[]>('GET', '/scheduler/services/all'));
-    } catch (e: unknown) { msg.error((e as Error).message); }
+    } catch { setTaskErrors(v => ({ ...v, service: true })); }
+    finally { setServiceLoading(false); }
   };
 
   useEffect(() => { loadTasks(); loadServiceTasks(); }, []);
@@ -984,10 +991,10 @@ export default function SchedulerPage() {
   const showDetailOnMobile = isMobile && !!currentTask;
 
   return (
-    <div style={{ display: 'flex', flex: 1, minHeight: 0, height: '100%' }}>
+    <div className="settings-master-detail" style={{ display: 'flex', flex: 1, minHeight: 0, height: '100%' }}>
       {/* ── Sidebar ── */}
       <div style={{
-        width: isMobile ? (showListOnMobile ? '100%' : 0) : 300,
+        width: isMobile ? (showListOnMobile ? '100%' : 0) : 320,
         minWidth: isMobile ? 0 : 260,
         background: C.bgSecondary,
         borderRight: isMobile ? 'none' : `1px solid ${C.border}`,
@@ -995,7 +1002,7 @@ export default function SchedulerPage() {
         flexDirection: 'column', overflow: 'hidden',
       }}>
         <div style={{
-          padding: isMobile ? '7px 16px 7px 52px' : '7px 16px',
+          padding: '7px 16px',
           height: 47, boxSizing: 'border-box',
           borderBottom: `1px solid ${C.border}`,
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -1004,7 +1011,7 @@ export default function SchedulerPage() {
             level={5}
             style={{ margin: 0, color: C.textPrimary, display: 'flex', alignItems: 'center', gap: 8 }}
           >
-            ⏰ 定时任务
+            任务列表
           </Typography.Title>
         </div>
 
@@ -1021,7 +1028,7 @@ export default function SchedulerPage() {
 
         <div style={{ padding: '0 12px 8px' }}>
           <Input
-            placeholder="搜索任务…"
+            placeholder="搜索任务…" aria-label="搜索任务"
             prefix={<span style={{ color: C.textMuted, fontSize: 13 }}>🔍</span>}
             value={taskSearch}
             onChange={e => { setTaskSearch(e.target.value); setSvcPage(1); }}
@@ -1043,7 +1050,9 @@ export default function SchedulerPage() {
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
-          <Spin spinning={loading}>{renderTaskList()}</Spin>
+          {taskErrors[activeTab as 'admin' | 'service']
+            ? <SettingsLoadError onRetry={() => { void (activeTab === 'admin' ? loadTasks() : loadServiceTasks()); }} />
+            : <Spin spinning={activeTab === 'admin' ? loading : serviceLoading}>{renderTaskList()}</Spin>}
         </div>
 
         {activeTab === 'service' && filteredTasks.length > SVC_PAGE_SIZE && (
@@ -1182,15 +1191,11 @@ export default function SchedulerPage() {
             })()}
           </>
         ) : (
-          <div style={{
-            display: 'flex', flexDirection: 'column',
-            alignItems: 'center', justifyContent: 'center',
-            height: '100%', color: C.textMuted,
-          }}>
-            <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.4 }}>📋</div>
-            <Typography.Text style={{ color: C.textMuted }}>
-              选择或创建一个定时任务
-            </Typography.Text>
+          <div className="settings-detail-welcome">
+            <span className="settings-guide-icon"><Clock size={28} /></span>
+            <h2>让重复工作按时完成</h2>
+            <p>安排执行时间与任务内容，在这里查看运行记录、结果和后续任务。</p>
+            <Button type="primary" icon={<Plus size={16} />} onClick={openCreateModal}>创建任务</Button>
           </div>
         )}
       </div>

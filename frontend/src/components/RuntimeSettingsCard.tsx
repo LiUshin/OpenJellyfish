@@ -129,7 +129,7 @@ export default function RuntimeSettingsCard({ api = runtime, host = false }: { a
     });
   }
 
-  return <section aria-label="Agent 引擎连接" style={{ background: 'var(--jf-bg-raised)', border: '1px solid var(--jf-border)', borderRadius: 'var(--jf-radius-lg)', padding: 20, marginBottom: 16 }}>
+  return <section className="runtime-settings-card" aria-label="Agent 引擎连接" style={{ background: 'var(--jf-bg-raised)', border: '1px solid var(--jf-border)', borderRadius: 'var(--jf-radius-lg)', padding: 20, marginBottom: 16 }}>
     <Typography.Title level={5} style={{ marginTop: 0 }}>Agent 引擎连接</Typography.Title>
     <Typography.Paragraph type="secondary">{host ? '主机主人连接自己的 Codex / Cursor 账号，并按模型授权给可信 admin。' : 'Codex / Cursor 由超管连接并授权，在这里选择默认引擎。DeepAgents 使用下方的模型配置。'}</Typography.Paragraph>
     {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} style={{ marginBottom: 12 }} />}

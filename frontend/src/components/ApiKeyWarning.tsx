@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Modal, Button, Typography } from 'antd';
 import { WarningCircle } from '@phosphor-icons/react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import * as api from '../services/api';
 import * as runtime from '../services/runtime';
 
@@ -10,6 +11,7 @@ const { Text } = Typography;
 const DISMISSED_KEY = 'jf-api-key-warning-dismissed';
 
 export default function ApiKeyWarning() {
+  const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
   const navigate = useNavigate();
 
@@ -56,17 +58,16 @@ export default function ApiKeyWarning() {
         <WarningCircle size={48} weight="fill" color="var(--jf-warning)" />
         <div style={{ marginTop: 16, marginBottom: 8 }}>
           <Text style={{ fontSize: 16, fontWeight: 600, color: 'var(--jf-text)' }}>
-            尚未配置可用的聊天引擎
+            {t('ux.noEngine')}
           </Text>
         </div>
         <Text style={{ color: 'var(--jf-text-muted)', fontSize: 13, display: 'block', marginBottom: 24 }}>
-          可以配置 DeepAgents 的模型 API Key，或使用服务器开放的 Codex 或 Cursor 连接。
-          生图、视频和语音需要单独配置相应能力。
+          {t('ux.engineHelp')}
         </Text>
         <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-          <Button onClick={handleDismiss}>稍后设置</Button>
+          <Button onClick={handleDismiss}>{t('ux.later')}</Button>
           <Button type="primary" onClick={handleGoSettings}>
-            前往设置
+            {t('ux.configureEngine')}
           </Button>
         </div>
       </div>

@@ -1,0 +1,53 @@
+.settings-shell { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; background:var(--jf-bg-deep); }
+.settings-heading { flex-shrink:0; padding:34px max(32px, calc((100% - 1056px) / 2)) 24px; background:var(--jf-bg-deep); }
+.settings-heading p { margin:0 0 9px; font-size:11px; letter-spacing:.08em; color:var(--jf-text-muted); }
+.settings-heading p span { margin:0 8px; color:var(--jf-text-dim); }
+.settings-heading h1 { margin:0; font-size:28px; line-height:1.35; font-weight:580; letter-spacing:-.025em; }
+.settings-heading > div { margin-top:7px; color:var(--jf-text-muted); font-size:13px; line-height:1.65; max-width:780px; }
+.settings-content { flex:1; min-width:0; min-height:0; overflow:auto; overscroll-behavior:contain; }
+.settings-content-split { display:flex; flex-direction:column; overflow:hidden; }
+.settings-page { width:100%; max-width:1120px; margin:0 auto; padding:28px 32px 40px; min-width:0; box-sizing:border-box; }
+.settings-content .ant-card { background:var(--jf-bg-panel); border-color:var(--jf-border); box-shadow:none; }
+.settings-content .ant-card-head { font-size:14px; }
+.settings-content .ant-input, .settings-content .ant-input-affix-wrapper, .settings-content .ant-select { max-width:100%; }
+.settings-content .ant-alert { margin-bottom:16px; }
+.settings-section-picker { margin-bottom:22px; max-width:100%; overflow-x:auto; padding:2px; }
+.settings-section-heading { font-size:14px; font-weight:600; margin:0 0 16px; color:var(--jf-text); }
+.settings-section-hint { font-size:12px; line-height:1.7; color:var(--jf-text-muted); margin:0 0 16px; }
+.settings-state { padding:24px; width:100%; max-width:880px; margin:0 auto; }
+.settings-savebar { position:sticky; bottom:0; z-index:4; display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:14px 0; background:var(--jf-bg-deep); border-top:1px solid var(--jf-border); }
+.settings-savebar > span { font-size:12px; color:var(--jf-text-muted); margin-right:auto; }
+.voice-settings .ant-space { max-width:100%; }
+.voice-settings .ant-space-item { min-width:0; }
+@media(max-width:767px) {
+ .settings-heading { padding:14px 16px 14px 54px; }
+ .settings-heading p { display:none; }
+ .settings-heading h1 { font-size:19px; }
+ .settings-heading > div { font-size:12px; }
+ .settings-page { padding:18px 14px 28px; }
+ .settings-content .ant-card-body { padding:16px; }
+ .voice-settings > .ant-card .ant-space:not(.ant-space-vertical) { flex-wrap:wrap; }
+ .settings-savebar { padding:12px 0; gap:8px; }
+}
+
+.settings-disclosure { margin:18px 0; border:1px solid var(--jf-border); border-radius:var(--jf-radius-lg); padding:0 16px; }
+.settings-disclosure > summary { cursor:pointer; padding:18px 0; font-size:14px; font-weight:500; }
+.settings-disclosure[open] > summary { margin-bottom:4px; }
+
+.settings-content [hidden] { display:none !important; }
+.settings-content .ant-btn:not(.ant-btn-sm) { min-height:36px; }
+.settings-content .ant-input:not(textarea), .settings-content .ant-input-affix-wrapper, .settings-content .ant-select-single:not(.ant-select-sm) { min-height:36px; }
+.settings-content .ant-input-affix-wrapper .ant-input { min-height:0; }
+.settings-content .ant-card-head { min-height:52px; padding:0 22px; }
+.settings-content .ant-card-body { padding:22px; }
+.settings-content .ant-card { border-radius:16px; }
+.settings-content .ant-empty { padding:24px 0; }
+.settings-surface { background:var(--jf-bg-panel) !important; }
+@media(max-width:767px) { .settings-content .ant-card-body { padding:16px; } .settings-content .ant-card-head { padding:0 16px; } }
+
+.settings-heading-wide { padding-left:24px; }
+@media(max-width:767px) { .settings-heading-wide { padding-left:54px; } .settings-content .ant-btn { min-height:36px; } }
+
+[data-style='regular'] .settings-content .ant-btn-primary:not(:disabled) { box-shadow:inset 0 1px 0 rgba(255,255,255,.14), 0 2px 3px rgba(0,0,0,.08); }
+[data-style='regular'] .settings-surface, [data-style='regular'] .credentials-card { border-radius:16px !important; }
+[data-style='regular'][data-color='light'] .settings-surface, [data-style='regular'][data-color='light'] .profile-editor-surface, [data-style='regular'][data-color='light'] .credentials-card { box-shadow:0 2px 8px rgba(25,28,40,.025); }

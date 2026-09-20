@@ -16,7 +16,20 @@ export interface TextBlock {
   content: string;
 }
 
+export interface FileChange {
+  path: string;
+  workspace_path?: string;
+  preview_path?: string;
+  diff?: string;
+  old_text?: string;
+  new_text?: string;
+}
+
 export interface ToolBlock {
+  status?: string;
+  changes?: FileChange[];
+  exit_code?: number | null;
+  has_input?: boolean;
   type: 'tool';
   name: string;
   args: string;

@@ -233,6 +233,7 @@ export interface SchedulerStep {
 }
 
 export interface ServiceConfig {
+  runtime_choice?: import('../services/runtime').RuntimeChoice;
   id: string;
   name: string;
   description?: string;

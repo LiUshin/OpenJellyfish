@@ -4,6 +4,8 @@
  * 打开后所有 admin 聊天会话发请求时带 `yolo=true`：
  *   - 后端 _stream_agent 不设循环上限地自动批准所有 HITL interrupt
  *     （write_file / edit_file / propose_plan），仅每 50 次循环打一条 warning 日志。
+ *   - Codex / Cursor 每轮同样携带此开关，服务端自动处理权限范围内的审批。
+ *   - 已发送请求保留当时的设置，修改开关从下一轮生效。
  *   - 前端不再弹 ApprovalCard，也不再向消息流插入显眼的 auto_approve 徽章。
  *   - SSE `auto_approve` 事件仅用于驱动 Chat 输入区底部的不显眼小 tag「yolo」，
  *     提示「本会话已发生过 YOLO 自动批准」。tag 在浏览器刷新或切换会话后消失。

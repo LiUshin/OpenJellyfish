@@ -1,4 +1,5 @@
 import { Select } from 'antd';
+import { useTranslation } from 'react-i18next';
 import type { RuntimeChoice, RuntimeProfile } from '../services/runtime';
 
 const key = (choice: RuntimeChoice) => JSON.stringify([choice.runtime, choice.profile_id || '', choice.model || '']);
@@ -13,8 +14,9 @@ export default function ChatModelSelect({ value, onChange, models = [], profiles
   loading?: boolean;
   bound?: boolean;
 }) {
+  const { t } = useTranslation();
   const options: { label: string; options: { value: string; label: string; disabled?: boolean }[] }[] = [
-    ...(!bound || value.runtime === 'deepagents' ? [{ label: 'API 模型', options: models.map(m => ({
+    ...(!bound || value.runtime === 'deepagents' ? [{ label: t('ux.apiModels'), options: models.map(m => ({
       value: key({ runtime: 'deepagents', model: m.id }), label: m.name,
     })) }] : []),
     ...profiles.filter(p => p.status === 'ready' && !p.recovery_required && (!bound || p.id === value.profile_id))
@@ -25,10 +27,10 @@ export default function ChatModelSelect({ value, onChange, models = [], profiles
   ];
   const selected = value.model ? key(value) : undefined;
   if (selected && !options.some(g => g.options.some(o => o.value === selected))) {
-    options.push({ label: '当前选择', options: [{ value: selected, label: `${value.model}（暂不可用）`, disabled: true }] });
+    options.push({ label: t('ux.currentModel'), options: [{ value: selected, label: t('ux.unavailableModel', { model: value.model }), disabled: true }] });
   }
-  return <Select aria-label="聊天模型" showSearch optionFilterProp="label" value={selected}
-    loading={loading} disabled={disabled} placeholder="选择模型" size="small"
-    style={{ minWidth: 200, maxWidth: '100%' }} popupMatchSelectWidth={false} options={options}
+  return <Select aria-label={t('ux.chatModel')} showSearch optionFilterProp="label" value={selected}
+    loading={loading} disabled={disabled} placeholder={t('ux.selectModel')} size="small"
+    style={{ width: 200, minWidth: 0, maxWidth: '100%' }} popupMatchSelectWidth={false} options={options}
     onChange={encoded => { const [runtime, profile_id, model] = JSON.parse(encoded); onChange({ runtime, profile_id: profile_id || undefined, model, ...(runtime !== 'deepagents' ? { image_mode: 'native' as const } : {}) }); }} />;
 }

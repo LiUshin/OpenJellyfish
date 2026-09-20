@@ -1,5 +1,7 @@
+import SettingsSectionNav from '../../components/SettingsSectionNav';
+import SettingsLoadError from '../../components/SettingsLoadError';
 import { useState, useEffect, useRef } from 'react';
-import { Typography, Select, Spin, Tag, Switch, Input, InputNumber, Button, message, Collapse, Tooltip, Divider, Segmented } from 'antd';
+import { Typography, Select, Spin, Tag, Switch, Input, InputNumber, Button, message, Tabs, Tooltip, Divider, Segmented } from 'antd';
 import { Clock, PaintBrush, Sliders, Lightning, Key, Eye, EyeSlash, CheckCircle, XCircle, ArrowsClockwise, Translate, Faders, MagnifyingGlass } from '@phosphor-icons/react';
 import type { ModelVisibilityItem } from '../../types';
 import { useTranslation } from 'react-i18next';
@@ -108,6 +110,8 @@ function ApiKeysCard() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string }>>({});
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
 
   // Localised KEY_SECTIONS — labels/help text/placeholder swap with language.
@@ -193,14 +197,18 @@ function ApiKeysCard() {
   ];
 
   useEffect(() => {
+    let disposed = false;
+    setLoading(true); setLoadError(false);
     api.getApiKeys().then(k => {
+      if (disposed) return;
       setMasked(k);
       const src = (k.credential_sources || {}) as Record<string, CredSource>;
       setSources(src);
       setSourcesDirty(false);
       setLoading(false);
-    }).catch(() => setLoading(false));
-  }, []);
+    }).catch(() => { if (!disposed) { setLoadError(true); setLoading(false); } });
+    return () => { disposed = true; };
+  }, [loadAttempt]);
 
   const handleChange = (field: string, value: string) => {
     setEdits(prev => ({ ...prev, [field]: value }));
@@ -253,12 +261,13 @@ function ApiKeysCard() {
       const res = await api.testApiKeys('all');
       setTestResults(res.results);
     } catch {
-      /* ignore */
+      message.error(t('general.apiKeysTestRequestFailed'));
     }
     setTesting(null);
   };
 
   if (loading) return <Spin size="small" />;
+  if (loadError) return <SettingsLoadError onRetry={() => setLoadAttempt(n => n + 1)} />;
 
   const hasEdits = Object.keys(edits).length > 0 || sourcesDirty;
   const providerMap: Record<string, string> = {
@@ -274,8 +283,8 @@ function ApiKeysCard() {
   const platformConfigured = (masked?.platform_configured || {}) as Record<string, boolean>;
 
   return (
-    <div style={{
-      background: C.bg2,
+    <div className="credentials-card" style={{
+      background: C.bg1,
       borderRadius: 'var(--jf-radius-lg)',
       border: `1px solid ${C.border}`,
       padding: isMobile ? '16px 14px' : '20px 24px',
@@ -291,32 +300,26 @@ function ApiKeysCard() {
             <Button
               size="small"
               icon={<ArrowsClockwise size={14} />}
+              disabled={hasEdits || testing !== null}
               onClick={handleTestAll}
               loading={testing === 'all'}
             >
               {t('general.apiKeysTestAll')}
             </Button>
           </Tooltip>
-          {hasEdits && (
-            <Button
-              type="primary"
-              size="small"
-              onClick={handleSave}
-              loading={saving}
-            >
-              {t('common.save')}
-            </Button>
-          )}
+
         </div>
       </div>
 
       <Text style={{ color: C.muted, fontSize: 12, display: 'block', marginBottom: 16 }}>
-        {t('general.apiKeysDesc')}
+        {t('settingsDesign.credentialsHint')}
       </Text>
 
-      <Collapse
-        ghost
-        defaultActiveKey={['Anthropic (Claude)', 'OpenAI', '搜索 (Tavily)']}
+      <details className="settings-inline-help"><summary>{t('settingsDesign.credentialsDetails')}</summary><p>{t('general.apiKeysDesc')}</p></details>
+      <Tabs
+        className="provider-workspace"
+        tabPosition={isMobile ? 'top' : 'left'}
+        defaultActiveKey="OpenAI"
         style={{ background: 'transparent' }}
         items={KEY_SECTIONS_I18N.map(section => {
           const prov = providerMap[section.title] || '';
@@ -354,6 +357,7 @@ function ApiKeysCard() {
                       <Segmented
                         size="small"
                         value={activeSource}
+                        disabled={saving}
                         onChange={(v) => handleSourceChange(prov, v as CredSource)}
                         options={[
                           {
@@ -412,15 +416,11 @@ function ApiKeysCard() {
                       <div style={{ position: 'relative' }}>
                         {isSecret ? (
                           <Input.Password
-                            size="small"
-                            placeholder={f.placeholder}
-                            value={isEditing ? editVal : (configured ? maskedVal : '')}
+                            aria-label={`${displayTitle} ${f.label}`}
+                            disabled={saving}
+                            placeholder={configured ? t('settingsDesign.replaceCredential') : f.placeholder}
+                            value={isEditing ? editVal : ''}
                             onChange={e => handleChange(f.field, e.target.value)}
-                            onFocus={() => {
-                              if (!isEditing && configured) {
-                                handleChange(f.field, '');
-                              }
-                            }}
                             visibilityToggle={{
                               visible: showRaw[f.field] || false,
                               onVisibleChange: (v) => setShowRaw(prev => ({ ...prev, [f.field]: v })),
@@ -434,7 +434,8 @@ function ApiKeysCard() {
                           />
                         ) : (
                           <Input
-                            size="small"
+                            aria-label={`${displayTitle} ${f.label}`}
+                            disabled={saving}
                             placeholder={f.placeholder}
                             value={isEditing ? editVal : maskedVal}
                             onChange={e => handleChange(f.field, e.target.value)}
@@ -457,6 +458,7 @@ function ApiKeysCard() {
                     <Button
                       size="small"
                       type="link"
+                      disabled={hasEdits || testing !== null}
                       onClick={() => handleTest(prov)}
                       loading={testing === prov}
                       style={{ fontSize: 12, padding: 0 }}
@@ -470,6 +472,10 @@ function ApiKeysCard() {
           };
         })}
       />
+      <div className="settings-savebar credentials-savebar">
+        <span role="status">{t(hasEdits ? 'settingsPolish.unsaved' : 'settingsPolish.saved')}{hasEdits && <small>{t('settingsDesign.testSaved')}</small>}</span>
+        <Button type="primary" disabled={!hasEdits} loading={saving} onClick={handleSave}>{t('common.save')}</Button>
+      </div>
     </div>
   );
 }
@@ -612,7 +618,7 @@ function AggregatorModelsCard({
   const visible = sorted.slice(0, 80);
 
   const cardBase: React.CSSProperties = {
-    background: C.bg2,
+    background: C.bg1,
     borderRadius: 'var(--jf-radius-lg)',
     border: `1px solid ${C.border}`,
     padding: isMobile ? '16px 14px' : '20px 24px',
@@ -802,7 +808,7 @@ function ModelVisibilityCard() {
   }, {});
 
   const cardBase: React.CSSProperties = {
-    background: C.bg2,
+    background: C.bg1,
     borderRadius: 'var(--jf-radius-lg)',
     border: `1px solid ${C.border}`,
     padding: isMobile ? '16px 14px' : '20px 24px',
@@ -885,6 +891,9 @@ function ModelVisibilityCard() {
 export default function GeneralPage() {
   const isMobile = useIsMobile();
   const { t } = useTranslation();
+  const [section, setSection] = useState('engine');
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
   const [offset, setOffset] = useState(getTzOffset());
   const [saving, setSaving] = useState(false);
@@ -904,25 +913,30 @@ export default function GeneralPage() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    setLoading(true); setLoadError(false);
     api.getPreferences().then((prefs) => {
+      if (disposed) return;
       const tz = prefs.tz_offset_hours ?? 8;
       setOffset(tz);
       setTzOffset(tz);
-    }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+    }).catch(() => { if (!disposed) setLoadError(true); }).finally(() => { if (!disposed) setLoading(false); });
+    return () => { disposed = true; };
+  }, [loadAttempt]);
 
   useEffect(() => {
+    if (section !== 'preferences') return;
     timerRef.current = setInterval(() => setTick(t => t + 1), 1000);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, []);
+  }, [section]);
 
   const handleTzChange = async (val: number) => {
-    setOffset(val);
-    setTzOffset(val);
     setSaving(true);
     try {
       await api.updatePreferences({ tz_offset_hours: val });
-    } catch { /* ignore */ }
+      setOffset(val); setTzOffset(val);
+      message.success(t('common.saved', '已保存'));
+    } catch { message.error(t('settingsPolish.saveFailed')); }
     setSaving(false);
   };
 
@@ -936,7 +950,7 @@ export default function GeneralPage() {
   const userTimeStr = fmtUserTime(nowIso, 'datetime');
 
   const cardBase: React.CSSProperties = {
-    background: C.bg2,
+    background: C.bg1,
     borderRadius: 'var(--jf-radius-lg)',
     border: `1px solid ${C.border}`,
     padding: isMobile ? '16px 14px' : '20px 24px',
@@ -945,14 +959,11 @@ export default function GeneralPage() {
   const gridCols = isMobile ? '80px 1fr' : '100px 1fr';
 
   return (
-    <div style={{
-      padding: isMobile ? '16px 12px 24px' : '24px 32px',
-      paddingLeft: isMobile ? 52 : undefined,
-      maxWidth: 960, margin: '0 auto', width: '100%',
-    }}>
-      <Text style={{ color: C.text, fontSize: 18, fontWeight: 600, display: 'block', marginBottom: 20 }}>
-        {t('general.pageTitle')}
-      </Text>
+    <div className="settings-page general-settings">
+      {loadError && <SettingsLoadError onRetry={() => setLoadAttempt(n => n + 1)} />}
+      <SettingsSectionNav label={t('general.pageTitle')} value={section} onChange={setSection}
+        items={['engine', 'preferences', 'automation', 'advanced'].map(value => ({ value, label: t(`settingsPolish.${value}`), description: t(`settingsDesign.${value}Hint`) }))} />
+      <section hidden={section !== 'preferences'} aria-label={t('settingsPolish.preferences')}>
 
       {/* Interface language */}
       <div style={cardBase}>
@@ -968,17 +979,23 @@ export default function GeneralPage() {
         </div>
       </div>
 
+      </section>
+      <section hidden={section !== 'engine'} aria-label={t('settingsPolish.engine')}>
       {/* API Keys */}
       <RuntimeSettingsCard />
       <ApiKeysCard />
 
+      <details className="settings-disclosure"><summary>{t('settingsPolish.modelCatalog')}</summary>
       {/* Aggregator whitelists (search latest + enable) */}
       <AggregatorModelsCard provider="openrouter" />
       <AggregatorModelsCard provider="siliconflow" showThinkingBudget />
 
       {/* Model Visibility */}
       <ModelVisibilityCard />
+      </details>
 
+      </section>
+      <section hidden={section !== 'preferences'} aria-label={t('settingsPolish.preferences')}>
       {/* Time & Timezone */}
       <div style={cardBase}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
@@ -990,6 +1007,8 @@ export default function GeneralPage() {
         <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: '12px 16px', alignItems: 'center' }}>
           <Text style={{ color: C.muted, fontSize: 13 }}>{t('general.tzOffset')}</Text>
           <Select
+            aria-label={t('general.tzOffset')}
+            disabled={saving || loadError}
             value={offset}
             onChange={handleTzChange}
             style={{ maxWidth: 360, width: '100%' }}
@@ -1047,6 +1066,8 @@ export default function GeneralPage() {
         </div>
       </div>
 
+      </section>
+      <section hidden={section !== 'advanced'} aria-label={t('settingsPolish.advanced')}>
       {/* YOLO mode (admin) */}
       <div style={{ ...cardBase, marginTop: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -1085,6 +1106,8 @@ export default function GeneralPage() {
         </div>
       </div>
 
+      </section>
+      <section hidden={section !== 'automation'} aria-label={t('settingsPolish.automation')}>
       {/* Batch run */}
       <div style={{ ...cardBase, marginTop: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
@@ -1097,6 +1120,8 @@ export default function GeneralPage() {
         <BatchRunner open onClose={() => {}} inline />
       </div>
 
+      </section>
+      <section hidden={section !== 'advanced'} aria-label={t('settingsPolish.advanced')}>
       {/* Advanced Pages */}
       <div style={{ ...cardBase, marginTop: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
@@ -1142,6 +1167,7 @@ export default function GeneralPage() {
           </div>
         </div>
       </div>
+      </section>
     </div>
   );
 }

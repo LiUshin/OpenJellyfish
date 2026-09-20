@@ -397,7 +397,7 @@ chat 顶栏 **锁** 按钮可查看当前活跃进程、占用路径，并手动
 
 支持文本与工具流式输出、逐次审批、停止、附件和产物预览 / 下载。关闭浏览器不会取消任务，重新打开会话可恢复输出与待审批项。同一连接共享供应商额度并串行运行；连接失效或授权撤销时不会静默换账号或付费 API。
 
-此路径目前用于管理员 Web 聊天；Service/Consumer、微信、定时任务与语音沿用现有执行路径。Codex 原生生图有本机 API 验证，Cursor 真实生图与生图前端最终视觉验收仍未完成。
+自 v1.3.1 起，此路径支持管理员 Web 聊天，以及已授权 Codex / Cursor 套餐的内部 Service 网页、API 和 Service 微信。管理员个人微信沿用原有执行路径；套餐 Service 暂不支持定时任务、语音与视频。管理员在 Service 设置中固定连接、模型和开放资源，并创建「使用已授权套餐」Key；套餐 Key 不支持 BYOK。此模式仅面向可信内部成员，不提供恶意租户间的操作系统隔离。详见[内部 Service 分发](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-service-distribution.md)。Codex 原生生图有本机 API 验证，Cursor 真实生图与生图前端最终视觉验收仍未完成。
 
 ## 5. 文件面板
 
@@ -1042,7 +1042,7 @@ Agent 在 `send_message` 的文本中输出 `<<FILE:/generated/images/xxx.png>>`
 
 ### Service Key 计费：hosted / BYOK
 
-计费方式按 API Key 指定，同一个 Service 可同时发放运营方付费（`hosted`）和调用方自付（`byok`）Key，旧 Key 默认保持 hosted。使用 Service Key 调用 `GET /api/v1/models` 可查看计费模式与允许的模型 / 主机。BYOK 聊天请求提供 `provider`、`api_key`、`model`，必要时加 `base_url` / `region`，并通过供应商、模型和端点校验；hosted Key 拒绝调用方凭据字段，保留服务原有模型配置行为。此 API 模式不复用共享 Codex / Cursor 登录连接。
+计费方式按 API Key 指定，同一个 Service 可同时发放运营方付费（`hosted`）和调用方自付（`byok`）Key，旧 Key 默认保持 hosted。使用 Service Key 调用 `GET /api/v1/models` 可查看计费模式与允许的模型 / 主机。BYOK 聊天请求提供 `provider`、`api_key`、`model`，必要时加 `base_url` / `region`，并通过供应商、模型和端点校验；hosted Key 拒绝调用方凭据字段，保留服务原有模型配置行为。上述 hosted / BYOK 说明适用于 DeepAgents Service。Codex / Cursor 套餐 Service 使用超管授权的共享登录连接，连接和模型由管理员固定，仅允许 hosted 套餐 Key，拒绝 BYOK 及调用方凭据。
 
 ## 9. Soul 记忆系统
 

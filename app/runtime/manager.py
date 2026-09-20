@@ -29,11 +29,12 @@ class RuntimeManager:
             ConnectionBackend(root, self.profiles, executable,
                 max_clients=bounded_env('JELLYFISH_RUNTIME_MAX_CLIENTS', self.policy.max_running, 16)))
         from app.storage import get_storage_service
-        self.runs = RunService(self.store, self.policy, self.backend, self.profiles.authorize,
+        from app.runtime.consumer import service_authorizer
+        self.runs = RunService(self.store, self.policy, self.backend, service_authorizer(self.profiles),
                                storage=get_storage_service())
         self.profiles.runs = self.runs
         from app.runtime.business_tools import BusinessTools
-        self.runs.tool_bridge = BusinessTools(self.runs.storage, self.profiles.authorize, self.store)
+        self.runs.tool_bridge = BusinessTools(self.runs.storage, self.runs.authorize, self.store)
 
     async def shutdown(self):
         await self.profiles.shutdown()

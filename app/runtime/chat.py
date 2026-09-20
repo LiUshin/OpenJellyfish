@@ -82,7 +82,7 @@ def conversation_binding(actor_id, conv_id):
     return meta
 
 
-def enqueue_chat(actor_id, conv_id, request_id, message, model=None, attachments=None):
+def enqueue_chat(actor_id, conv_id, request_id, message, model=None, attachments=None, *, yolo=False):
     meta = conversation_binding(actor_id, conv_id)
     if not meta.get('runtime_session_id'):
         raise HTTPException(409, '此会话使用 DeepAgents')
@@ -106,7 +106,7 @@ def enqueue_chat(actor_id, conv_id, request_id, message, model=None, attachments
     session = runtime.runs.own('session', meta['runtime_session_id'], actor_id)
     if session.get('deleted'):
         raise HTTPException(404, '会话已删除')
-    run = runtime.runs.enqueue(actor_id, session['id'], request_id, message, model=model, attachments=attachments)
+    run = runtime.runs.enqueue(actor_id, session['id'], request_id, message, model=model, attachments=attachments, yolo=yolo)
     meta['runtime_binding'] = runtime.store.get('session', session['id'])['binding']
     from app.services.conversations import _write_meta
     runs = runtime.store.find('run', session_id=session['id'], actor_id=actor_id)
@@ -137,6 +137,8 @@ def events_response(runtime, actor_id, rid, after=0, legacy=False):
                         value = {'type': 'error', 'content': p.get('message', '执行失败')}
                     elif t in ('completed', 'cancelled'):
                         value = {'type': 'done'}
+                    elif t == 'approval_resolved' and p.get('automatic') and p.get('decision') == 'accept':
+                        value = {'type': 'auto_approve', 'count': 1, 'actions': [{'name': p['kind'], 'args': {}}]}
                     elif t == 'approval_requested':
                         value = {'type': 'interrupt', 'actions': [{'name': 'runtime_approval', 'args': p['approval']}], 'configs': []}
                     else:

@@ -55,9 +55,9 @@ def _build_consumer_system_prompt(
                 f"{pv['content']}"
             )
         else:
-            profile_context = build_user_profile_prompt(admin_id)
+            profile_context = build_user_profile_prompt(admin_id, include_agent_notes=False)
     else:
-        profile_context = build_user_profile_prompt(admin_id)
+        profile_context = build_user_profile_prompt(admin_id, include_agent_notes=False)
 
     from app.services.preferences import get_tz_offset
     tz_hours = get_tz_offset(admin_id)
@@ -160,7 +160,9 @@ def _create_consumer_read_tools(
         return clean
 
     def _is_allowed(path: str) -> bool:
-        if not allowed_docs or allowed_docs == ["*"]:
+        if not allowed_docs:
+            return False
+        if allowed_docs == ["*"]:
             return True
         norm = path.lstrip("/").replace("\\", "/").rstrip("/")
         for pattern in allowed_docs:
@@ -230,12 +232,16 @@ def _create_consumer_read_tools(
           - ns:        'docs' | 'scripts'
           - err:       错误消息（如越界 / generated 不可访问），否则 None
         """
+        from pathlib import PurePosixPath
+        if '..' in PurePosixPath((path or '').replace('\\', '/')).parts:
+            return (None, '', False, 'docs', '路径超出允许范围')
         if _is_scripts_ns(path):
             rel = _norm_scripts_path(path)
             try:
                 full = safe_join(scripts_dir, rel) if rel else scripts_dir
             except (PermissionError, ValueError):
                 return (None, rel, False, "scripts", "路径超出允许范围")
+            rel = os.path.relpath(full, scripts_dir).replace("\\", "/") if full != scripts_dir else ""
             return (full, rel, _is_script_allowed(rel), "scripts", None)
 
         clean = _norm_docs_path(path)
@@ -245,6 +251,7 @@ def _create_consumer_read_tools(
             full = safe_join(docs_dir, clean) if clean else docs_dir
         except (PermissionError, ValueError):
             return (None, clean, False, "docs", "路径超出允许范围")
+        clean = os.path.relpath(full, docs_dir).replace("\\", "/") if full != docs_dir else ""
         return (full, clean, _is_allowed(clean), "docs", None)
 
     def _entry_allowed(rel: str, ns: str) -> bool:
@@ -710,6 +717,7 @@ def create_consumer_agent(
     channel: str = "web",
     model_override: Optional[str] = None,
     credentials_override: Optional[Dict[str, Any]] = None,
+    service_key_id: Optional[str] = None,
 ) -> Any:
     """Create (or return cached) agent for a consumer conversation.
 
@@ -725,6 +733,14 @@ def create_consumer_agent(
         - "wechat"    — 通过 iLink 反向投递到微信用户，需要 send_message。
         - "scheduler" — 定时任务推送，也需要 send_message。
     """
+    svc_config = get_service(admin_id, service_id)
+    from app.runtime.consumer import external, RuntimeConsumerAgent
+    if svc_config and external(svc_config):
+        if credentials_override or model_override or extra_capabilities:
+            from fastapi import HTTPException
+            raise HTTPException(400, '套餐 Service 使用已发布的模型与能力，不接受调用方覆盖')
+        return RuntimeConsumerAgent(admin_id, service_id, conv_id, channel=channel,
+                                    key_id=service_key_id, wechat_session_id=wechat_session_id)
     from langchain.chat_models import init_chat_model
     from deepagents import create_deep_agent
     from app.services.agent import _resolve_model, _checkpointer
@@ -814,7 +830,7 @@ def create_consumer_agent(
     # send_message 仅对反向投递渠道（wechat / scheduler）有意义；
     # web 直连 SSE 时 agent 的 token 已经流给浏览器，再调 send_message 既无投递目标
     # 也会产生让消费者困惑的工具事件。
-    if "humanchat" in capabilities and channel != "web":
+    if "humanchat" in capabilities and channel not in ("web", "api"):
         from app.services.tools import create_send_message_tool, CAPABILITY_PROMPTS as _CP3
         system_prompt += "\n" + _CP3["humanchat"]
         tools.append(create_send_message_tool())

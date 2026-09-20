@@ -198,3 +198,18 @@
   .twoCol { grid-template-columns: 1fr; }
   .brow { grid-template-columns: 110px 1fr 64px; gap: 10px; }
 }
+
+/* Settings hierarchy: the route supplies the page title. */
+.page { width:100%; max-width:1140px; box-sizing:border-box; }
+.header { flex-wrap:wrap; gap:12px; }
+.header .icon, .header .title { display:none; }
+@media(max-width:767px) { .page { padding:18px 14px 30px; } .spacer { display:none; } }
+
+/* Calm data surfaces; color carries category meaning without decorative glow. */
+.page { max-width:1120px; padding:28px 32px 40px; }
+.glass { background:var(--jf-bg-panel); backdrop-filter:none; box-shadow:none; }
+.glass::before, .stat .ring { display:none; }
+.cy, .pk, .gr, .pu { text-shadow:none; }
+.fill, .fillAlt, .fillSvc, .cardTitle .dot { box-shadow:none; }
+.statVal { font-size:28px; }
+@media(max-width:767px) { .page { padding:18px 14px 30px; } }

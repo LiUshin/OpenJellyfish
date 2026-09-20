@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from 'react';
+import SettingsLoadError from '../../components/SettingsLoadError';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Spin, Empty, Segmented, message } from 'antd';
+import { Spin, Empty, Segmented } from 'antd';
 import { ChartLineUp } from '@phosphor-icons/react';
 import { getUsageSummary, type UsageSummary } from '../../services/api';
 import UsageView from '../../components/UsageView';
@@ -8,18 +9,24 @@ import styles from './UsagePage.module.css';
 
 export default function UsagePage() {
   const { t } = useTranslation();
+  const [loadError, setLoadError] = useState(false);
+  const requestSequence = useRef(0);
+  useEffect(() => () => { ++requestSequence.current; }, []);
   const [loading, setLoading] = useState(false);
   const [months, setMonths] = useState(3);
   const [data, setData] = useState<UsageSummary | null>(null);
 
   const load = useCallback(async () => {
+    const sequence = ++requestSequence.current;
+    setLoadError(false);
     setLoading(true);
     try {
-      setData(await getUsageSummary(months));
-    } catch (e) {
-      message.error(String(e));
+      const result = await getUsageSummary(months);
+      if (sequence === requestSequence.current) setData(result);
+    } catch {
+      if (sequence === requestSequence.current) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (sequence === requestSequence.current) setLoading(false);
     }
   }, [months]);
 
@@ -29,12 +36,6 @@ export default function UsagePage() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.aurora}>
-        <b />
-        <b />
-        <b />
-      </div>
-
       <div className={styles.inner}>
         <div className={styles.header}>
           <div className={styles.icon}>
@@ -62,13 +63,14 @@ export default function UsagePage() {
           </div>
         )}
 
-        {!loading && !data && (
+        {loadError && <SettingsLoadError onRetry={() => void load()} />}
+        {!loading && !loadError && !data && (
           <div className={styles.emptyWrap}>
             <Empty description={t('usage.empty', '暂无用量数据')} />
           </div>
         )}
 
-        {!loading && data && <UsageView data={data} />}
+        {!loading && !loadError && data && <UsageView data={data} />}
       </div>
     </div>
   );

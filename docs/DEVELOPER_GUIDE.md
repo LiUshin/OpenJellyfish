@@ -700,6 +700,8 @@ Key 更新后自动调用 `clear_agent_cache(user_id)` + `clear_consumer_cache(a
 
 详见 [运行说明](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-standard-mode.md)、[主机控制台与 Docker 配置](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/superadmin-console.md)。回归命令：`python -m unittest discover -s tests -p 'test_runtime*.py'`。供应商真实账号验收需另行执行，单元测试与构建不代表该项通过。
 
+v1.3.1 的 `app/runtime/consumer.py` 与 `consumer_tools.py` 将授权套餐扩展至 Service 网页、API 与微信，复用 Runtime 队列和单连接串行。服务端绑定 admin / Service / conversation 身份，限制开放文档、脚本与当前会话产物；连接、模型或资源配置变更后重建原生会话，撤权会取消排队及运行任务。套餐 Service 拒绝 BYOK、语音、视频与定时任务；管理员 YOLO 不改变 Service 的资源范围。详见[Service 分发与边界](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-service-distribution.md)。
+
 ## 5. 前端架构
 
 ### 5.1 目录结构

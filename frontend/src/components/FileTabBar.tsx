@@ -1,7 +1,8 @@
-import { useRef, useState, type DragEvent, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, type DragEvent, type MouseEvent } from 'react';
 import { Tooltip } from 'antd';
 import { CloseOutlined } from '@ant-design/icons';
 import type { FileTabSummary } from '../stores/fileWorkspaceContext';
+import workspace from '../layouts/workspace.module.css';
 
 const C = {
   bg: 'var(--jf-bg-panel)',
@@ -42,6 +43,10 @@ export default function FileTabBar({
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    scrollerRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activePath]);
 
   if (tabs.length === 0) return null;
 
@@ -88,6 +93,7 @@ export default function FileTabBar({
     <div
       ref={scrollerRef}
       role="tablist"
+      aria-label="打开的文件"
       style={{
         display: 'flex',
         alignItems: 'stretch',
@@ -108,7 +114,18 @@ export default function FileTabBar({
           <Tooltip key={tab.path} title={tab.path} mouseEnterDelay={0.45} placement="bottom">
             <div
               role="tab"
+              className={workspace.fileTab}
+              tabIndex={active ? 0 : -1}
               aria-selected={active}
+              onKeyDown={event => {
+                if (event.target !== event.currentTarget) return;
+                const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+                  : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
+                if (next !== null) {
+                  event.preventDefault(); onActivate(tabs[next].path);
+                  scrollerRef.current?.querySelectorAll<HTMLElement>('[role="tab"]')[next]?.focus();
+                } else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onActivate(tab.path); }
+              }}
               draggable
               onDragStart={(e) => handleDragStart(e, index)}
               onDragEnd={handleDragEnd}
@@ -158,6 +175,7 @@ export default function FileTabBar({
               <button
                 type="button"
                 aria-label={`关闭 ${label}`}
+                tabIndex={active ? 0 : -1}
                 onClick={(e) => handleCloseClick(e, tab.path)}
                 style={{
                   display: 'inline-flex',

@@ -1,3 +1,4 @@
+import SettingsLoadError from '../SettingsLoadError';
 import { useState, useEffect, useCallback } from 'react';
 import {
   Modal, Button, Space, Typography, List, Tag, Switch,
@@ -26,6 +27,7 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
   const isMobile = useIsMobile();
   const [subagents, setSubagents] = useState<SubagentConfig[]>([]);
   const [availableTools, setAvailableTools] = useState<string[]>([]);
+  const [loadError, setLoadError] = useState(false);
   const [loading, setLoading] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editing, setEditing] = useState<SubagentConfig | null>(null);
@@ -33,13 +35,14 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
   const [form] = Form.useForm();
 
   const loadSubagents = useCallback(async () => {
+    setLoadError(false);
     setLoading(true);
     try {
       const res = await api.listSubagents();
       setSubagents(res.subagents);
       setAvailableTools(res.available_tools);
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : t('subagentMgr.loadFail'));
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -120,11 +123,12 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
 
   const content = (
     <>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+      {loadError && <SettingsLoadError onRetry={() => void loadSubagents()} />}
+      <div className="settings-toolbar">
         <Text style={{ color: 'var(--jf-text-muted)', fontSize: 13 }}>
           {t('subagentMgr.summary', { total: subagents.length, enabled: subagents.filter((s) => s.enabled).length })}
         </Text>
-        <Button type="primary" size="small" icon={<PlusOutlined />} onClick={() => openEdit()}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => openEdit()}>
           {t('subagentMgr.newBtn')}
         </Button>
       </div>
@@ -132,16 +136,15 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
       <Spin spinning={loading}>
         <List
           dataSource={subagents}
-          locale={{ emptyText: <Empty description={t('subagentMgr.empty')} /> }}
+          locale={{ emptyText: loadError || loading ? <span /> : <div className="settings-empty"><Empty description={t('subagentMgr.empty')} /></div> }}
           renderItem={(agent) => (
             <div
               style={{
-                background: 'var(--jf-bg-deep)',
+                background: 'var(--jf-bg-panel)',
                 border: '1px solid var(--jf-border)',
                 borderRadius: 'var(--jf-radius-md)',
-                padding: '12px 16px',
+                padding: '20px',
                 marginBottom: 8,
-                opacity: agent.enabled ? 1 : 0.6,
               }}
             >
               <div style={{
@@ -170,6 +173,7 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
                 </div>
                 <Space style={{ flexShrink: 0, marginLeft: isMobile ? 0 : 12 }}>
                   <Switch
+                    aria-label={agent.name}
                     checked={agent.enabled}
                     size="small"
                     onChange={(checked) => handleToggle(agent.id, checked)}
@@ -178,6 +182,7 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
                     type="text"
                     size="small"
                     icon={<EditOutlined />}
+                    aria-label={t('subagentMgr.modalEdit', { name: agent.name })}
                     onClick={() => openEdit(agent)}
                     style={{ color: 'var(--jf-text-muted)' }}
                   />
@@ -188,7 +193,7 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
                       okText={t('common.confirm')}
                       cancelText={t('common.cancel')}
                     >
-                      <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+                      <Button aria-label={`${t('common.delete')} ${agent.name}`} type="text" size="small" danger icon={<DeleteOutlined />} />
                     </Popconfirm>
                   )}
                 </Space>
@@ -270,12 +275,7 @@ export default function SubagentManager({ open, onClose, inline }: Props) {
 
   if (inline) {
     return (
-      <div style={{
-        padding: isMobile ? '16px 12px 24px' : '16px 20px',
-        paddingLeft: isMobile ? 52 : undefined,
-        height: '100%',
-        overflow: 'auto',
-      }}>
+<div className="settings-page">
         {content}
       </div>
     );

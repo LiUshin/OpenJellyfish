@@ -19,7 +19,8 @@ router = APIRouter(prefix="/api/services", tags=["services"])
 
 @router.post("")
 async def api_create_service(req: CreateServiceRequest, user=Depends(get_current_user)):
-    data = req.dict()
+    from app.runtime.consumer import configure
+    data = configure(user["user_id"], req.model_dump())
     svc = create_service(user["user_id"], data)
     return svc
 
@@ -39,7 +40,7 @@ async def api_get_service(service_id: str, user=Depends(get_current_user)):
 
 @router.put("/{service_id}")
 async def api_update_service(service_id: str, req: UpdateServiceRequest, user=Depends(get_current_user)):
-    updates = {k: v for k, v in req.dict().items() if v is not None}
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
 
     if "capabilities" in updates:
         existing = get_service(user["user_id"], service_id)
@@ -48,6 +49,16 @@ async def api_update_service(service_id: str, req: UpdateServiceRequest, user=De
             if wc.get("enabled") and "humanchat" not in updates["capabilities"]:
                 updates["capabilities"].append("humanchat")
 
+    existing = get_service(user["user_id"], service_id)
+    if not existing:
+        raise HTTPException(404, 'Service 不存在')
+    from app.runtime.consumer import configure
+    combined = {**existing, **updates}
+    if updates.get('published') is False and combined.get('runtime_choice') == existing.get('runtime_choice'):
+        combined['runtime_binding'] = existing.get('runtime_binding', {})
+    else:
+        combined = configure(user['user_id'], combined)
+    updates.update(runtime_binding=combined['runtime_binding'], model=combined['model'])
     svc = update_service(user["user_id"], service_id, updates)
     if not svc:
         raise HTTPException(status_code=404, detail="Service 不存在")
@@ -73,6 +84,9 @@ async def api_create_key(service_id: str, req: CreateKeyRequest, user=Depends(ge
         raise HTTPException(status_code=404, detail="Service 不存在")
     if req.billing not in BILLING_MODES:
         raise HTTPException(status_code=400, detail="billing 必须是 hosted 或 byok")
+    from app.runtime.consumer import external
+    if req.billing == 'byok' and external(get_service(user['user_id'], service_id)):
+        raise HTTPException(400, '套餐 Service 请使用托管 Key；不支持 BYOK')
     result = create_service_key(user["user_id"], service_id, req.name, billing=req.billing)
     if not result:
         raise HTTPException(status_code=500, detail="Key 创建失败")

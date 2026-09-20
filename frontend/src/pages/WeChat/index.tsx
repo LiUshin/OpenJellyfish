@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+import SettingsLoadError from '../../components/SettingsLoadError';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button, Spin, Tag, message } from 'antd';
 import {
@@ -33,7 +35,7 @@ interface WeChatMessage {
   timestamp?: string;
 }
 
-type PageState = 'loading' | 'disconnected' | 'qr' | 'connected';
+type PageState = 'error' | 'loading' | 'disconnected' | 'qr' | 'connected';
 
 const POLL_INTERVAL = 2500;
 
@@ -50,7 +52,7 @@ const S = {
     background: 'var(--jf-bg-panel)',
     border: '1px solid var(--jf-border)',
     borderRadius: 'var(--jf-radius-lg)',
-    padding: '40px 48px',
+    padding: '32px 28px',
     maxWidth: 520,
     width: '100%',
     display: 'flex',
@@ -166,6 +168,7 @@ function formatTime(ts?: string): string {
 }
 
 export default function WeChatPage() {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [pageState, setPageState] = useState<PageState>('loading');
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -183,7 +186,6 @@ export default function WeChatPage() {
     }
   }, []);
 
-  const autoQrRef = useRef(false);
 
   const checkSession = useCallback(async () => {
     try {
@@ -201,7 +203,7 @@ export default function WeChatPage() {
         setPageState('disconnected');
       }
     } catch {
-      setPageState('disconnected');
+      setPageState('error');
       setSession(null);
     }
   }, [stopPolling]);
@@ -211,12 +213,7 @@ export default function WeChatPage() {
     return stopPolling;
   }, [checkSession, stopPolling]);
 
-  useEffect(() => {
-    if (pageState === 'disconnected' && !autoQrRef.current) {
-      autoQrRef.current = true;
-      handleGenerateQR();
-    }
-  }, [pageState]);
+
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -286,7 +283,7 @@ export default function WeChatPage() {
   };
 
   const pageStyle: React.CSSProperties = isMobile
-    ? { ...S.page, padding: '24px 12px 24px', paddingLeft: 52 }
+    ? { ...S.page, padding: '20px 14px 24px' }
     : S.page;
   const cardStyle: React.CSSProperties = isMobile
     ? { ...S.card, padding: '28px 20px', maxWidth: '100%' }
@@ -301,6 +298,8 @@ export default function WeChatPage() {
     ? { ...S.messagesList, maxHeight: 'calc(60vh - 80px)' }
     : S.messagesList;
 
+  if (pageState === 'error') return <div className="settings-state"><SettingsLoadError onRetry={() => { setPageState('loading'); void checkSession(); }} /></div>;
+
   if (pageState === 'loading') {
     return (
       <div style={{ ...pageStyle, justifyContent: 'center' }}>
@@ -310,12 +309,18 @@ export default function WeChatPage() {
   }
 
   return (
-    <div style={pageStyle}>
+    <div className="settings-page">
+      <div className="settings-connection-layout">
+      <section className="settings-connection-intro">
+        <h2>{t('settingsDesign.connectionGuide')}</h2>
+        <p>{t('settingsDesign.connectionGuideHint')}</p>
+        <ol>{[1, 2, 3].map(step => <li key={step}>{t(`settingsDesign.connectionStep${step}`)}</li>)}</ol>
+      </section>
       {/* Status Card */}
       <div style={cardStyle}>
         {pageState === 'disconnected' && (
           <>
-            <CloseCircleOutlined style={S.icon('#e74c3c')} />
+            <WechatOutlined style={S.icon('var(--jf-text-muted)')} />
             <h2 style={S.title}>微信未连接</h2>
             <p style={S.subtitle}>
               扫描二维码登录微信，即可接收和处理微信消息。
@@ -400,6 +405,7 @@ export default function WeChatPage() {
       </div>
 
       {/* Messages */}
+      </div>
       {pageState === 'connected' && (
         <div style={messagesCardStyle}>
           <div style={S.messagesHeader}>

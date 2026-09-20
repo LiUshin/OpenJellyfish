@@ -1,49 +1,13 @@
-import { useState, memo } from 'react';
-import { CheckCircle } from '@phosphor-icons/react';
-import type { ToolCallInfo, ThinkingBlock as ThinkingBlockType, ToolBlock, SubagentBlock } from '../types';
+import { memo, useMemo } from 'react';
+import type { ToolCallInfo, ThinkingBlock as ThinkingBlockType, ToolBlock, SubagentBlock, StreamBlock } from '../types';
 import type { MessageAttachment, MessageBlock } from '../../../types';
-import { renderMarkdown, escapeHtml } from '../markdown';
+import { renderMarkdown } from '../markdown';
 import { attachmentUrl } from '../../../services/api';
-import ThinkingBlockCmp from './ThinkingBlock';
-import ToolIndicator from './ToolIndicator';
-import StreamingFilePreview from './StreamingFilePreview';
-import SubagentCard from './SubagentCard';
-import PlanTracker from './PlanTracker';
-import ScheduledTaskCard from './ScheduledTaskCard';
-/** 与 StreamingMessage 保持一致的「文件写入」工具白名单。 */
-const FILE_WRITE_TOOLS = new Set(['write_file', 'edit_file']);
+import AssistantResponseBody from './AssistantResponseBody';
 import type { PlanStep } from '../../../stores/streamContext';
 import styles from '../chat.module.css';
 
 const JELLYFISH_AVATAR_SRC = '/media_resources/jellyfishlogo.png';
-
-function HistoryToolCall({ tc }: { tc: ToolCallInfo }) {
-  const [expanded, setExpanded] = useState(false);
-  const hasArgs = tc.args?.trim().length > 0;
-  const hasResult = tc.result?.trim().length > 0;
-
-  return (
-    <>
-      <div
-        className={`${styles.toolPill} ${styles.toolPillDone}`}
-        onClick={() => (hasArgs || hasResult) && setExpanded(!expanded)}
-        style={{ cursor: hasArgs || hasResult ? 'pointer' : 'default' }}
-      >
-        <CheckCircle size={14} weight="fill" />
-        <span className={styles.toolPillName}>{escapeHtml(tc.name)}</span>
-        {(hasArgs || hasResult) && (
-          <span className={styles.toolPillChevron}>{expanded ? '▾' : '▸'}</span>
-        )}
-      </div>
-      {expanded && (
-        <div className={styles.toolExpandedDetail}>
-          {hasArgs && <div className={styles.toolStreamPreview}>{tc.args}</div>}
-          {hasResult && <div className={styles.toolResultPreview}>{tc.result}</div>}
-        </div>
-      )}
-    </>
-  );
-}
 
 function AttachmentGallery({ attachments, convId }: {
   attachments: MessageAttachment[];
@@ -113,8 +77,6 @@ function toSubagentBlock(b: MessageBlock & { type: 'subagent' }): SubagentBlock 
   };
 }
 
-const PLAN_TOOL_NAMES = new Set(['write_todos', 'propose_plan']);
-
 function extractPlanSteps(blocks: MessageBlock[]): PlanStep[] | null {
   let lastTodos: PlanStep[] | null = null;
   for (const b of blocks) {
@@ -135,56 +97,22 @@ function extractPlanSteps(blocks: MessageBlock[]): PlanStep[] | null {
 }
 
 function BlocksRenderer({ blocks }: { blocks: MessageBlock[] }) {
-  const planSteps = extractPlanSteps(blocks);
-  let planRendered = false;
+  const normalized = useMemo<StreamBlock[]>(() => blocks.map(block => {
+    if (block.type === 'tool') return toToolBlock(block);
+    if (block.type === 'subagent') return toSubagentBlock(block);
+    if (block.type === 'thinking') return toThinkingBlock(block);
+    return block;
+  }), [blocks]);
+  const planSteps = useMemo(() => extractPlanSteps(blocks), [blocks]);
+  return <AssistantResponseBody blocks={normalized} isStreaming={false} planSteps={planSteps} />;
+}
 
-  return (
-    <>
-      {blocks.map((block, i) => {
-        switch (block.type) {
-          case 'thinking':
-            return <ThinkingBlockCmp key={`thinking-${i}`} block={toThinkingBlock(block)} />;
-          case 'text':
-            return (
-              <div
-                key={`text-${i}`}
-                className={`${styles.messageContent} ${styles.agentContent}`}
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(block.content) }}
-              />
-            );
-          case 'tool':
-            // 定时任务结果走专用卡片（蓝色 info 样式），与 agent 同步回复区分。
-            if (block.name === 'scheduled_task') {
-              return <ScheduledTaskCard key={`sched-${i}`} block={toToolBlock(block)} />;
-            }
-            if (PLAN_TOOL_NAMES.has(block.name) && planSteps) {
-              if (!planRendered) {
-                planRendered = true;
-                return <PlanTracker key={`plan-${i}`} steps={planSteps} defaultCollapsed />;
-              }
-              return null;
-            }
-            if (FILE_WRITE_TOOLS.has(block.name)) {
-              return (
-                <StreamingFilePreview
-                  key={`tool-${i}`}
-                  block={toToolBlock(block)}
-                  isStreaming={false}
-                />
-              );
-            }
-            return <ToolIndicator key={`tool-${i}`} block={toToolBlock(block)} />;
-          case 'subagent':
-            return <SubagentCard key={`subagent-${i}`} block={toSubagentBlock(block)} />;
-          case 'auto_approve':
-            // YOLO 自动批准已改为输入区底部小 tag 提示，历史消息中亦不再渲染显眼徽章。
-            return null;
-          default:
-            return null;
-        }
-      })}
-    </>
-  );
+function LegacyResponse({ content, toolCalls }: { content: string; toolCalls?: ToolCallInfo[] }) {
+  const blocks = useMemo<StreamBlock[]>(() => [
+    ...(toolCalls || []).map(tc => ({ type: 'tool' as const, ...tc, done: true, resultCollapsed: true })),
+    ...(content ? [{ type: 'text' as const, content }] : []),
+  ], [content, toolCalls]);
+  return <AssistantResponseBody blocks={blocks} isStreaming={false} />;
 }
 
 interface Props {
@@ -233,17 +161,7 @@ function MessageBubbleImpl({ role, content, toolCalls, attachments, conversation
         {hasBlocks ? (
           <BlocksRenderer blocks={blocks} />
         ) : (
-          <>
-            {toolCalls && toolCalls.length > 0 && (
-              <div className={styles.toolPillGroup}>
-                {toolCalls.map((tc, i) => <HistoryToolCall key={i} tc={tc} />)}
-              </div>
-            )}
-            <div
-              className={`${styles.messageContent} ${styles.agentContent}`}
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
-            />
-          </>
+          <LegacyResponse content={content} toolCalls={toolCalls} />
         )}
         {attachments && attachments.length > 0 && (
           <AttachmentGallery attachments={attachments} convId={conversationId} />

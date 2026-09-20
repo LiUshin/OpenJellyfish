@@ -1,73 +1,50 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { useAuth } from '../stores/authContext';
-import AppLayout from '../layouts/AppLayout';
-import Login from '../pages/Login';
-import ChatPage from '../pages/Chat';
-import SettingsLayout from '../pages/Settings';
-import PromptPage from '../pages/Settings/PromptPage';
-import SubagentPage from '../pages/Settings/SubagentPage';
-import PackagesPage from '../pages/Settings/PackagesPage';
-import AdminServicesPage from '../pages/AdminServices';
-import SchedulerPage from '../pages/Scheduler';
-import WeChatPage from '../pages/WeChat';
-import InboxPage from '../pages/Settings/InboxPage';
-import GeneralPage from '../pages/Settings/GeneralPage';
-import BackupPage from '../pages/Settings/BackupPage';
-import VoicePage from '../pages/Settings/VoicePage';
-import UsagePage from '../pages/Settings/UsagePage';
+import { lazy, Suspense } from 'react';
+import RoutePending from '../components/RoutePending';
 import ErrorBoundary from '../components/ErrorBoundary';
-import RuntimePilot from '../pages/RuntimePilot';
-import { Spin } from 'antd';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useAuth } from '../stores/authContext';
+const AppLayout = lazy(() => import('../layouts/AppLayout'));
+const Login = lazy(() => import('../pages/Login'));
+const ChatPage = lazy(() => import('../pages/Chat'));
+const SettingsLayout = lazy(() => import('../pages/Settings'));
+const PromptPage = lazy(() => import('../pages/Settings/PromptPage'));
+const SubagentPage = lazy(() => import('../pages/Settings/SubagentPage'));
+const PackagesPage = lazy(() => import('../pages/Settings/PackagesPage'));
+const AdminServicesPage = lazy(() => import('../pages/AdminServices'));
+const SchedulerPage = lazy(() => import('../pages/Scheduler'));
+const WeChatPage = lazy(() => import('../pages/WeChat'));
+const InboxPage = lazy(() => import('../pages/Settings/InboxPage'));
+const GeneralPage = lazy(() => import('../pages/Settings/GeneralPage'));
+const BackupPage = lazy(() => import('../pages/Settings/BackupPage'));
+const VoicePage = lazy(() => import('../pages/Settings/VoicePage'));
+const UsagePage = lazy(() => import('../pages/Settings/UsagePage'));
+const RuntimePilot = lazy(() => import('../pages/RuntimePilot'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
 
-  if (loading) {
-    return (
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: '100vh',
-          background: 'var(--jf-bg-deep)',
-        }}
-      >
-        <Spin size="large" />
-      </div>
-    );
-  }
+  if (loading) return <RoutePending />;
 
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return <Navigate to="/login" state={{ from: location.pathname + location.search + location.hash }} replace />;
   return <>{children}</>;
 }
 
 function PublicRoute({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  const from = location.state?.from;
+  const destination = typeof from === "string" && from.startsWith("/") && !from.startsWith("//") && !from.startsWith("/login") ? from : "/";
   const { user, loading } = useAuth();
 
-  if (loading) {
-    return (
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: '100vh',
-          background: 'var(--jf-bg-deep)',
-        }}
-      >
-        <Spin size="large" />
-      </div>
-    );
-  }
+  if (loading) return <RoutePending />;
 
-  if (user) return <Navigate to="/" replace />;
+  if (user) return <Navigate to={destination} replace />;
   return <>{children}</>;
 }
 
 export default function AppRouter() {
   return (
-      <Routes>
+      <Suspense fallback={<RoutePending />}><Routes>
         <Route
           path="/login"
           element={
@@ -118,6 +95,6 @@ export default function AppRouter() {
           <Route path="/runtime-pilot" element={<ErrorBoundary scope="runtime-pilot"><RuntimePilot /></ErrorBoundary>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      </Routes></Suspense>
   );
 }

@@ -116,6 +116,7 @@ ARM Docker 仿真下以 UID 1000、独立 HOME 运行真实 CodexAdapter，初�
 1. 超管输入 key，创建 Codex 或 Cursor 连接，在官方网页完成授权。
 2. 探测可用模型、预热；选择现有 admin 和允许模型后保存授权。
 3. admin 设置页显示团队连接，可以选择默认引擎和在对话中切换已授权模型；不能登录、探测、断开或重新分配供应商账号。
+4. admin 在「设置 → Service 管理」中选择获授权的连接与模型，发布给内部可信成员；网页、API 和 Service 微信共用该配置。见[套餐 Service 分发](runtime-service-distribution.md)。
 
 本次网页控制台提供连接与授权管理；打包启动器已有的注册码、账号、用量和系统运维界面继续保留，尚未全部迁到网页。
 

@@ -1,4 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import SettingsSectionNav from '../SettingsSectionNav';
+import SettingsLoadError from '../SettingsLoadError';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Modal, Button, Space, Typography, Input, List, Tag, Popconfirm,
   Collapse, message, Tooltip, Spin, Switch,
@@ -35,6 +37,8 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
   const { t } = useTranslation();
 
   // ── 个性规则（用户手写） ────────────────────────────
+  const loadedInline = useRef(false);
+  const [workspaceView, setWorkspaceView] = useState('rules');
   const [rules, setRules] = useState('');
   const [originalRules, setOriginalRules] = useState('');
   const [saving, setSaving] = useState(false);
@@ -47,15 +51,17 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
   const [savingAgent, setSavingAgent] = useState(false);
 
   // ── 共享 state ────────────────────────────────────
+  const [loadError, setLoadError] = useState(false);
   const [loading, setLoading] = useState(false);
   const [versions, setVersions] = useState<PromptVersion[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
-  const [showHistory, setShowHistory] = useState(true);
+  const [showHistory, setShowHistory] = useState(false);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLabel, setPreviewLabel] = useState('');
   const [editingMeta, setEditingMeta] = useState<{ id: string; label: string; note: string } | null>(null);
 
   const loadProfile = useCallback(async () => {
+    setLoadError(false);
     setLoading(true);
     try {
       const [profileRes, agentRes] = await Promise.all([
@@ -69,12 +75,13 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
       setOriginalAgentNotes(agentRes.content || '');
       setAgentLocked(!!agentRes.locked);
       setOriginalAgentLocked(!!agentRes.locked);
+      loadedInline.current = true;
     } catch (e: unknown) {
-      message.error(e instanceof Error ? e.message : t('common.loadFailed'));
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, []);
 
   const loadVersions = useCallback(async () => {
     setVersionsLoading(true);
@@ -88,11 +95,11 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
 
   useEffect(() => {
     if (open) {
-      loadProfile();
-      loadVersions();
+      if (!inline || !loadedInline.current) void loadProfile();
+      void loadVersions();
       setPreviewContent(null);
     }
-  }, [open, loadProfile, loadVersions]);
+  }, [open, inline, loadProfile, loadVersions]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -181,8 +188,8 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
       style={{
         marginBottom: 16,
         padding: 12,
-        background: 'rgba(95, 201, 230, 0.06)',
-        border: '1px solid rgba(95, 201, 230, 0.25)',
+        background: 'var(--jf-bg-panel)',
+        border: '1px solid var(--jf-border)',
         borderRadius: 'var(--jf-radius-md)',
       }}
     >
@@ -215,7 +222,8 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
         <Space size={6}>
           <Tooltip title={agentLocked ? t('profile.agentMemoryDoUnlock') : t('profile.agentMemoryDoLock')}>
             <Switch
-              size="small"
+              aria-label={t('profile.agentMemoryDoLock')}
+              disabled={loading || loadError || savingAgent}
               checked={agentLocked}
               checkedChildren={<LockOutlined />}
               unCheckedChildren={<UnlockOutlined />}
@@ -228,16 +236,17 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
         {t('profile.agentMemoryDesc')}
       </Text>
       <TextArea
+        aria-label={t('profile.agentMemory', 'Agent 记忆')} disabled={loading || loadError || saving || savingAgent}
         value={agentNotes}
         onChange={(e) => setAgentNotes(e.target.value)}
         placeholder={t('profile.agentMemoryPlaceholder')}
-        autoSize={{ minRows: 5, maxRows: 14 }}
+        autoSize={{ minRows: 12, maxRows: 24 }}
         style={{
           background: 'var(--jf-bg-deep)',
           border: '1px solid var(--jf-border)',
           color: 'var(--jf-text)',
-          fontFamily: 'monospace',
-          fontSize: 12,
+          fontSize: 14,
+          lineHeight: 1.85,
         }}
       />
       <div
@@ -270,7 +279,7 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
               size="small"
               type="text"
               icon={<DeleteOutlined />}
-              disabled={!agentNotes}
+              disabled={!agentNotes || loading || loadError || savingAgent}
               style={{ color: 'var(--jf-text-muted)' }}
             >
               {t('common.clear')}
@@ -278,11 +287,9 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
           </Popconfirm>
           <Button
             type="primary"
-            ghost
             icon={<SaveOutlined />}
-            size="small"
             loading={savingAgent}
-            disabled={!hasAgentChanges}
+            disabled={!hasAgentChanges || loading || loadError}
             onClick={handleSaveAgent}
           >
             {t('common.save')}
@@ -294,8 +301,19 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
 
   const content = (
     <>
+      {loadError && <SettingsLoadError onRetry={() => void loadProfile()} />}
+      <SettingsSectionNav label={t('profile.modalTitle')} value={workspaceView} onChange={setWorkspaceView} items={[
+        { value: 'rules', label: t('profile.rules'), description: t('settingsDesign.rulesHint'), icon: <UserOutlined /> },
+        { value: 'memory', label: t('profile.agentMemory'), description: t('settingsDesign.memoryHint'), icon: <RobotOutlined /> },
+      ]} />
+      <div className="profile-context">
+        <div><h2>{t(workspaceView === 'rules' ? 'settingsDesign.rulesGuide' : 'settingsDesign.memoryGuide')}</h2>
+        <p>{t(workspaceView === 'rules' ? 'settingsDesign.rulesGuideHint' : 'settingsDesign.memoryGuideHint')}</p></div>
+        {workspaceView === 'rules' && <Button icon={<HistoryOutlined />} aria-pressed={showHistory} onClick={() => setShowHistory(v => !v)}>{t('common.history')} · {versions.length}</Button>}
+      </div>
       <Spin spinning={loading}>
-        {agentSection}
+        <section hidden={workspaceView !== 'memory'} className="profile-memory">{agentSection}</section>
+        <section hidden={workspaceView !== 'rules'}>
 
         <div style={{
           display: 'flex',
@@ -303,7 +321,7 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
           position: 'relative',
           flexDirection: isMobile ? 'column' : 'row',
         }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="profile-editor-surface" style={{ flex: 1, minWidth: 0 }}>
             <Space size={6} style={{ marginBottom: 8 }}>
               <UserOutlined style={{ color: 'var(--jf-legacy)' }} />
               <Text style={{ color: 'var(--jf-text)', fontSize: 13, fontWeight: 600 }}>
@@ -314,6 +332,7 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
               {t('profile.rulesDesc')}
             </Text>
             <TextArea
+              aria-label={t('profile.rules')} disabled={loading || loadError || saving || savingAgent}
               value={rules}
               onChange={(e) => setRules(e.target.value)}
               placeholder={t('profile.rulesPlaceholder')}
@@ -322,20 +341,19 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
                 background: 'var(--jf-bg-deep)',
                 border: '1px solid var(--jf-border)',
                 color: 'var(--jf-text)',
-                fontFamily: 'monospace',
-                fontSize: 13,
+                fontSize: 14,
+                lineHeight: 1.85,
               }}
             />
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+            <div className="settings-savebar profile-savebar">
               <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>
                 {t('profile.charsCount', { count: rules.length })} {hasChanges && <Tag color="orange" style={{ marginLeft: 6 }}>{t('common.unsaved')}</Tag>}
               </Text>
               <Button
                 type="primary"
                 icon={<SaveOutlined />}
-                size="small"
                 loading={saving}
-                disabled={!hasChanges}
+                disabled={!hasChanges || loading || loadError}
                 onClick={handleSave}
               >
                 {t('common.save')}
@@ -344,11 +362,11 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
           </div>
 
           {showHistory && (
-            <div style={{ width: isMobile ? '100%' : 260, flexShrink: 0 }}>
+            <aside className="profile-history" style={{ width: isMobile ? '100%' : 280, flexShrink: 0 }}>
+              <p>{t('settingsDesign.historyHint')}</p>
               <Collapse
                 defaultActiveKey={['history']}
-                ghost
-                items={[{
+                    items={[{
                   key: 'history',
                   label: (
                     <Space>
@@ -377,24 +395,25 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
                               </Text>
                               <div style={{ marginTop: 6, display: 'flex', gap: 2, flexWrap: 'wrap' }}>
                                 <Tooltip title={t('common.preview')}>
-                                  <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => handlePreview(v.id)} />
+                                  <Button aria-label={t('common.preview')} size="small" type="text" icon={<EyeOutlined />} onClick={() => handlePreview(v.id)} />
                                 </Tooltip>
                                 <Tooltip title={t('profile.rollbackTip')}>
                                   <Popconfirm title={t('profile.rollbackConfirm')} onConfirm={() => handleRollback(v.id)} okText={t('common.confirm')} cancelText={t('common.cancel')}>
-                                    <Button size="small" type="text" icon={<RollbackOutlined />} />
+                                    <Button aria-label={t('profile.rollbackTip')} size="small" type="text" icon={<RollbackOutlined />} />
                                   </Popconfirm>
                                 </Tooltip>
                                 <Tooltip title={t('common.rename')}>
                                   <Button
                                     size="small"
                                     type="text"
+                                    aria-label={t('common.rename')}
                                     icon={<EditOutlined />}
                                     onClick={() => setEditingMeta({ id: v.id, label: v.label, note: v.note })}
                                   />
                                 </Tooltip>
                                 <Tooltip title={t('common.delete')}>
                                   <Popconfirm title={t('profile.deleteVersionConfirm')} onConfirm={() => handleDeleteVersion(v.id)} okText={t('common.confirm')} cancelText={t('common.cancel')}>
-                                    <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                                    <Button aria-label={t('common.delete')} size="small" type="text" danger icon={<DeleteOutlined />} />
                                   </Popconfirm>
                                 </Tooltip>
                               </div>
@@ -406,19 +425,11 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
                   ),
                 }]}
               />
-            </div>
+            </aside>
           )}
 
-          <Tooltip title={showHistory ? t('profile.collapseHistory') : t('profile.expandHistory')}>
-            <Button
-              type="text"
-              size="small"
-              icon={<HistoryOutlined />}
-              onClick={() => setShowHistory(!showHistory)}
-              style={{ position: 'absolute', top: 0, right: 0, color: 'var(--jf-text-muted)' }}
-            />
-          </Tooltip>
         </div>
+        </section>
       </Spin>
 
       <Modal
@@ -498,13 +509,9 @@ export default function UserProfileEditor({ open, onClose, inline }: Props) {
 
   if (inline) {
     return (
-      <div style={{
-        padding: isMobile ? '12px 12px 24px' : '16px 20px',
-        height: '100%',
-        overflow: 'auto',
-      }}>
+<div className="profile-workspace-scroll"><div className="settings-page profile-workspace">
         {content}
-      </div>
+      </div></div>
     );
   }
 

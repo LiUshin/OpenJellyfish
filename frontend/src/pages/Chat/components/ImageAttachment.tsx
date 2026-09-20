@@ -61,23 +61,30 @@ async function processFiles(
 
 export interface ImageAttachmentHandle {
   triggerUpload: () => void;
+  addFiles: (files: File[]) => Promise<void>;
 }
 
 const ImageAttachment = forwardRef<ImageAttachmentHandle, ImageAttachmentProps>(
   function ImageAttachment({ images, onImagesChange, disabled, allowFiles = false }, ref) {
     const inputRef = useRef<HTMLInputElement>(null);
 
-    useImperativeHandle(ref, () => ({
-      triggerUpload: () => inputRef.current?.click(),
-    }));
-
     const handleFiles = useCallback(
       async (files: File[]) => {
-        const next = await processFiles(files, images, allowFiles);
-        if (next !== images) onImagesChange(next);
+        if (disabled) return;
+        try {
+          const next = await processFiles(files, images, allowFiles);
+          if (next !== images) onImagesChange(next);
+        } catch {
+          message.error(i18n.t('imageAttach.readFailed'));
+        }
       },
-      [images, onImagesChange, allowFiles],
+      [images, onImagesChange, allowFiles, disabled],
     );
+
+    useImperativeHandle(ref, () => ({
+      triggerUpload: () => { if (!disabled) inputRef.current?.click(); },
+      addFiles: handleFiles,
+    }), [disabled, handleFiles]);
 
     const handleDrop = useCallback(
       (e: React.DragEvent) => {
@@ -138,6 +145,7 @@ const ImageAttachment = forwardRef<ImageAttachmentHandle, ImageAttachmentProps>(
               {img.dataUrl.startsWith('data:image/') ? <img src={img.dataUrl} alt={img.name} className={styles.imageThumbnail} /> : <span title={img.name} style={{ display: 'block', width: 100, padding: 8, overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.name}</span>}
               <button
                 className={styles.imageThumbnailRemove}
+                aria-label={i18n.t('imageAttach.removeAttachment', { name: img.name })}
                 onClick={() => removeImage(i)}
                 disabled={disabled}
                 type="button"

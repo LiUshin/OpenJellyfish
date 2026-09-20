@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Empty, Spin } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
-import { PPTXViewer } from 'pptxviewjs';
+import type { PPTXViewer } from 'pptxviewjs';
+import { loadPptxViewer } from './pptxViewer';
 import type { OfficePreviewProps } from './types';
 
 const C = {
@@ -40,7 +41,7 @@ export default function PptxPreview({ getArrayBuffer, fileName }: OfficePreviewP
       setSlideCount(0);
       setSlideIndex(0);
       try {
-        const buf = await getArrayBuffer();
+        const [buf, { PPTXViewer }] = await Promise.all([getArrayBuffer(), loadPptxViewer()]);
         if (cancelled || !canvasRef.current) return;
         viewer = new PPTXViewer({
           canvas: canvasRef.current,

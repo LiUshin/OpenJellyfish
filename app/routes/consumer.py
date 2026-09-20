@@ -71,6 +71,9 @@ def _resolve_billing(ctx, req):
     行为与 BYOK 上线前完全一致。
     """
     billing = ctx.get("billing", "hosted")
+    from app.runtime.consumer import external
+    if external(ctx.get('service_config', {})) and billing == 'byok':
+        raise HTTPException(400, '套餐 Service 不支持 BYOK，请使用托管 Key')
     if billing != "byok":
         # 注意只挡凭据字段：OpenAI SDK 总会带 model，历史 hosted 调用一直被忽略，
         # 这里若一并报错会打断既有集成。
@@ -107,6 +110,14 @@ async def _record_stream(gen, *, admin_id: str, service_id: str, channel: str,
     status_code = 200
     try:
         async for ev in gen:
+            for line in ev.splitlines():
+                if line.startswith('data: ') and line != 'data: [DONE]':
+                    try:
+                        payload = json.loads(line[6:])
+                        if payload.get('type') == 'error' or isinstance(payload.get('error'), dict):
+                            ok, status_code = False, 502
+                    except (ValueError, AttributeError):
+                        pass
             yield ev
     except Exception:
         ok = False
@@ -319,6 +330,7 @@ async def _stream_openai_compat(agent, agent_input, config, ctx, conv_id, model_
         return "data: " + json.dumps({
             "id": completion_id,
             "object": "chat.completion.chunk",
+            "conversation_id": conv_id,
             "created": created,
             "model": model_name,
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
@@ -364,8 +376,11 @@ async def _stream_openai_compat(agent, agent_input, config, ctx, conv_id, model_
             save_consumer_message(admin_id, service_id, conv_id, "assistant",
                                   full_response + f"\n\n❌ 错误: {e}")
         _saved = True
-        yield _chunk({"content": f"\n\n[Error: {e}]"})
-        yield _chunk({}, finish_reason="stop")
+        if hasattr(agent, 'runtime'):
+            yield 'data: ' + json.dumps({'error': {'message': str(e.detail if isinstance(e, HTTPException) else e), 'type': 'runtime_error'}}, ensure_ascii=False) + '\n\n'
+        else:
+            yield _chunk({"content": f"\n\n[Error: {e}]"})
+            yield _chunk({}, finish_reason="stop")
         yield "data: [DONE]\n\n"
     finally:
         if not _saved and full_response:
@@ -387,6 +402,9 @@ async def api_consumer_models(ctx=Depends(get_service_context)):
     admin_id = ctx["admin_id"]
     svc_config = ctx.get("service_config", {}) or {}
     billing = ctx.get("billing", "hosted")
+    from app.runtime.consumer import external
+    if external(ctx.get('service_config', {})) and billing == 'byok':
+        raise HTTPException(400, '套餐 Service 不支持 BYOK，请使用托管 Key')
     if billing != "byok":
         return {
             "billing": billing,
@@ -449,6 +467,7 @@ async def api_consumer_chat(req: ConsumerChatRequest, ctx=Depends(get_service_co
     agent = create_consumer_agent(
         admin_id, service_id, conv_id, channel="web",
         model_override=model_override, credentials_override=credentials_override,
+        service_key_id=ctx.get("key_id"),
     )
     thread_id = f"svc-{service_id}-{conv_id}"
     config = {
@@ -512,8 +531,9 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
 
     save_consumer_message(admin_id, service_id, conv_id, "user", last_user_msg)
     agent = create_consumer_agent(
-        admin_id, service_id, conv_id, channel="web",
+        admin_id, service_id, conv_id, channel="api",
         model_override=model_override, credentials_override=credentials_override,
+        service_key_id=ctx.get("key_id"),
     )
     thread_id = f"svc-{service_id}-{conv_id}"
     config = {
@@ -595,7 +615,7 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
             "message": {"role": "assistant", "content": full_response},
             "finish_reason": "stop",
         }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": getattr(agent, "usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}),
         "conversation_id": conv_id,
     }
 

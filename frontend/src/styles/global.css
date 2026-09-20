@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import './themes.css';
 
 *,
@@ -19,7 +18,7 @@ body,
 body {
   background: var(--jf-bg-deep);
   color: var(--jf-text);
-  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -51,7 +50,7 @@ kbd {
 
 ::selection {
   background: var(--jf-selection-bg);
-  color: var(--jf-text-on-primary);
+  color: var(--jf-text);
 }
 
 .message-content h1,
@@ -516,3 +515,17 @@ kbd {
   overflow: hidden;
 }
 
+
+.jf-route-pending { flex: 1; min-height: 200px; display: flex; gap: 12px; align-items: center; justify-content: center; color: var(--jf-text-muted); background: var(--jf-bg-deep); }
+.jf-settings-nav { flex: 1; overflow: auto; padding: 16px 8px; }
+.jf-settings-label { font-size: 18px; font-weight: 650; padding: 0 16px 16px; }
+.jf-settings-nav .ant-menu-item-group-title { font-size: 11px; letter-spacing: .06em; padding-top: 20px; color: var(--jf-text-muted); }
+.jf-settings-nav .ant-menu-item { margin-block: 3px; }
+:where(button, a, input, textarea, select, [tabindex]):focus-visible { outline: 2px solid var(--jf-primary); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+
+[data-style='regular'] .jf-settings-nav .ant-menu-item { border-radius:8px; }
+[data-style='regular'] .jf-settings-nav .ant-menu-item-selected { background:var(--jf-menu-selected-bg); color:var(--jf-text); font-weight:500; }
+[data-style='regular'] .jf-settings-nav .ant-menu-item-selected .ant-menu-item-icon { color:var(--jf-primary); }

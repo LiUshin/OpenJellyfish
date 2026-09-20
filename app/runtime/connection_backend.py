@@ -30,6 +30,14 @@ class ConnectionBackend(LocalBackend):
             raise RuntimeFailure('连接未返回可用模型')
         return self.credentials.binding(p['credential_owner_id'], p['id'], p['models'][0]['id'])
 
+    @staticmethod
+    def client_policy(profile, scope=None):
+        # Cursor reads global permissions when ACP starts; project config is
+        # deliberately disabled. Never lend an admin-mode client to a Service.
+        if profile.get('runtime') != 'cursor' or not scope:
+            return None
+        return (True, bool(scope.get('web')), bool(scope.get('image')))
+
     async def _build(self, entry):
         pid = entry['profile']['id']
         lease = adapter = None
@@ -46,6 +54,7 @@ class ConnectionBackend(LocalBackend):
                 adapter = self.adapter_factory(self.executable, home, neutral, binding['model'], managed=True, dynamic_tools=specifications())
             else:
                 adapter = self.credentials.provider(p).adapter(home, neutral, binding['model'], specifications())
+            adapter.service_scope = entry.get('service_scope')
             entry['adapter'] = adapter
             async with asyncio.timeout(120):
                 capabilities = await adapter.warm_up()
@@ -93,8 +102,10 @@ class ConnectionBackend(LocalBackend):
             self.states[pid] = {'status': 'sleeping'}
         self.changed.set()
 
-    def _launch_locked(self, p):
+    def _launch_locked(self, p, scope=None):
         entry = {'profile': p, 'busy': False, 'ready': False, 'last_used': time.monotonic(), 'session': None, 'adapter': None}
+        entry['service_scope'] = scope
+        entry['client_policy'] = self.client_policy(p, scope)
         self.clients[p['id']] = entry
         self.states[p['id']] = {'status': 'warming'}
         entry['task'] = asyncio.create_task(self._build(entry))
@@ -102,7 +113,7 @@ class ConnectionBackend(LocalBackend):
         entry['task'].add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
         return entry
 
-    async def _ensure(self, pid):
+    async def _ensure(self, pid, scope=None):
         while not self.closed:
             self.changed.clear()
             async with self.guard:
@@ -110,6 +121,9 @@ class ConnectionBackend(LocalBackend):
                     p = self.credentials.get(pid)
                     self._binding(p)
                     entry = self.clients.get(pid)
+                    if entry and not entry['busy'] and entry.get('client_policy') != self.client_policy(p, scope):
+                        await self._drop_locked(pid)
+                        entry = None
                     if entry and not entry['busy'] and entry['task'].done() and (not entry['ready'] or not self.healthy(entry) or entry['profile']['auth_generation'] != p['auth_generation']):
                         await self._drop_locked(pid)
                         entry = None
@@ -120,7 +134,7 @@ class ConnectionBackend(LocalBackend):
                                 victim = min(idle, key=lambda e: e['last_used'])['profile']['id']
                                 await self._drop_locked(victim)
                         if len(self.clients) < self.max_clients:
-                            entry = self._launch_locked(p)
+                            entry = self._launch_locked(p, scope)
                     if entry and not entry['busy']:
                         # Reserve before awaiting warmup. The scheduler still
                         # serializes per account; the backend enforces it too.
@@ -189,13 +203,14 @@ class ConnectionBackend(LocalBackend):
     @contextlib.asynccontextmanager
     async def execution(self, session):
         pid = session['binding']['profile_id']
+        prior = self.clients.get(pid)
         was_ready = self.public_state(pid)['status'] == 'ready'
-        entry = await self._ensure(pid)
+        entry = await self._ensure(pid, session['binding'].get('service_scope'))
         adapter = entry['adapter']
         ok = False
         try:
             entry['session'] = session
-            adapter.model, adapter.reused, adapter.reusable = session['binding']['model'], was_ready, False
+            adapter.model, adapter.reused, adapter.reusable = session['binding']['model'], was_ready and entry is prior, False
             adapter.workspace = self.workspace(session)
             adapter.workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
             adapter.session_key = session['id']

@@ -1,7 +1,8 @@
 import { type KeyboardEvent, useMemo, useState, useEffect, useRef, useCallback } from 'react';
-import { Button, Tooltip, Segmented, Table, Empty, App } from 'antd';
+import { Button, Tooltip, Segmented, Table, Empty, App, Dropdown } from 'antd';
 import {
   SaveOutlined,
+  MoreOutlined,
   CloseOutlined,
   DownloadOutlined,
   FileUnknownOutlined,
@@ -11,6 +12,7 @@ import hljs from 'highlight.js/lib/core';
 import OfficePreview from './office/OfficePreview';
 import FileTabBar from './FileTabBar';
 import HeaderControls from './HeaderControls';
+import workspace from '../layouts/workspace.module.css';
 import { useFileWorkspace } from '../stores/fileWorkspaceContext';
 import * as api from '../services/api';
 import {
@@ -284,6 +286,7 @@ function MarkdownPreview({ content }: { content: string }) {
               type="text"
               size="small"
               icon={<CloseOutlined style={{ fontSize: 11 }} />}
+              aria-label="关闭文档目录"
               onClick={() => setTocOpen(false)}
               style={{ color: C.textDim, width: 22, height: 22, minWidth: 22 }}
               title="收起目录"
@@ -560,6 +563,7 @@ function TextEditor({
   };
   return (
     <textarea
+      aria-label="文档源码"
       style={{
         flex: 1,
         background: C.bgDark,
@@ -687,24 +691,15 @@ export default function FilePreview() {
         onClose={(path) => closeTab(path)}
         onReorder={reorderTabs}
       />
-      <div
-        style={{
-          padding: '0 14px',
-          height: 40,
-          boxSizing: 'border-box',
-          borderBottom: `1px solid ${C.border}`,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          flexShrink: 0,
-        }}
-      >
+      <div className={workspace.fileToolbar} aria-label="文件操作">
+        <div className={workspace.fileToolbarGroup}>
         {showSaveBtn && (
           <Tooltip title={editDirty ? '保存 (Ctrl+S)' : '已保存'}>
             <Button
               type="text"
               size="small"
               icon={<SaveOutlined />}
+              aria-label={editDirty ? '保存文件' : '已保存'}
               disabled={!editDirty}
               loading={saving}
               style={{ color: editDirty ? C.accent : C.textDim, flexShrink: 0 }}
@@ -712,7 +707,6 @@ export default function FilePreview() {
             />
           </Tooltip>
         )}
-        <div style={{ flex: 1, minWidth: 0 }} />
         {showToggle && (
           <Segmented
             size="small"
@@ -725,36 +719,27 @@ export default function FilePreview() {
             style={{ flexShrink: 0 }}
           />
         )}
-        <Tooltip title="下载">
+        </div>
+        <div className={workspace.fileToolbarGroup}>
+        <Tooltip title="下载当前文件">
           <Button
             type="text"
             size="small"
             icon={<DownloadOutlined />}
             style={{ color: C.textSec }}
+            aria-label="下载当前文件"
             onClick={handleDownload}
-          />
+          >下载</Button>
         </Tooltip>
-        <Tooltip title="关闭当前标签">
-          <Button
-            type="text"
-            size="small"
-            icon={<CloseOutlined />}
-            style={{ color: C.textSec }}
-            onClick={() => closeTab(editingFile)}
-          />
-        </Tooltip>
-        <Tooltip title="关闭全部标签">
-          <Button
-            type="text"
-            size="small"
-            style={{ color: C.textDim, fontSize: 11, flexShrink: 0 }}
-            onClick={() => closeFile()}
-          >
-            全部关闭
-          </Button>
-        </Tooltip>
+        <Dropdown trigger={['click']} menu={{ items: [
+          { key: 'close', label: '关闭当前标签', onClick: () => closeTab(editingFile) },
+          { key: 'close-all', label: '关闭全部标签', onClick: () => closeFile() },
+        ] }}>
+          <Button type="text" size="small" icon={<MoreOutlined />} aria-label="更多文件操作" title="更多文件操作" />
+        </Dropdown>
         <div style={{ width: 1, height: 16, background: C.border, flexShrink: 0 }} />
         <HeaderControls />
+        </div>
       </div>
       {body}
     </div>

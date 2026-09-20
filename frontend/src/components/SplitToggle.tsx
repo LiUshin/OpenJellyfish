@@ -94,7 +94,10 @@ export default function SplitToggle({ value, onChange }: Props) {
         return (
           <button
             key={mode}
+            type="button"
             title={LABELS[i]}
+            aria-label={LABELS[i]}
+            aria-pressed={i === activeIdx}
             onClick={() => onChange(mode)}
             style={{
               ...btnBase,

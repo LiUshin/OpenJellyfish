@@ -1,10 +1,20 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-color="dark" data-style="regular">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#1c1c27" />
   <title>OpenJellyfish</title>
+  <script>
+    // Match ThemeProvider before CSS paints, including legacy preferences.
+    try {
+      var color = localStorage.getItem('jf-color');
+      var style = localStorage.getItem('jf-style');
+      var legacy = localStorage.getItem('jf-theme');
+      document.documentElement.dataset.color = color === 'light' || color === 'dark' ? color : legacy === 'cyber-ocean' ? 'light' : 'dark';
+      document.documentElement.dataset.style = style === 'regular' || style === 'terminal' ? style : legacy === 'terminal' ? 'terminal' : 'regular';
+    } catch (_) { /* Keep the default theme when storage is unavailable. */ }
+  </script>
 </head>
 <body>
   <div id="root"></div>

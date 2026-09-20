@@ -117,6 +117,19 @@ function buildAntdConfig(color: ColorMode, style: UiStyle): ThemeConfig {
 
   const palette = PALETTES[color];
   const menuColors = MENU_COLORS[color];
+  // Match the regular workspace surfaces in themes.css; terminal keeps its palette.
+  if (!isTerminal) {
+    Object.assign(palette, isDark ? {
+      colorBgBase: '#111214', colorBgContainer: '#191a1e', colorBgElevated: '#212328',
+      colorBgLayout: '#111214', colorBorder: '#2c2e34', colorBorderSecondary: '#2c2e34',
+      colorText: '#eeeef1', colorTextSecondary: '#a1a2ad', colorTextTertiary: '#92949f',
+    } : {
+      colorBgBase: '#f7f7f8', colorBgContainer: '#ffffff', colorBgElevated: '#f0f0f3',
+      colorBgLayout: '#f7f7f8', colorBorder: '#e2e2e7', colorBorderSecondary: '#e2e2e7',
+      colorText: '#27282d', colorTextSecondary: '#656872', colorTextTertiary: '#737681',
+    });
+  }
+
 
   const LAYOUT_BG: Record<string, { siderBg: string; bodyBg: string }> = {
     dark: { siderBg: '#16161d', bodyBg: '#0f0f13' },
@@ -136,16 +149,22 @@ function buildAntdConfig(color: ColorMode, style: UiStyle): ThemeConfig {
   return {
     token: {
       ...palette,
+      colorTextLightSolid: color === 'dark' ? '#231725' : '#ffffff',
       borderRadius: isTerminal ? 0 : 8,
       fontFamily: isTerminal
         ? "'JetBrains Mono', 'Fira Code', Consolas, monospace"
-        : "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif",
+        : "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
       fontSize: 14,
       controlHeight: 36,
     },
     components: {
-      Menu: menuColors,
-      Layout: LAYOUT_BG[color],
+      Menu: isTerminal ? menuColors : {
+        ...menuColors,
+        itemSelectedBg: isDark ? '#27292f' : '#eeeef2',
+        itemSelectedColor: palette.colorText,
+        itemHoverBg: isDark ? '#202227' : '#f5f5f7',
+      },
+      Layout: isTerminal ? LAYOUT_BG[color] : { siderBg: palette.colorBgContainer, bodyBg: palette.colorBgLayout },
       Button: { primaryShadow: 'none', defaultShadow: 'none' },
       Input: {
         activeBorderColor: palette.colorPrimary,

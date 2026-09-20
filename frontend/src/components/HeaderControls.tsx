@@ -35,6 +35,8 @@ export default function HeaderControls() {
           type="text"
           size="small"
           icon={<FolderOpen size={16} />}
+          aria-label={fileBrowserOpen ? t('header.closeFilePanel') : t('header.openFilePanel')}
+          aria-pressed={fileBrowserOpen}
           onClick={() => setFileBrowserOpen((v: boolean) => !v)}
           style={{
             color: fileBrowserOpen ? 'var(--jf-primary)' : 'var(--jf-text-muted)',

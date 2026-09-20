@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from app.runtime.rpc import StdioRPC, RuntimeFailure, RuntimeUnavailable
 from app.runtime.types import RuntimeEvent
+from app.runtime.tool_details import cursor_tool
 from app.runtime.vault import private_write
 
 
@@ -177,6 +178,12 @@ class CursorAdapter:
         config = {'version': 1, 'editor': {'vimMode': False}, 'approvalMode': 'allowlist',
                   'permissions': {'allow': [], 'deny': []},
                   'autoAcceptWebSearch': True}
+        if getattr(self, 'service_scope', None):
+            scope = self.service_scope
+            config['permissions']['deny'] = ['Shell(*)', 'Read(*)', 'Read(**)', 'Read(/**)', 'Write(*)', 'Write(**)', 'Write(/**)']
+            config['autoAcceptWebSearch'] = bool(scope.get('web'))
+            if not scope.get('web'):
+                config['permissions']['deny'].append('WebFetch(*)')
         private_write(self.home / '.cursor/cli-config.json', json.dumps(config).encode())
         await self.rpc.start()
         response = await self.rpc.request('initialize', {
@@ -345,8 +352,7 @@ class CursorAdapter:
                                 raise RuntimeFailure('Cursor 上游请求失败，请检查网络、账号与配额后重试')
                             yield RuntimeEvent('text_delta', {'text': chunk})
                         elif kind in ('tool_call', 'tool_call_update'):
-                            yield RuntimeEvent('tool', {'item_id': update.get('toolCallId'), 'kind': update.get('kind'),
-                                                        'status': update.get('status'), 'command': update.get('title')})
+                            yield RuntimeEvent('tool', cursor_tool(update))
                     elif method == 'cursor/generate_image':
                         yield RuntimeEvent('image', {'item_id': p.get('toolCallId'), 'saved_path': p.get('filePath')})
                 # Give the event reader one scheduling turn to drain messages
@@ -378,6 +384,9 @@ class CursorAdapter:
             await self.respond(request_id, {})
             return
         if method == 'cursor/generate_image':
+            if getattr(self, 'service_scope', None) and not self.service_scope.get('image'):
+                await self.rpc.send({'id': request_id, 'error': {'code': -32001, 'message': 'Image generation disabled for this Service'}})
+                return
             await self.respond(request_id, {})
             yield RuntimeEvent('image', {'item_id': params.get('toolCallId'), 'saved_path': params.get('filePath')})
             return
@@ -396,6 +405,13 @@ class CursorAdapter:
         reject = next((o['optionId'] for o in options if o.get('kind') == 'reject_once' and isinstance(o.get('optionId'), str)), None)
         self.permission_options[request_id] = {'accept': allow, 'decline': reject}
         tool = params.get('toolCall') or {}
+        if getattr(self, 'service_scope', None):
+            names = {value for t in self.dynamic_tools for value in
+                     (f"jellyfish: {t['name']}", f"jellyfish-{t['name']}: {t['name']}")}
+            allowed = (tool.get('kind') == 'other' and tool.get('title') in names)
+            allowed = allowed or (self.service_scope.get('web') and tool.get('kind') == 'search' and not tool.get('locations'))
+            await self.respond(request_id, {'decision': 'accept' if allowed else 'decline'})
+            return
         kind, title = tool.get('kind'), str(tool.get('title') or '')[:8000]
         normalized = {'itemId': tool.get('toolCallId'), 'availableDecisions': ['accept', 'decline'] if allow else ['decline']}
         if kind == 'edit':

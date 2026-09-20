@@ -70,22 +70,27 @@ class BusinessTools:
         return data.decode('utf-8')
 
     async def __call__(self, session, run, params):
+        if session['binding'].get('service_scope'):
+            from app.runtime.consumer_tools import ServiceTools
+            return await ServiceTools(self.storage, self.store, self.authorize)(session, run, params)
         actor_id = session['actor_id']
         self.authorize(actor_id, session['binding'])
+        from uuid import uuid4
+        call_id = params.get('callId') or uuid4().hex
         name = params.get('tool')
         schema = TOOLS.get(name)
         if not schema:
             return self.result('此业务工具未开放', False)
         try:
             args = schema[0].model_validate(params.get('arguments', {}))
-            self.store.emit(run, 'business_tool', {'name': name, 'status': 'running'})
+            self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'running', 'input': args.model_dump()})
             # These bounded metadata/file operations run in the scheduler thread so
             # permission checks and memory compare/write cannot interleave.
             value = self.invoke(actor_id, name, args)
-            self.store.emit(run, 'business_tool', {'name': name, 'status': 'completed'})
+            self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'completed', 'result': value})
             return self.result(value, True)
         except Exception:
-            self.store.emit(run, 'business_tool', {'name': name, 'status': 'failed'})
+            self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'failed', 'result': '工具拒绝执行：检查路径、大小、作用域、记忆锁或版本；没有访问其他 admin 的数据。'})
             return self.result('工具拒绝执行：检查路径、大小、作用域、记忆锁或版本；没有访问其他 admin 的数据。', False)
 
     @staticmethod

@@ -1,8 +1,15 @@
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Literal
 from pydantic import BaseModel
 
 
+class ServiceRuntimeChoice(BaseModel):
+    runtime: Literal['deepagents', 'codex', 'cursor'] = 'deepagents'
+    profile_id: Optional[str] = None
+    model: Optional[str] = None
+
+
 class CreateServiceRequest(BaseModel):
+    runtime_choice: Optional[ServiceRuntimeChoice] = None
     name: str
     description: str = ""
     model: str
@@ -20,6 +27,7 @@ class CreateServiceRequest(BaseModel):
 
 
 class UpdateServiceRequest(BaseModel):
+    runtime_choice: Optional[ServiceRuntimeChoice] = None
     name: Optional[str] = None
     description: Optional[str] = None
     model: Optional[str] = None

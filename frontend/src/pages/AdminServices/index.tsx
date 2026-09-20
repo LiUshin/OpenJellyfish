@@ -1,9 +1,10 @@
+import SettingsLoadError from '../../components/SettingsLoadError';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Table, Modal, Form, Input, Select, Button, Tag, message,
   Popconfirm, Space, Typography, Checkbox,
   Spin, Empty, InputNumber, Tooltip,
-  Drawer, Segmented,
+  Drawer, Segmented, Alert,
 } from 'antd';
 import { PlusOutlined, MinusCircleOutlined } from '@ant-design/icons';
 import {
@@ -44,6 +45,8 @@ import type {
   ServiceConvSummary, ServiceConvDetail, ServiceUsageRecord, UsageSummary,
 } from '../../services/api';
 import UsageView from '../../components/UsageView';
+import RuntimeChoiceFields from '../../components/RuntimeChoiceFields';
+import * as runtime from '../../services/runtime';
 import { fmtUserTime } from '../../utils/timezone';
 import LogoLoading from '../../components/LogoLoading';
 import { useIsMobile } from '../../hooks/useMediaQuery';
@@ -314,6 +317,7 @@ export default function AdminServicesPage() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [promptVersions, setPromptVersions] = useState<PromptVersion[]>([]);
   const [profileVersions, setProfileVersions] = useState<PromptVersion[]>([]);
+  const [listError, setListError] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // service modal
@@ -323,6 +327,20 @@ export default function AdminServicesPage() {
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
+  const [runtimeProfiles, setRuntimeProfiles] = useState<runtime.RuntimeProfile[]>([]);
+  const runtimeChoice = Form.useWatch('runtime_choice', form) as runtime.RuntimeChoice | undefined;
+  const externalEngine = !!runtimeChoice && runtimeChoice.runtime !== 'deepagents';
+  const currentExternal = !!currentSvc?.runtime_choice && currentSvc.runtime_choice.runtime !== 'deepagents';
+
+  useEffect(() => {
+    if (!svcModalOpen) return;
+    let disposed = false;
+    runtime.capabilities().then(async caps => {
+      const profiles = caps.available ? await runtime.profiles() : [];
+      if (!disposed) setRuntimeProfiles(profiles);
+    }).catch(() => { if (!disposed) setRuntimeProfiles([]); });
+    return () => { disposed = true; };
+  }, [svcModalOpen]);
 
   // keys
   const [serviceKeys, setServiceKeys] = useState<ServiceKey[]>([]);
@@ -377,11 +395,12 @@ export default function AdminServicesPage() {
   /* ─── Data Loading ─── */
 
   const loadAllServices = useCallback(async () => {
+    setListError(false);
     try {
       const data = await listServices() as ServiceConfig[];
       setServices(data);
     } catch (e: unknown) {
-      message.error((e as Error).message || '加载 Service 列表失败');
+      setListError(true);
     }
   }, []);
 
@@ -616,6 +635,7 @@ export default function AdminServicesPage() {
     form.resetFields();
     form.setFieldsValue({
       name: '', description: '',
+      runtime_choice: { runtime: 'deepagents' },
       model: models[0]?.id || '',
       system_prompt_version_id: undefined,
       user_profile_version_id: undefined,
@@ -631,13 +651,13 @@ export default function AdminServicesPage() {
     if (!currentSvc) return;
     setEditingId(currentSvc.id);
     form.setFieldsValue({
+      runtime_choice: currentSvc.runtime_choice || { runtime: 'deepagents' },
       name: currentSvc.name,
       description: currentSvc.description || '',
       model: currentSvc.model || '',
       system_prompt_version_id: currentSvc.system_prompt_version_id || undefined,
       user_profile_version_id: currentSvc.user_profile_version_id || undefined,
-      allowed_docs: currentSvc.allowed_docs && currentSvc.allowed_docs.length > 0
-        ? currentSvc.allowed_docs : ['*'],
+      allowed_docs: currentSvc.allowed_docs ?? ['*'],
       allowed_scripts: currentSvc.allowed_scripts || [],
       capabilities: (currentSvc.capabilities || []).filter(c => UI_CAPABILITIES.has(c)),
       published: currentSvc.published !== false,
@@ -663,11 +683,11 @@ export default function AdminServicesPage() {
       const body = {
         name: values.name,
         description: values.description || '',
-        model: values.model,
+        model: externalEngine ? values.runtime_choice.model : values.model,
+        runtime_choice: values.runtime_choice || { runtime: 'deepagents' },
         system_prompt_version_id: values.system_prompt_version_id || null,
         user_profile_version_id: values.user_profile_version_id || null,
-        allowed_docs: Array.isArray(values.allowed_docs) && values.allowed_docs.length > 0
-          ? values.allowed_docs : ['*'],
+        allowed_docs: Array.isArray(values.allowed_docs) ? values.allowed_docs : [],
         allowed_scripts: Array.isArray(values.allowed_scripts) ? values.allowed_scripts : [],
         capabilities: [...(values.capabilities || []), ...hiddenCaps],
         published: values.published,
@@ -924,7 +944,8 @@ export default function AdminServicesPage() {
       );
     }
 
-    const apiOrigin = window.location.origin;
+
+  const apiOrigin = window.location.origin;
     const scanUrl = `${apiOrigin}/wc/${currentSvc.id}`;
     const expired = isWcExpired(currentSvc);
 
@@ -1025,10 +1046,10 @@ export default function AdminServicesPage() {
   const showDetailOnMobile = isMobile && !!currentSvc;
 
   return (
-    <div style={{ display: 'flex', flex: 1, minHeight: 0, height: '100%', width: '100%', background: C.bg0 }}>
+    <div className="settings-master-detail" style={{ display: 'flex', flex: 1, minHeight: 0, height: '100%', width: '100%', background: C.bg0 }}>
       {/* ── Service list 30% ── */}
       <div style={{
-        flex: isMobile ? (showListOnMobile ? '1 1 100%' : '0 0 0') : '0 0 30%',
+        flex: isMobile ? (showListOnMobile ? '1 1 100%' : '0 0 0') : '0 0 320px',
         maxWidth: isMobile ? '100%' : '40%',
         minWidth: isMobile ? 0 : 260,
         background: C.bg1,
@@ -1036,7 +1057,7 @@ export default function AdminServicesPage() {
         display: isMobile && !showListOnMobile ? 'none' : 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
-        paddingLeft: showListOnMobile ? 40 : undefined,
+        paddingLeft: 0,
       }}
       >
         <div style={{
@@ -1045,7 +1066,7 @@ export default function AdminServicesPage() {
         }}
         >
           <Title level={4} style={{ color: C.text, margin: '0 0 12px', fontSize: 16 }}>
-            Service 管理
+            我的服务
           </Title>
           <div style={{
             background: C.bg0, border: `1px solid ${C.border}`,
@@ -1056,7 +1077,7 @@ export default function AdminServicesPage() {
             <MagnifyingGlass size={14} color={C.muted} />
             <input
               type="text"
-              placeholder="搜索 Service..."
+              placeholder="搜索服务…" aria-label="搜索服务"
               value={svcSearch}
               onChange={e => setSvcSearch(e.target.value)}
               style={{
@@ -1072,15 +1093,15 @@ export default function AdminServicesPage() {
             onClick={openCreateModal}
             style={{ background: C.primary, borderColor: C.primary, color: C.bg0 }}
           >
-            创建 Service
+            创建服务
           </Button>
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
-          {filteredServices.length === 0 ? (
+          {listError ? <SettingsLoadError onRetry={() => void loadAllServices()} /> : filteredServices.length === 0 ? (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="暂无 Service"
+              description={svcSearch ? "没有匹配的服务" : "还没有服务，创建后即可管理与交付"}
               style={{ marginTop: 60 }}
             />
           ) : (
@@ -1157,14 +1178,11 @@ export default function AdminServicesPage() {
       }}
       >
         {!currentSvc ? (
-          <div style={{
-            display: 'flex', flexDirection: 'column',
-            alignItems: 'center', justifyContent: 'center',
-            height: '100%', color: C.muted,
-          }}
-          >
-            <GridFour size={48} color={C.muted} style={{ opacity: 0.45, marginBottom: 16 }} />
-            <Text style={{ color: C.muted }}>选择或创建一个 Service</Text>
+          <div className="settings-detail-welcome">
+            <span className="settings-guide-icon"><GridFour size={28} /></span>
+            <h2>把你的经验交付成服务</h2>
+            <p>选择已有服务，管理知识、访问方式与对话。也可以创建新服务，逐步配置后再发布。</p>
+            <Button type="primary" icon={<Plus size={16} />} onClick={openCreateModal}>创建服务</Button>
           </div>
         ) : (
           <>
@@ -1254,6 +1272,8 @@ export default function AdminServicesPage() {
               {/* Module: Basic Config */}
               <ModuleCard title="基本配置" icon={<Info size={16} />}>
                 <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '12px 16px', fontSize: 13 }}>
+                  <div style={{ color: C.muted }}>引擎</div>
+                  <div>{currentSvc.runtime_choice?.runtime || 'deepagents'}{currentExternal ? ' · 套餐内部分发' : ''}</div>
                   <div style={{ color: C.muted }}>模型</div>
                   <div>{currentSvc.model || '—'}</div>
                   <div style={{ color: C.muted }}>描述</div>
@@ -1513,20 +1533,33 @@ export default function AdminServicesPage() {
         destroyOnClose
         styles={modalStyles}
       >
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        <Form form={form} layout="vertical" style={{ marginTop: 16 }} onValuesChange={changed => {
+          if (changed.runtime_choice?.runtime && changed.runtime_choice.runtime !== 'deepagents') {
+            form.setFieldValue('capabilities', (form.getFieldValue('capabilities') || []).filter((c: string) => !['scheduler', 'speech', 'video'].includes(c)));
+          }
+        }}>
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请填写名称' }]}>
             <Input placeholder="我的智能客服" />
           </Form.Item>
           <Form.Item name="description" label="描述">
             <TextArea placeholder="简要描述 Service 的用途" rows={2} />
           </Form.Item>
-          <Form.Item name="model" label="模型" rules={[{ required: true, message: '请选择模型' }]}>
-            <Select placeholder="选择模型">
-              {models.map(m => (
-                <Select.Option key={m.id} value={m.id}>{m.name}</Select.Option>
-              ))}
-            </Select>
+          <Form.Item name="runtime_choice" label="Service 引擎" rules={[{ validator: (_, value) =>
+            !value || value.runtime === 'deepagents' || (value.profile_id && value.model)
+              ? Promise.resolve() : Promise.reject(new Error('请选择连接和模型')) }]}>
+            <RuntimeChoiceFields profiles={runtimeProfiles} serviceMode />
           </Form.Item>
+          {externalEngine ? <Alert type="info" showIcon style={{ marginBottom: 16 }}
+            message="套餐内部分发 · 可信团队"
+            description="网页、API 和微信共用此连接与模型，消耗超管套餐配额。请仅将 Service Key 和微信入口分发给可信成员；服务文件权限不等于 Docker 隔离。定时任务、语音和视频暂使用 DeepAgents。修改连接、模型或资源范围后，下一条消息会建立新的原生会话，历史消息仍保留。" /> :
+            <Form.Item name="model" label="模型" rules={[{ required: true, message: '请选择模型' }]}>
+              <Select placeholder="选择模型">
+                {models.map(m => (
+                  <Select.Option key={m.id} value={m.id}>{m.name}</Select.Option>
+                ))}
+              </Select>
+            </Form.Item>}
+
           <Form.Item
             name="system_prompt_version_id"
             label="System Prompt 版本"
@@ -1568,7 +1601,9 @@ export default function AdminServicesPage() {
             <PickerField onClick={() => setScriptPickerOpen(true)} placeholder="点击选择允许的脚本（默认未选 = 禁止脚本）" />
           </Form.Item>
           <Form.Item name="capabilities" label="能力">
-            <Checkbox.Group options={CAPABILITY_OPTIONS} />
+            <Checkbox.Group options={CAPABILITY_OPTIONS.map(option => ({ ...option,
+              disabled: externalEngine && ['scheduler', 'speech', 'video'].includes(option.value),
+            }))} />
           </Form.Item>
 
           <div style={{
@@ -1706,13 +1741,13 @@ export default function AdminServicesPage() {
                 value={keyBilling}
                 onChange={v => setKeyBilling(v as 'hosted' | 'byok')}
                 options={[
-                  { label: '运营方付费', value: 'hosted' },
-                  { label: '调用方自付', value: 'byok' },
+                  { label: currentExternal ? '使用已授权套餐' : '运营方付费', value: 'hosted' },
+                  { label: '调用方自付', value: 'byok', disabled: currentExternal },
                 ]}
               />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.6 }}>
                 {keyBilling === 'hosted'
-                  ? '默认方式：模型开销记在本服务的凭据上。'
+                  ? (currentExternal ? '使用本 Service 已选定的 Codex / Cursor 连接与模型，消耗该账号套餐配额。Key 仅供内部可信成员使用。' : '默认方式：模型开销记在本服务的凭据上。')
                   : '调用方必须在每次请求里自带 provider / api_key（可选 base_url），并从本服务允许的模型中挑选。仅主对话模型由调用方付费，图片 / 联网 / TTS / 脚本仍走本服务凭据；该类 Key 不能创建定时任务。'}
               </div>
             </div>

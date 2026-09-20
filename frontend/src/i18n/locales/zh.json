@@ -171,7 +171,7 @@
     "advOpRulesDesc": "在 Prompt 设置中显示「操作规则」Tab，可自定义 Agent 的 System Prompt 和能力提示词。",
     "advMemorySoul": "Memory & Soul",
     "advMemorySoulDesc": "在 Prompt 设置中显示「Memory & Soul」Tab，可配置记忆系统和 Soul 文件系统。",
-    "apiKeysCard": "API Keys",
+    "apiKeysCard": "模型供应商与凭据",
     "apiKeysTestAll": "全部测试",
     "apiKeysTestAllTip": "测试所有连接",
     "apiKeysTest": "测试连接",
@@ -217,7 +217,7 @@
   "profile": {
     "modalTitle": "个性规则与 Agent 记忆",
     "agentMemory": "Agent 记忆",
-    "agentMemoryDesc": "Agent 在对话中识别到的、值得跨会话长期记忆的信息（写入是覆盖式，由 Agent 负责合并）。",
+    "agentMemoryDesc": "从对话中积累的长期信息。你可以查看、修订或锁定。",
     "agentMemoryPlaceholder": "这里是 Agent 在对话中通过 update_personal_memory 工具自动记录的关于你的长期信息（如稳定偏好、身份背景、习惯)。\n\n· 你也可以手动编辑或清空\n· 锁定后 Agent 将无法继续写入，适合“定稿”场景",
     "agentMemoryWritable": "Agent 可写入",
     "agentMemoryLocked": "Agent 写入已锁定",
@@ -229,7 +229,7 @@
     "agentMemoryClearConfirm": "确定清空 Agent 记忆？",
     "agentMemoryClearDesc": "清空后需点击保存才会真正生效。",
     "rules": "我的个性规则",
-    "rulesDesc": "你手动定义的偏好与规则，AI 始终遵守。会保留版本历史，可回滚。",
+    "rulesDesc": "这些规则用于指导回答。保存后保留版本，方便对比和恢复。",
     "rulesPlaceholder": "在这里写下你希望 AI 始终遵守的个性化规则，例如：\n\n- 用简洁专业的语气回复\n- 重要结论先说，分析放后面\n- 给出明确的操作建议\n- 风险提示必须包含\n- 回复中使用中文",
     "rulesSaved": "个性规则已保存",
     "renameTitle": "重命名历史记录",
@@ -300,7 +300,11 @@
     "openMenu": "打开菜单",
     "closeFilePanel": "关闭文件面板",
     "openFilePanel": "文件面板",
-    "backToChat": "返回对话"
+    "backToChat": "返回对话",
+    "expandSidebar": "展开侧栏",
+    "collapseSidebar": "收起侧栏",
+    "resizePanels": "调整聊天与文件宽度",
+    "resizePanelsHint": "拖动或用左右方向键调整；双击或 Enter 恢复等宽"
   },
   "chat": {
     "newChat": "新对话",
@@ -365,7 +369,21 @@
     "suggestionSubagent": "管理 Subagent",
     "suggestionSubagentMsg": "如何创建和管理 Subagent？请介绍 Subagent 的用途和配置方法",
     "suggestionService": "分发 Service",
-    "suggestionServiceMsg": "如何创建和分发 Service？请介绍 Service 的发布和管理流程"
+    "suggestionServiceMsg": "如何创建和分发 Service？请介绍 Service 的发布和管理流程",
+    "searchConversations": "搜索对话",
+    "conversationList": "对话记录",
+    "noMatchingConversations": "没有找到匹配的对话",
+    "clearSearch": "清除搜索",
+    "deleteConversation": "删除对话：{{title}}",
+    "sendMessage": "发送消息",
+    "stopGeneration": "停止生成",
+    "addAttachment": "添加图片或文件",
+    "composeHint": "Enter 发送 · Shift + Enter 换行",
+    "backgroundRun": "离开页面后继续运行",
+    "nextModelHint": "可先写下一条消息；切换模型将在下一条消息生效",
+    "messageTooLong": "消息最多 32,000 个字符",
+    "composePlaceholder": "发送消息…",
+    "startHint": "输入想法或任务，也可以添加图片、文件，或点击麦克风说话。"
   },
   "service": {
     "authTitlePlaceholder": "智能助手",
@@ -477,7 +495,7 @@
     "importTip": "上传一份之前导出的 ZIP，恢复或合并到当前账号。仅会影响你自己的数据。",
     "importNotice": "导入操作仅影响当前登录用户的数据，不会触及其他用户。",
     "importDragText": "点击或拖拽备份 ZIP 到此处",
-    "importDragHint": "仅支持本应用导出的 ZIP（含 _openjellyfish_backup.json 或旧版 _jellyfishbot_backup.json 清单）",
+    "importDragHint": "支持 OpenJellyfish 导出的 ZIP 备份。",
     "importMode": "导入模式",
     "modeMerge": "合并 (Merge)",
     "modeMergeDesc": "只补充缺失的文件，不覆盖任何现有内容。安全。",
@@ -678,7 +696,9 @@
   },
   "imageAttach": {
     "maxImagesWarn": "最多上传 {{n}} 张图片",
-    "maxImagesIgnored": "最多上传 {{n}} 张图片，已忽略多余图片"
+    "maxImagesIgnored": "最多上传 {{n}} 张图片，已忽略多余图片",
+    "removeAttachment": "移除附件：{{name}}",
+    "readFailed": "附件读取失败，请重新选择文件"
   },
   "mention": {
     "noMatch": "没有匹配的文件",
@@ -926,5 +946,181 @@
     "logoutBtn": "退出登录",
     "logoutOk": "已退出",
     "configIntro": "配置 PaaS 平台凭据后，扫码绑定一台 Windows 上的微信，即可让 Agent 自动收发消息。"
+  },
+  "ux": {
+    "loading": "正在加载…",
+    "retry": "重试",
+    "workspaceTitle": "工作台",
+    "welcomeTitle": "让想法，成为下一步。",
+    "welcomeDescription": "和 Jellyfish 一起整理资料、探索问题、完成工作。文档与对话留在同一个工作区，随时接着做。",
+    "starterHint": "选择一个起点，补充细节后再发送。",
+    "configureEngine": "连接聊天引擎",
+    "agentGroup": "智能体与知识",
+    "deliverGroup": "运行与交付",
+    "workspaceGroup": "工作区管理",
+    "deleteTitle": "删除这段对话？",
+    "deleteDescription": "对话记录将被删除，工作区文件会保留。",
+    "delete": "删除",
+    "loginTitle": "回到你的工作区",
+    "loginDescription": "登录后，继续对话与文档中的工作。",
+    "registerTitle": "创建你的工作区",
+    "registerDescription": "使用管理员提供的注册码加入。",
+    "regKey": "注册码",
+    "regHelp": "没有注册码？请联系此服务的管理员。",
+    "brandHeading": "你的想法，\n值得继续生长。",
+    "brandDescription": "把对话变成成果，让文档延续经验。",
+    "brandSteps": [
+      "整理知识",
+      "协作执行",
+      "交付成果"
+    ],
+    "loginFootnote": "连接你使用的模型，从一个真实任务开始。",
+    "starters": {
+      "document": {
+        "title": "把资料整理清楚",
+        "description": "梳理文档，提炼重点与待办。",
+        "prompt": "我想整理一份资料。请先询问资料范围和用途，再帮我梳理重点、依据和待办事项。"
+      },
+      "research": {
+        "title": "深入探索一个问题",
+        "description": "查阅资料，比较观点与依据。",
+        "prompt": "我想研究一个问题。请先询问研究主题与目标，再制定检索和验证计划，区分事实与推断。"
+      },
+      "routine": {
+        "title": "把重复工作交给任务",
+        "description": "从日常需求设计定时流程。",
+        "prompt": "请帮我设计一个定时任务。先确认工作内容、执行频率和结果交付方式，再提出方案。"
+      },
+      "service": {
+        "title": "把经验做成服务",
+        "description": "用已有知识搭建可用的助手。",
+        "prompt": "我想把已有经验整理成一个 Service。请先询问服务对象、知识资料和交付范围，再帮我设计和验证。"
+      }
+    },
+    "modelsFailed": "聊天引擎加载失败",
+    "apiModels": "API 模型",
+    "currentModel": "当前选择",
+    "unavailableModel": "{{model}}（暂不可用）",
+    "chatModel": "聊天模型",
+    "selectModel": "选择模型",
+    "noEngine": "尚未配置可用的聊天引擎",
+    "engineHelp": "可以配置 DeepAgents 的模型 API Key，或使用服务器开放的 Codex 或 Cursor 连接。生图、视频和语音需要单独配置相应能力。",
+    "later": "稍后设置"
+  },
+  "settingsPolish": {
+    "pages": {
+      "prompt": {
+        "title": "规则与记忆",
+        "description": "定义回答方式，维护个人规则与长期记忆。"
+      },
+      "subagents": {
+        "title": "子智能体",
+        "description": "为不同任务分配专长，管理可用工具与协作方式。"
+      },
+      "packages": {
+        "title": "扩展包",
+        "description": "管理工作区的 Python 环境，为脚本补充所需能力。"
+      },
+      "services": {
+        "title": "服务",
+        "description": "把工作区里的知识与能力交付给使用者。"
+      },
+      "scheduler": {
+        "title": "定时任务",
+        "description": "安排重复工作，查看执行结果与后续处理。"
+      },
+      "wechat": {
+        "title": "微信连接",
+        "description": "连接个人微信入口，集中查看连接状态和消息。"
+      },
+      "voice": {
+        "title": "语音",
+        "description": "调整开场白、回答策略与音色，保存后用于下一通通话。"
+      },
+      "inbox": {
+        "title": "收件箱",
+        "description": "查看服务带回的消息，分清未读与已处理。"
+      },
+      "usage": {
+        "title": "用量统计",
+        "description": "了解模型调用与服务用量，按时间范围核对消耗。"
+      },
+      "general": {
+        "title": "通用设置",
+        "description": "连接引擎与模型，调整工作区偏好和高级选项。"
+      },
+      "backup": {
+        "title": "备份与迁移",
+        "description": "选择要带走的内容，预估大小后导出或导入备份。"
+      }
+    },
+    "loadFailed": "暂时无法加载设置",
+    "loadFailedHint": "请重试。加载成功前不会把缺失数据当作默认配置。",
+    "unsaved": "有未保存的更改",
+    "saved": "所有更改已保存",
+    "engine": "引擎与模型",
+    "preferences": "界面与时间",
+    "automation": "自动化",
+    "advanced": "高级选项",
+    "saveFailed": "保存失败，更改尚未生效。请重试。",
+    "resetConfirm": "恢复默认语音配置？当前自定义配置将被替换。",
+    "voiceSaveHint": "保存后下一通通话生效。",
+    "reload": "重新加载",
+    "modelCatalog": "模型目录与可见性"
+  },
+  "settingsDesign": {
+    "exportHint": "选择内容，下载到本地",
+    "importHint": "从 ZIP 备份中恢复",
+    "scope": "选择备份内容",
+    "scopeHint": "只导出你勾选的内容。媒体和凭据可以单独控制。",
+    "selection": "已选择 {{count}} 项",
+    "exportGuide": "保留一份工作区副本",
+    "exportGuideHint": "适合换设备、迁移部署，或在重要修改前留档。",
+    "restoreGuide": "把工作区带回来",
+    "restoreGuideHint": "上传已有备份，再选择合并或覆盖。确认前不会修改当前数据。",
+    "options": "附加内容",
+    "exportReady": "下载备份",
+    "rulesHint": "明确行为、偏好与交付标准",
+    "memoryHint": "查看并管理 Agent 记住的内容",
+    "rulesGuide": "写下长期适用的要求",
+    "rulesGuideHint": "例如回答的语言、必须遵循的流程、交付物格式。具体任务仍可以在对话里说明。",
+    "memoryGuide": "让积累的经验可控",
+    "memoryGuideHint": "你可以修订记忆。锁定后，Agent 暂停自动改写；修改与锁定状态需保存后生效。",
+    "historyHint": "查看旧版本，先预览再决定是否采用。",
+    "engineHint": "连接与凭据",
+    "preferencesHint": "语言、外观与时区",
+    "automationHint": "任务执行方式",
+    "advancedHint": "更多控制项",
+    "credentialsHint": "选择一个供应商，配置调用时使用的凭据。",
+    "credentialsDetails": "凭据来源如何生效",
+    "testSaved": "测试已保存的配置；请先保存修改。",
+    "voiceConversation": "对话内容",
+    "voiceConversationHint": "开场白、人格与任务委派",
+    "voiceBehavior": "打断与等待",
+    "voiceBehaviorHint": "响应习惯与等待时的提示",
+    "voiceModels": "模型与音色",
+    "voiceModelsHint": "语音识别、语言模型与合成",
+    "voiceSetup": "连接尚未就绪",
+    "voiceSetupHint": "可以先编辑语音配置，连接完成并保存后再试通话。",
+    "connectionGuide": "在微信中使用 Jellyfish",
+    "connectionGuideHint": "生成二维码后，在手机微信中扫码并确认。连接完成后，可在这里查看状态与对话。",
+    "connectionStep1": "生成登录二维码",
+    "connectionStep2": "手机扫码并确认",
+    "connectionStep3": "连接后开始对话",
+    "installed": "已安装的扩展包",
+    "packageHint": "为工作区补充运行脚本所需的 Python 依赖。",
+    "inboxHint": "查看服务收到的消息与 Agent 处理结果。",
+    "replaceCredential": "已配置 · 输入新值以替换",
+    "exportLabel": "导出备份",
+    "importLabel": "恢复备份",
+    "files": "{{count}} 个文件",
+    "modules": {
+      "filesystem": "文档、脚本与 Agent 生成的内容。",
+      "conversations": "对话记录及关联的附件。",
+      "services": "服务配置与交付设置。",
+      "tasks": "定时任务与调度配置。",
+      "settings": "规则、偏好与智能体配置。",
+      "api_keys": "保存的供应商凭据。"
+    }
   }
 }

@@ -401,7 +401,7 @@ The default engine is DeepAgents. Once the deployment operator enables the runti
 
 Codex / Cursor runs support streamed text and tools, per-request approval, cancellation, attachments, and generated-file previews/downloads. Closing the browser does not cancel a run; reopen the chat to restore output and pending approvals. Connections share supplier quota and execute one turn at a time. A failed or revoked connection does not silently fall back to another account or API provider.
 
-This optional path currently applies to admin web chat. Service/Consumer, WeChat, scheduled tasks and voice retain their existing execution paths. Codex native image generation has local API evidence; Cursor image generation and final image UI verification remain incomplete.
+Since v1.3.1, this path supports admin web chat and internal Services over web, API and Service WeChat using authorized Codex / Cursor plans. Admin personal WeChat keeps its existing path; plan-backed Services do not support scheduled tasks, voice or video. In Service settings, admins fix the connection, model and resource scope, then create a key using the authorized plan. Plan-backed keys do not support BYOK. This mode is for trusted internal members and does not provide OS isolation between hostile tenants. See [internal Service distribution](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-service-distribution.md). Codex native image generation has local API evidence; Cursor image generation and final image UI verification remain incomplete.
 
 ## 5. File Panel
 
@@ -1046,7 +1046,7 @@ This matches the chat page markdown rendering convention. Consumer side needs no
 
 ### Service Key billing: hosted / BYOK
 
-Billing is selected per API Key, so one Service can issue both operator-paid (`hosted`) and caller-paid (`byok`) keys. Existing keys default to hosted. Use `GET /api/v1/models` with the Service key to inspect its billing mode and permitted models/hosts. BYOK chat requests supply `provider`, `api_key`, and `model`, plus `base_url` / `region` when needed; provider, model and endpoint must pass validation. Hosted keys reject caller credential fields and keep the Service's configured model behavior. This API mode does not use shared Codex/Cursor login connections.
+Billing is selected per API Key, so one Service can issue both operator-paid (`hosted`) and caller-paid (`byok`) keys. Existing keys default to hosted. Use `GET /api/v1/models` with the Service key to inspect its billing mode and permitted models/hosts. BYOK chat requests supply `provider`, `api_key`, and `model`, plus `base_url` / `region` when needed; provider, model and endpoint must pass validation. Hosted keys reject caller credential fields and keep the Service's configured model behavior. The hosted / BYOK behavior above applies to DeepAgents Services. Codex / Cursor plan-backed Services use shared connections authorized by the host operator, with a fixed connection and model; they accept hosted plan keys only and reject BYOK and caller credentials.
 
 ## 9. Soul Memory System
 

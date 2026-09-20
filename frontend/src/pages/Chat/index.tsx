@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Button, Select, Tooltip, App, Popover, Segmented } from 'antd';
+import { useOutletContext, useNavigate } from 'react-router-dom';
+import { Button, Input, Select, Tooltip, App, Popover, Segmented, Alert, Popconfirm } from 'antd';
 import {
   Plus,
-  PaperPlaneRight,
   Trash,
   Globe,
   Palette,
@@ -11,11 +11,15 @@ import {
   VideoCamera,
   CaretDown,
   ListChecks,
-  Stop,
-  Paperclip,
   LockKey,
+  MagnifyingGlass,
+  FileText,
+  ArrowUpRight,
+  Sparkle,
+  Timer,
+  Stack,
 } from '@phosphor-icons/react';
-import { useTranslation, Trans } from 'react-i18next';
+import { useTranslation } from 'react-i18next';
 import * as api from '../../services/api';
 import * as runtimeApi from '../../services/runtime';
 import type { Conversation, Message } from '../../types';
@@ -24,13 +28,13 @@ import ApprovalCard from './components/ApprovalCard';
 import PlanTracker, { PlanCompactBar } from './components/PlanTracker';
 import ImageAttachment from './components/ImageAttachment';
 import type { ImageAttachmentHandle } from './components/ImageAttachment';
-import VoiceInput from './components/VoiceInput';
+import ChatComposer from './components/ChatComposer';
 import MessageList from './components/MessageList';
 import type { MessageListHandle } from './components/MessageList';
 import MentionPicker, { MAX_CANDIDATES as MENTION_MAX } from './components/MentionPicker';
 import RunIndicator from './components/RunIndicator';
-import QueryNavMarker from './components/QueryNavMarker';
-import { userQueryPreview } from './utils/userQueryPreview';
+import QueryNavigation from './components/QueryNavigation';
+import { answerPreview, conversationPreviews } from './utils/userQueryPreview';
 import FileTokenInput from './components/FileTokenInput';
 import type { FileTokenInputHandle } from './components/FileTokenInput';
 import { useStream } from '../../stores/streamContext';
@@ -104,17 +108,22 @@ const CAPABILITIES = [
   { key: 'video', labelKey: 'chat.modeVideo', icon: <VideoCamera size={16} /> },
 ];
 
-// Suggestions live in i18n under chat.suggestion*. We keep emoji here to avoid
-// duplicating glyphs across locale files.
+// Task starters fill an editable draft; no model call until the user sends.
 const SUGGESTION_KEYS = [
-  { emoji: '🛠️', textKey: 'chat.suggestionWhatCanYouDo', msgKey: 'chat.suggestionWhatCanYouDoMsg' },
-  { emoji: '⏰', textKey: 'chat.suggestionScheduler', msgKey: 'chat.suggestionSchedulerMsg' },
-  { emoji: '🤖', textKey: 'chat.suggestionSubagent', msgKey: 'chat.suggestionSubagentMsg' },
-  { emoji: '📡', textKey: 'chat.suggestionService', msgKey: 'chat.suggestionServiceMsg' },
+  { icon: <FileText size={20} />, key: 'document' },
+  { icon: <Sparkle size={20} />, key: 'research' },
+  { icon: <Timer size={20} />, key: 'routine' },
+  { icon: <Stack size={20} />, key: 'service' },
 ];
 
 export default function ChatPage() {
   const { t } = useTranslation();
+  const { closeNavigation, sidebarSlot: siderSlot } = useOutletContext<{ closeNavigation: () => void; sidebarSlot: HTMLElement | null }>();
+  const navigate = useNavigate();
+  const [conversationError, setConversationError] = useState('');
+  const [listError, setListError] = useState('');
+  const [listLoading, setListLoading] = useState(true);
+  const [conversationSearch, setConversationSearch] = useState('');
   const { message: messageApi } = App.useApp();
   const { editingFile, splitMode, setSplitMode } = useFileWorkspace();
   const stream = useStream();
@@ -132,9 +141,13 @@ export default function ChatPage() {
   const [runtimeProfiles, setRuntimeProfiles] = useState<runtimeApi.RuntimeProfile[]>([]);
   const [catalogReady, setCatalogReady] = useState(false);
   const [catalogError, setCatalogError] = useState('');
+  const [modelsError, setModelsError] = useState('');
+  const [catalogVersion, setCatalogVersion] = useState(0);
   useEffect(() => {
     let disposed = false;
     const load = async () => {
+      setCatalogReady(false);
+      setCatalogError('');
       try {
         const caps = await runtimeApi.capabilities();
         if (caps.available) {
@@ -146,7 +159,7 @@ export default function ChatPage() {
     };
     void load();
     return () => { disposed = true; };
-  }, []);
+  }, [catalogVersion]);
   const creatingConversation = useRef(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingConv, setLoadingConv] = useState(false);
@@ -232,15 +245,12 @@ export default function ChatPage() {
 
   // ===== 左侧 query 快速导航（悬浮在 .chatArea 左侧中部，脱离滚动容器） =====
   // 每条用户 query 一根短横，bar 数 = q 数；滚动到对应 QA 时高亮，点击跳转。
-  const queryNavRailRef = useRef<HTMLElement | null>(null);
   const [activeQueryIndex, setActiveQueryIndex] = useState(-1);
-  const userMarkers = useMemo(
-    () =>
-      messages
-        .map((msg, index) => ({ index, role: msg.role, preview: userQueryPreview(msg) }))
-        .filter((m) => m.role === 'user'),
-    [messages],
-  );
+  const historyMarkers = useMemo(() => conversationPreviews(messages), [messages]);
+  const userMarkers = useMemo(() => {
+    if (!isViewingStream || !streamBlocks.length || !historyMarkers.length) return historyMarkers;
+    return [...historyMarkers.slice(0, -1), { ...historyMarkers[historyMarkers.length - 1], answer: answerPreview(streamBlocks) }];
+  }, [historyMarkers, isViewingStream, streamBlocks]);
   // 滚动联动 active：取「当前视口基准线之上、最靠近基准线的那条用户消息」。
   // 直接查滚动容器内 DOM（Virtuoso 已挂载行带 data-jf-msg-*）。
   useEffect(() => {
@@ -275,24 +285,8 @@ export default function ChatPage() {
       if (raf) cancelAnimationFrame(raf);
     };
   }, [scrollParentEl, messages]);
-  // active 变化时把对应标记滚入导航列可视区——仅当导航列自身溢出时才滚，
-  // 否则 scrollIntoView 会向上冒泡去滚动消息容器，把用户「拉回」（旧 bug 根因）。
-  useEffect(() => {
-    if (activeQueryIndex < 0) return;
-    const rail = queryNavRailRef.current;
-    if (!rail) return;
-    if (rail.scrollHeight <= rail.clientHeight + 1) return;
-    const node = rail.querySelector<HTMLElement>(`[data-jf-nav-index="${activeQueryIndex}"]`);
-    if (!node) return;
-    const rTop = rail.scrollTop;
-    const rBottom = rTop + rail.clientHeight;
-    const nTop = node.offsetTop;
-    const nBottom = nTop + node.offsetHeight;
-    if (nTop < rTop) rail.scrollTop = nTop - 8;
-    else if (nBottom > rBottom) rail.scrollTop = nBottom - rail.clientHeight + 8;
-  }, [activeQueryIndex]);
-  const jumpToQuery = useCallback((index: number) => {
-    messageListRef.current?.scrollToMessage(index);
+  const jumpToQuery = useCallback((id: string) => {
+    messageListRef.current?.scrollToMessage(Number(id));
   }, []);
 
   // 流式追尾：优先用 MessageList 内部的 scrollFooterIntoView（messages.length>0 时），
@@ -359,15 +353,19 @@ export default function ChatPage() {
   }, [streamBlocks, isViewingStream, isStreaming, scrollToBottom]);
 
   async function loadConversations() {
+    setListError('');
     try {
       const convs = await api.listConversations();
       setConversations(convs);
     } catch (e: unknown) {
-      messageApi.error(e instanceof Error ? e.message : t('chat.loadConvFail'));
+      setListError(e instanceof Error ? e.message : t('chat.loadConvFail'));
+    } finally {
+      setListLoading(false);
     }
   }
 
   async function loadModels() {
+    setModelsError('');
     try {
       const data = await api.getModels();
       setModels(data.models);
@@ -376,7 +374,7 @@ export default function ChatPage() {
       const last = getLastSelectedModel();
       const lastIsAvailable = last && data.models.some((m) => m.id === last);
       setSelectedModel(lastIsAvailable ? last : data.default);
-    } catch { /* ignore */ }
+    } catch (error) { setModelsError(error instanceof Error ? error.message : t('ux.modelsFailed')); }
   }
 
   // 包一层 onChange：每次手动选模型都写入 localStorage。
@@ -399,6 +397,7 @@ export default function ChatPage() {
     setRuntimeBinding(null);
     setMessages([]);
     setLoadingConv(true);
+    setConversationError('');
     try {
       const detail = await api.getConversation(convId);
       if (seq !== loadMessagesRef.current) return;
@@ -411,7 +410,7 @@ export default function ChatPage() {
       }
     } catch (e: unknown) {
       if (seq !== loadMessagesRef.current) return;
-      messageApi.error(e instanceof Error ? e.message : t('chat.loadMsgFail'));
+      setConversationError(e instanceof Error ? e.message : t('chat.loadMsgFail'));
     } finally {
       if (seq === loadMessagesRef.current) setLoadingConv(false);
     }
@@ -419,6 +418,7 @@ export default function ChatPage() {
 
   function handleNewChat() {
     ++loadMessagesRef.current;
+    setConversationError('');
     setLoadingConv(false);
     setCurrentConvId(null);
     setRuntimeSessionId(null);
@@ -437,7 +437,10 @@ export default function ChatPage() {
     try {
       await api.deleteConversation(convId);
       setConversations((prev) => prev.filter((c) => c.id !== convId));
-      if (currentConvId === convId) {
+      if (currentConvIdRef.current === convId) {
+        ++loadMessagesRef.current;
+        setLoadingConv(false);
+        setConversationError('');
         setCurrentConvId(null);
         setRuntimeSessionId(null);
         setRuntimeBinding(null);
@@ -663,7 +666,7 @@ export default function ChatPage() {
   }
 
   async function handleSend(text?: string) {
-    if (loadingConv || runtimeSessionId) return;
+    if (loadingConv || runtimeSessionId || conversationError) return;
     const msg = text ?? inputValue.trim();
     const hasImages = attachedImages.length > 0;
     if (!msg && !hasImages) return;
@@ -733,7 +736,7 @@ export default function ChatPage() {
         convId = conv.id;
         if (conv.runtime_session_id) {
           try {
-            await runtimeApi.turn(conv.id, crypto.randomUUID(), msg, choice.model, attachedImages.map(f => ({ name: f.name, data_url: f.dataUrl })));
+            await runtimeApi.turn(conv.id, crypto.randomUUID(), msg, choice.model, attachedImages.map(f => ({ name: f.name, data_url: f.dataUrl })), getYoloMode());
             if (creationSeq === loadMessagesRef.current) {
               setInputValue('');
               setAttachedImages([]);
@@ -814,28 +817,16 @@ export default function ChatPage() {
   /** Called by FileTokenInput when user pastes image files. */
   function handleImagePaste(imageFiles: File[]) {
     if (isStreaming) return;
-    const MAX_IMAGES = 5;
-    const remaining = MAX_IMAGES - attachedImages.length;
-    if (remaining <= 0) return;
-    const toProcess = imageFiles.slice(0, remaining);
-    Promise.all(
-      toProcess.map(async (f) => {
-        const reader = new FileReader();
-        return new Promise<{ dataUrl: string; name: string }>((resolve) => {
-          reader.onload = () => resolve({ dataUrl: reader.result as string, name: f.name || 'pasted-image' });
-          reader.readAsDataURL(f);
-        });
-      }),
-    ).then((newItems) => {
-      setAttachedImages((prev) => [...prev, ...newItems]);
-    });
+    void imageAttachRef.current?.addFiles(imageFiles);
   }
 
   const currentTitle = currentConvId
     ? conversations.find((c) => c.id === currentConvId)?.title || t('chat.conversationFallback')
-    : t('chat.selectOrCreate');
+    : t('ux.workspaceTitle');
 
-  const siderSlot = document.getElementById('sider-slot');
+
+  const searchTerm = conversationSearch.trim().toLocaleLowerCase();
+  const visibleConversations = conversations.filter(conv => !searchTerm || conv.title.toLocaleLowerCase().includes(searchTerm));
 
   const sidebarContent = (
     <div className={styles.chatContainer} style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'transparent' }}>
@@ -843,21 +834,33 @@ export default function ChatPage() {
         <Button
           className={styles.newChatBtn}
           icon={<Plus size={16} />}
-          onClick={handleNewChat}
+          onClick={() => { setConversationSearch(''); handleNewChat(); closeNavigation(); }}
         >
           {t('chat.newChat')}
         </Button>
       </div>
-      <div className={styles.convList}>
-        {conversations.map((conv) => {
+      <div className={styles.sidebarSearch}>
+        <Input aria-label={t('chat.searchConversations')} placeholder={t('chat.searchConversations')}
+          prefix={<MagnifyingGlass size={15} />} allowClear value={conversationSearch}
+          onChange={e => setConversationSearch(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setConversationSearch(''); } }} />
+      </div>
+      <div className={styles.convListLabel}><span>{t('chat.conversationList')}</span><span>{visibleConversations.length}</span></div>
+      <nav aria-label={t('chat.conversationList')} className={styles.convList} aria-busy={listLoading}>
+        {listError && <Alert type="error" message={t('chat.loadConvFail')} description={listError}
+          action={<Button size="small" onClick={() => void loadConversations()}>{t('ux.retry')}</Button>} />}
+        {listLoading && <div role="status" className={styles.convEmpty}>{t('ux.loading')}</div>}
+        {visibleConversations.map((conv) => {
           const isConvStreaming = conv.id === streamingConvId && isStreaming;
           const isConvHitl = conv.id === streamingConvId && !!interruptData && !isStreaming;
           return (
             <div
               key={conv.id}
               className={`${styles.convItem} ${conv.id === currentConvId ? styles.active : ''}`}
-              onClick={() => loadMessages(conv.id)}
             >
+              <button type="button" className={styles.convSelect} title={conv.title}
+                aria-current={conv.id === currentConvId ? 'page' : undefined}
+                onClick={() => { void loadMessages(conv.id); closeNavigation(); }}>
               {isConvStreaming && (
                 <span title={t('chat.streamingTitle')} style={{ display: 'inline-flex' }}>
                   <RunIndicator state="running" label={t('chat.streamingTitle')} />
@@ -869,26 +872,33 @@ export default function ChatPage() {
                 </span>
               )}
               <span className={styles.convTitle}>{conv.title}</span>
+              </button>
+              <Popconfirm title={t('ux.deleteTitle')} description={t('ux.deleteDescription')}
+                okText={t('ux.delete')} cancelText={t('common.cancel')} okButtonProps={{ danger: true }}
+                onConfirm={() => handleDeleteConv(conv.id)}>
               <Button
                 type="text"
                 size="small"
                 danger
                 icon={<Trash size={14} />}
                 className={styles.convDelete}
+                aria-label={t('chat.deleteConversation', { title: conv.title })}
+                title={t('chat.deleteConversation', { title: conv.title })}
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleDeleteConv(conv.id);
                 }}
               />
+              </Popconfirm>
             </div>
           );
         })}
-        {conversations.length === 0 && (
-          <div style={{ padding: 20, textAlign: 'center', color: 'var(--jf-text-dim)', fontSize: 12 }}>
-            {t('chat.emptyConversations')}
+        {!listLoading && !listError && visibleConversations.length === 0 && (
+          <div className={styles.convEmpty} role="status">
+            {searchTerm ? t('chat.noMatchingConversations') : t('chat.emptyConversations')}
+            {searchTerm && <Button type="link" size="small" onClick={() => setConversationSearch('')}>{t('chat.clearSearch')}</Button>}
           </div>
         )}
-      </div>
+      </nav>
     </div>
   );
 
@@ -901,25 +911,7 @@ export default function ChatPage() {
         {/* 左侧 query 快速导航：悬浮在 chatArea 左侧垂直居中，脱离滚动容器，
             不随消息滚动消失；bar 数 = q 数，active 高亮，点击跳转。 */}
         {!runtimeSessionId && userMarkers.length > 0 && (
-          <nav
-            ref={queryNavRailRef}
-            className={styles.queryNavRail}
-            aria-label="Jump to your messages"
-          >
-            {userMarkers.map((m) => (
-              <span
-                key={m.index}
-                data-jf-nav-index={m.index}
-                className={styles.queryNavRailItem}
-              >
-                <QueryNavMarker
-                  preview={m.preview}
-                  active={m.index === activeQueryIndex}
-                  onClick={() => jumpToQuery(m.index)}
-                />
-              </span>
-            ))}
-          </nav>
+          <QueryNavigation items={userMarkers} activeId={String(activeQueryIndex)} onJump={jumpToQuery} />
         )}
         {/* Header */}
         <div className={styles.chatHeader}>
@@ -928,6 +920,7 @@ export default function ChatPage() {
             <button
               className={styles.capBtn}
               style={{ marginLeft: 8 }}
+              aria-label="活跃进程 / 工作区锁"
               onClick={() => setLockPanelOpen(true)}
             >
               <LockKey size={16} />
@@ -936,40 +929,32 @@ export default function ChatPage() {
           {(!editingFile || splitMode === 'chat') && <HeaderControls />}
         </div>
 
+        {(catalogError || modelsError) && <Alert type="warning" showIcon message={t('ux.modelsFailed')}
+          description={catalogError || modelsError} action={<Button size="small" onClick={() => { setCatalogVersion(value => value + 1); void loadModels(); }}>{t('ux.retry')}</Button>} />}
         {/* Messages */}
         {runtimeSessionId && currentConvId ? <RuntimeConversation key={runtimeSessionId} sid={runtimeSessionId} conversationId={currentConvId} history={messages} profiles={runtimeProfiles} onChanged={loadConversations} /> : <>
         <div className={styles.messagesContainer} ref={setScrollParentEl}>
-          {loadingConv ? (
+          {conversationError ? (
+            <div className={styles.recoveryState}><Alert type="error" showIcon
+              message={t('chat.loadMsgFail')} description={conversationError} />
+              <Button type="primary" onClick={() => currentConvId && void loadMessages(currentConvId)}>{t('ux.retry')}</Button>
+            </div>
+          ) : loadingConv ? (
             <LogoLoading size={240} />
           ) : messages.length === 0 && !showStreamBlocks ? (
-            <div className={styles.emptyState}>
-              <div className={styles.emptyIcon}>
-                <img
-                  src="/media_resources/jellyfishlogo.png"
-                  alt="OpenJellyfish"
-                  style={{ width: 96, height: 96, objectFit: 'contain' }}
-                />
+            <section className={styles.emptyState} aria-labelledby="welcome-heading">
+              <div className={styles.welcomeBrand}><img src="/media_resources/jellyfishlogo.png" alt="" width="64" height="64" /><span>YOUR JELLYFISH WORKSPACE</span></div>
+              <h1 id="welcome-heading" className={styles.welcomeHeading}>{t('ux.welcomeTitle')}</h1>
+              <p className={styles.welcomeDescription}>{t('ux.welcomeDescription')}</p>
+              <div className={styles.starterGrid}>
+                {SUGGESTION_KEYS.map(s => <button type="button" key={s.key} className={styles.starterCard}
+                  onClick={() => { setInputValue(t(`ux.starters.${s.key}.prompt`)); fileTokenInputRef.current?.focus(); }}>
+                  <span className={styles.starterIcon}>{s.icon}</span><ArrowUpRight size={16} className={styles.starterArrow} />
+                  <strong>{t(`ux.starters.${s.key}.title`)}</strong><span>{t(`ux.starters.${s.key}.description`)}</span>
+                </button>)}
               </div>
-              <p style={{ fontSize: 22, fontWeight: 600, margin: '12px 0 4px' }}>
-                {t('chat.welcomeTitle')}
-              </p>
-              <p className={styles.emptyHint}>
-                <Trans i18nKey="chat.voiceHint">
-                  Hold <kbd>Tab</kbd> to speak, release to send
-                </Trans>
-              </p>
-              <div className={styles.suggestionChips}>
-                {SUGGESTION_KEYS.map((s) => (
-                  <button
-                    key={s.textKey}
-                    className={styles.suggestionChip}
-                    onClick={() => handleSend(t(s.msgKey))}
-                  >
-                    {s.emoji} {t(s.textKey)}
-                  </button>
-                ))}
-              </div>
-            </div>
+              <div className={styles.welcomeFootnote}><span>{t('ux.starterHint')}</span><button type="button" onClick={() => navigate('/settings/general')}>{t('ux.configureEngine')} <ArrowUpRight size={13} /></button></div>
+            </section>
           ) : (
             <>
               {messages.length > 0 && (
@@ -992,8 +977,8 @@ export default function ChatPage() {
                 由于使用 customScrollParent，scrollHeight 仍然包含这些节点，
                 scrollFooterIntoView 行为完全不变。
               */}
-              {showStreamBlocks && streamBlocks.length > 0 && (
-                <StreamingMessage blocks={streamBlocks} isStreaming={isStreaming} />
+              {showStreamBlocks && (
+                <StreamingMessage blocks={streamBlocks} isStreaming={isStreaming} status={interruptData ? 'waiting_approval' : isStreaming ? 'running' : 'completed'} />
               )}
               {isViewingStream && planSteps.length > 0 && (
                 <PlanTracker steps={planSteps} />
@@ -1101,28 +1086,20 @@ export default function ChatPage() {
             canInterrupt={isStreaming && isViewingStream && !interruptData}
             hitlLocked={hitlOnCurrent}
           />
-          <ImageAttachment
-            ref={imageAttachRef}
-            allowFiles={!currentConvId && !!newChoice && newChoice.runtime !== 'deepagents'}
-            images={attachedImages}
-            onImagesChange={setAttachedImages}
-            disabled={isStreaming && !allowInputWhileRunning}
-          />
-          <div className={styles.inputToolbar}>
-            <Tooltip title={t('chat.uploadTooltip')}>
-              <button
-                className={`${styles.capBtn} ${attachedImages.length > 0 ? styles.capBtnActive : ''}`}
-                onClick={() => imageAttachRef.current?.triggerUpload()}
-                disabled={isStreaming || attachedImages.length >= 5}
-              >
-                <Paperclip size={16} />
-              </button>
-            </Tooltip>
-            <div className={styles.inputToolbarDivider} />
-            {CAPABILITIES.map((cap) => (
+          <ChatComposer
+            attachments={<ImageAttachment
+              ref={imageAttachRef}
+              allowFiles={!currentConvId && !!newChoice && newChoice.runtime !== 'deepagents'}
+              images={attachedImages}
+              onImagesChange={setAttachedImages}
+              disabled={isStreaming && !allowInputWhileRunning}
+            />}
+            tools={!currentConvId && newChoice && newChoice.runtime !== 'deepagents' ? undefined : <><div className={styles.inputToolbarDivider} />{CAPABILITIES.map((cap) => (
               <Tooltip key={cap.key} title={t(cap.labelKey)}>
                 <button
                   className={`${styles.capBtn} ${capabilities.includes(cap.key) ? styles.capBtnActive : ''}`}
+                  aria-label={t(cap.labelKey)}
+                  aria-pressed={capabilities.includes(cap.key)}
                   onClick={() => {
                     setCapabilities((prev) =>
                       prev.includes(cap.key)
@@ -1139,6 +1116,8 @@ export default function ChatPage() {
             <Tooltip title={planMode ? t('chat.planModeOn') : t('chat.planModeHint')}>
               <button
                 className={`${styles.capBtn} ${planMode ? styles.capBtnActive : ''}`}
+                aria-label={t('chat.planModeHint')}
+                aria-pressed={planMode}
                 onClick={() => setPlanMode(!planMode)}
               >
                 <ListChecks size={16} />
@@ -1185,25 +1164,18 @@ export default function ChatPage() {
               }
             >
               <Tooltip title={`工作区锁：${lockModeOn === 'auto' ? '自动' : lockModeOn === 'manual' ? '手动' : 'Agent 自选'}`}>
-                <button className={`${styles.capBtn} ${lockModeOn !== 'auto' ? styles.capBtnActive : ''}`}>
+                <button aria-label="工作区锁策略" className={`${styles.capBtn} ${lockModeOn !== 'auto' ? styles.capBtnActive : ''}`}>
                   <LockKey size={16} />
                 </button>
               </Tooltip>
-            </Popover>
-            <div style={{ flex: 1 }} />
-            <ChatModelSelect
+            </Popover></>}
+            model={<ChatModelSelect
               value={!currentConvId && newChoice?.runtime !== 'deepagents' && newChoice ? newChoice : { runtime: 'deepagents', model: selectedModel }}
               onChange={choice => { setNewChoice(choice); if (choice.runtime === 'deepagents' && choice.model) handleSelectModel(choice.model); }}
               models={models} profiles={runtimeProfiles} bound={!!currentConvId}
               loading={!catalogReady} disabled={!catalogReady || loadingConv}
-            />
-          </div>
-          <div className={styles.inputWrapper} style={{ position: 'relative' }}>
-            <VoiceInput
-              onTranscript={(text) => handleSend(text)}
-              disabled={isStreaming && !allowInputWhileRunning}
-            />
-            <FileTokenInput
+            />}
+            input={<><FileTokenInput
               ref={fileTokenInputRef}
               value={inputValue}
               onChange={handleInputChange}
@@ -1217,7 +1189,7 @@ export default function ChatPage() {
               placeholder={
                 allowInputWhileRunning
                   ? t('chat.inputPlaceholderQueue')
-                  : t('chat.inputPlaceholder')
+                  : t('chat.composePlaceholder')
               }
               disabled={isStreaming && !allowInputWhileRunning}
               onImagePaste={handleImagePaste}
@@ -1232,30 +1204,18 @@ export default function ChatPage() {
                 onActiveIndexChange={(idx) => setMention((m) => ({ ...m, activeIndex: idx }))}
                 onSelect={insertMention}
               />
-            )}
-            {viewingActiveStream && (
-              <Button
-                danger
-                type="primary"
-                icon={<Stop size={18} weight="fill" />}
-                onClick={handleStop}
-                style={{ borderRadius: 'var(--jf-radius-md)', flexShrink: 0 }}
-              />
-            )}
-            <Button
-              type="primary"
-              icon={<PaperPlaneRight size={18} weight="fill" />}
-              onClick={() => handleSend()}
-              disabled={
-                (!inputValue.trim() && attachedImages.length === 0)
-                || (isStreaming && !allowInputWhileRunning)
-                || (!!interruptData && !hitlOnCurrent)
-                || serverStreaming.includes(currentConvId ?? '')
-                || (serverInterrupted.includes(currentConvId ?? '') && !hitlOnCurrent)
-              }
-              style={{ borderRadius: 'var(--jf-radius-md)', flexShrink: 0 }}
-            />
-          </div>
+            )}</>}
+            onUpload={() => imageAttachRef.current?.triggerUpload()}
+            uploadDisabled={isStreaming || attachedImages.length >= 5}
+            hasAttachments={attachedImages.length > 0}
+            onTranscript={text => void handleSend(text)} voiceDisabled={isStreaming && !allowInputWhileRunning}
+            onStop={viewingActiveStream ? () => void handleStop() : undefined}
+            onSend={() => void handleSend()}
+            sendDisabled={loadingConv || !!conversationError || (!inputValue.trim() && attachedImages.length === 0)
+              || (isStreaming && !allowInputWhileRunning) || (!!interruptData && !hitlOnCurrent)
+              || serverStreaming.includes(currentConvId ?? '')
+              || (serverInterrupted.includes(currentConvId ?? '') && !hitlOnCurrent)}
+          />
           {yoloOn && currentConvId && yoloApprovedConvs.has(currentConvId) && (
             <div
               className={styles.yoloFooterTag}

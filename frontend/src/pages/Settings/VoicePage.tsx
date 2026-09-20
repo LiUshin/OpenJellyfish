@@ -1,6 +1,9 @@
+import SettingsSectionNav from '../../components/SettingsSectionNav';
+import SettingsLoadError from '../../components/SettingsLoadError';
+import { useTranslation } from 'react-i18next';
 import { useEffect, useState, useCallback } from 'react';
 import {
-  Card, Switch, Input, Button, Select, InputNumber, Space, Alert, message, Spin, Divider, Typography, Tag, AutoComplete,
+  Card, ConfigProvider, Switch, Input, Button, Select, InputNumber, Space, Alert, message, Spin, Popconfirm, Typography, Tag, AutoComplete,
 } from 'antd';
 import { Phone, ArrowCounterClockwise, FloppyDisk } from '@phosphor-icons/react';
 import * as api from '../../services/api';
@@ -9,7 +12,7 @@ import type { ModelInfo } from '../../types';
 import VoiceCallModal from '../../components/VoiceCallModal';
 
 const { TextArea } = Input;
-const { Title, Paragraph, Text } = Typography;
+const { Text } = Typography;
 
 const OPENAI_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
 
@@ -33,6 +36,10 @@ function linesToList(text: string): string[] {
 
 /** 语音前台调音台:编辑前台 Copilot 配置 + 连接状态 + 试通话。 */
 export default function VoicePage() {
+  const { t } = useTranslation();
+  const [section, setSection] = useState('conversation');
+  const [loadError, setLoadError] = useState(false);
+  const [savedConfig, setSavedConfig] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [configured, setConfigured] = useState(false);
@@ -52,6 +59,7 @@ export default function VoicePage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(false);
     try {
       const [status, c, modelsRes] = await Promise.all([
         api.getVoiceLiveStatus(),
@@ -60,13 +68,14 @@ export default function VoicePage() {
       ]);
       setConfigured(status.configured);
       setCfg(c);
+      setSavedConfig(JSON.stringify(c));
       // 与 Chat 模型表完全一致(worker 已支持 openai/kimi/bedrock/anthropic/minimax 全部供应商)
       setLlmModels(modelsRes.models || []);
       setDelegating((c.fillers?.delegating || []).join('\n'));
       setToolRunning((c.fillers?.tool_running || []).join('\n'));
       setLongTask((c.fillers?.long_task || []).join('\n'));
     } catch (e) {
-      message.error((e as Error).message);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -79,7 +88,7 @@ export default function VoicePage() {
   }, []);
 
   const save = useCallback(async () => {
-    if (!cfg) return;
+    if (!cfg || saving) return;
     setSaving(true);
     try {
       const payload: Partial<VoiceAgentConfig> = {
@@ -92,19 +101,24 @@ export default function VoicePage() {
       };
       const updated = await api.updateVoiceAgentConfig(payload);
       setCfg(updated);
+      setSavedConfig(JSON.stringify(updated));
+      setDelegating((updated.fillers?.delegating || []).join('\n'));
+      setToolRunning((updated.fillers?.tool_running || []).join('\n'));
+      setLongTask((updated.fillers?.long_task || []).join('\n'));
       message.success('已保存,下一通通话即时生效');
     } catch (e) {
       message.error((e as Error).message);
     } finally {
       setSaving(false);
     }
-  }, [cfg, delegating, toolRunning, longTask]);
+  }, [cfg, delegating, toolRunning, longTask, saving]);
 
   const reset = useCallback(async () => {
     setSaving(true);
     try {
       const c = await api.resetVoiceAgentConfig();
       setCfg(c);
+      setSavedConfig(JSON.stringify(c));
       setDelegating((c.fillers?.delegating || []).join('\n'));
       setToolRunning((c.fillers?.tool_running || []).join('\n'));
       setLongTask((c.fillers?.long_task || []).join('\n'));
@@ -116,25 +130,22 @@ export default function VoicePage() {
     }
   }, []);
 
+  if (loadError) return <div className="settings-state"><SettingsLoadError onRetry={() => void load()} /></div>;
   if (loading || !cfg) {
     return <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div>;
   }
 
+  const draft = { ...cfg, fillers: { delegating: linesToList(delegating), tool_running: linesToList(toolRunning), long_task: linesToList(longTask) } };
+  const dirty = JSON.stringify(draft) !== savedConfig;
   return (
-    <div style={{ padding: 24, maxWidth: 880, margin: '0 auto' }}>
-      <Title level={4}>语音前台调音台</Title>
-      <Paragraph type="secondary">
-        配置实时语音「前台 Copilot」的人格、路由策略、填充语与打断行为。前台负责低延迟对话与
-        闲聊直答;需要查资料/读写文档/跑脚本的重活会委派给后台 OpenJellyfish。改动保存后下一通通话即时生效。
-      </Paragraph>
-
+    <div className="settings-page voice-settings">
       {!configured && (
         <Alert
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message="LiveKit 未配置"
-          description="请在服务端设置 LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET(以及与 Worker 一致的 VOICE_BRIDGE_SECRET),并启动语音 Worker 后再试通话。"
+          message={t('settingsDesign.voiceSetup')}
+          description={<><span>{t('settingsDesign.voiceSetupHint')}</span><details className="settings-inline-help"><summary>连接配置</summary><p>请在服务端配置 LiveKit 与语音 Worker 的连接参数。</p></details></>}
         />
       )}
 
@@ -142,12 +153,12 @@ export default function VoicePage() {
         <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
           <Space>
             <Text strong>启用语音前台</Text>
-            <Switch checked={cfg.enabled} onChange={(v) => patch('enabled', v)} />
+            <Switch aria-label="启用语音前台" disabled={saving} checked={cfg.enabled} onChange={(v) => patch('enabled', v)} />
           </Space>
           <Button
             type="primary"
             icon={<Phone size={16} />}
-            disabled={!configured || !cfg.enabled}
+            disabled={!configured || !cfg.enabled || dirty || saving}
             onClick={() => setCallOpen(true)}
           >
             试通话
@@ -155,13 +166,20 @@ export default function VoicePage() {
         </Space>
       </Card>
 
+      <SettingsSectionNav label={t('settingsPolish.pages.voice.title')} value={section} onChange={setSection} items={[
+        { value: 'conversation', label: t('settingsDesign.voiceConversation'), description: t('settingsDesign.voiceConversationHint') },
+        { value: 'behavior', label: t('settingsDesign.voiceBehavior'), description: t('settingsDesign.voiceBehaviorHint') },
+        { value: 'models', label: t('settingsDesign.voiceModels'), description: t('settingsDesign.voiceModelsHint') },
+      ]} />
+      <ConfigProvider componentDisabled={saving}><fieldset disabled={saving} className="settings-form-fields">
+      <section hidden={section !== 'conversation'}>
       <Card size="small" title="开场白" style={{ marginBottom: 16 }}>
-        <Input value={cfg.greeting} onChange={(e) => patch('greeting', e.target.value)} placeholder="接通后的第一句话" />
+        <Input aria-label="开场白" value={cfg.greeting} onChange={(e) => patch('greeting', e.target.value)} placeholder="接通后的第一句话" />
       </Card>
 
       <Card size="small" title="前台人格 (System Prompt)" style={{ marginBottom: 16 }}>
         <TextArea
-          value={cfg.system_prompt}
+          aria-label="前台人格" value={cfg.system_prompt}
           onChange={(e) => patch('system_prompt', e.target.value)}
           autoSize={{ minRows: 3, maxRows: 8 }}
         />
@@ -169,19 +187,21 @@ export default function VoicePage() {
 
       <Card size="small" title="路由策略 (闲聊直答 vs 委派)" style={{ marginBottom: 16 }}>
         <TextArea
-          value={cfg.routing_policy}
+          aria-label="路由策略" value={cfg.routing_policy}
           onChange={(e) => patch('routing_policy', e.target.value)}
           autoSize={{ minRows: 3, maxRows: 8 }}
         />
       </Card>
 
+      </section>
+      <section hidden={section !== 'behavior'}>
       <Card size="small" title="填充语 (每行一句,等待时随机选用)" style={{ marginBottom: 16 }}>
         <Text type="secondary">委派承接语</Text>
-        <TextArea value={delegating} onChange={(e) => setDelegating(e.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} style={{ marginBottom: 12 }} />
+        <TextArea aria-label="委派承接语" value={delegating} onChange={(e) => setDelegating(e.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} style={{ marginBottom: 12 }} />
         <Text type="secondary">工具运行中</Text>
-        <TextArea value={toolRunning} onChange={(e) => setToolRunning(e.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} style={{ marginBottom: 12 }} />
+        <TextArea aria-label="工具运行中" value={toolRunning} onChange={(e) => setToolRunning(e.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} style={{ marginBottom: 12 }} />
         <Text type="secondary">长任务安抚</Text>
-        <TextArea value={longTask} onChange={(e) => setLongTask(e.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} />
+        <TextArea aria-label="长任务安抚" value={longTask} onChange={(e) => setLongTask(e.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} />
       </Card>
 
       <Card size="small" title="打断行为" style={{ marginBottom: 16 }}>
@@ -189,7 +209,7 @@ export default function VoicePage() {
           <Space>
             <Text>允许打断</Text>
             <Switch
-              checked={cfg.interruption.allow_interruptions}
+              aria-label="允许打断" checked={cfg.interruption.allow_interruptions}
               onChange={(v) => patch('interruption', { ...cfg.interruption, allow_interruptions: v })}
             />
           </Space>
@@ -198,18 +218,21 @@ export default function VoicePage() {
             <InputNumber
               min={1}
               max={10}
-              value={cfg.interruption.min_interruption_words}
+              aria-label="实质打断所需词数" value={cfg.interruption.min_interruption_words}
               onChange={(v) => patch('interruption', { ...cfg.interruption, min_interruption_words: Number(v) || 1 })}
             />
           </Space>
         </Space>
       </Card>
 
+      </section>
+      <section hidden={section !== 'models'}>
       <Card size="small" title="模型与音色" style={{ marginBottom: 16 }}>
         <Space size="large" wrap>
           <Space>
             <Text>前台 LLM 模型</Text>
             <Select
+              aria-label="前台 LLM 模型"
               style={{ width: 280 }}
               showSearch
               placeholder="选择模型"
@@ -235,7 +258,7 @@ export default function VoicePage() {
               })()}
               notFoundContent={
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  无可用模型,请先在「设置 → API/模型」配置对应供应商凭据
+                  无可用模型,请先在「设置 → 通用设置」配置对应供应商凭据
                 </Text>
               }
             />
@@ -244,7 +267,7 @@ export default function VoicePage() {
             <Text>STT 供应商</Text>
             <Select
               style={{ width: 140 }}
-              value={cfg.providers.stt || 'openai'}
+              aria-label="STT 供应商" value={cfg.providers.stt || 'openai'}
               onChange={(v) => {
                 // stt_model 跨供应商共享:切换时重置为该供应商默认,避免残留模型名
                 // (如阿里 paraformer-realtime-v2)被带给 OpenAI STT 触发 404。
@@ -272,7 +295,7 @@ export default function VoicePage() {
               <Input
                 style={{ width: 200 }}
                 placeholder={cfg.providers.stt === 'aliyun' ? 'paraformer-realtime-v2' : 'gpt-4o-mini-transcribe'}
-                value={cfg.providers.stt_model}
+                aria-label="STT 模型" value={cfg.providers.stt_model}
                 onChange={(e) => patch('providers', { ...cfg.providers, stt_model: e.target.value })}
               />
             </Space>
@@ -281,7 +304,7 @@ export default function VoicePage() {
             <Text>TTS 供应商</Text>
             <Select
               style={{ width: 140 }}
-              value={cfg.providers.tts || 'openai'}
+              aria-label="TTS 供应商" value={cfg.providers.tts || 'openai'}
               onChange={(v) => {
                 // tts_model 跨供应商共享:切换时重置为该供应商默认模型,避免把
                 // 上一个供应商的模型名(如 Fish 的 s2-pro)带给 OpenAI 触发 404。
@@ -314,7 +337,7 @@ export default function VoicePage() {
                   ? 'cosyvoice-v2'
                   : 'gpt-4o-mini-tts'
               }
-              value={cfg.providers.tts_model || ''}
+              aria-label="TTS 模型" value={cfg.providers.tts_model || ''}
               onChange={(e) => patch('providers', { ...cfg.providers, tts_model: e.target.value })}
             />
           </Space>
@@ -361,7 +384,7 @@ export default function VoicePage() {
               <Text>TTS 音色</Text>
               <Select
                 style={{ width: 140 }}
-                value={cfg.providers.tts_voice}
+                aria-label="TTS 音色" value={cfg.providers.tts_voice}
                 onChange={(v) => patch('providers', { ...cfg.providers, tts_voice: v })}
                 options={OPENAI_VOICES.map((v) => ({ value: v, label: v }))}
               />
@@ -400,13 +423,13 @@ export default function VoicePage() {
               <Input
                 style={{ width: 160 }}
                 placeholder="标签（如 客服女声）"
-                value={newFishLabel}
+                aria-label="音色标签" value={newFishLabel}
                 onChange={(e) => setNewFishLabel(e.target.value)}
               />
               <Input
                 style={{ width: 240 }}
                 placeholder="reference_id"
-                value={newFishId}
+                aria-label="音色 ID" value={newFishId}
                 onChange={(e) => setNewFishId(e.target.value)}
               />
               <Button
@@ -447,15 +470,19 @@ export default function VoicePage() {
           </Text>
         )}
         <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
-          前台 LLM 模型下拉与 Chat 完全一致（OpenAI / Anthropic / Kimi / MiniMax / Bedrock）；没出现的模型请先在「设置 → API/模型」配置对应凭据。思考(-thinking)型号在实时语音里按基础模型运行以降低延迟。
+          前台 LLM 模型下拉与 Chat 完全一致（OpenAI / Anthropic / Kimi / MiniMax / Bedrock）；没出现的模型请先在「设置 → 通用设置」配置对应凭据。思考(-thinking)型号在实时语音里按基础模型运行以降低延迟。
         </Text>
       </Card>
 
-      <Divider />
-      <Space>
-        <Button type="primary" icon={<FloppyDisk size={16} />} loading={saving} onClick={save}>保存</Button>
-        <Button icon={<ArrowCounterClockwise size={16} />} onClick={reset} disabled={saving}>恢复默认</Button>
-      </Space>
+      </section>
+      </fieldset></ConfigProvider>
+      <div className="settings-savebar">
+        <span role="status">{t(dirty ? 'settingsPolish.unsaved' : 'settingsPolish.saved')} · {t('settingsPolish.voiceSaveHint')}</span>
+        <Button type="primary" icon={<FloppyDisk size={16} />} loading={saving} disabled={!dirty} onClick={save}>{t('common.save')}</Button>
+        <Popconfirm title={t('settingsPolish.resetConfirm')} onConfirm={reset} okText={t('common.confirm')} cancelText={t('common.cancel')}>
+          <Button icon={<ArrowCounterClockwise size={16} />} disabled={saving}>恢复默认</Button>
+        </Popconfirm>
+      </div>
 
       <VoiceCallModal
         open={callOpen}

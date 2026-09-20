@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { ConfigProvider, App as AntdApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
@@ -11,7 +11,8 @@ import { ThemeProvider, useTheme } from './stores/themeContext';
 import { FileWorkspaceProvider } from './stores/fileWorkspaceContext';
 import AppRouter from './router';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import SuperadminPage from './pages/Superadmin';
+import RoutePending from './components/RoutePending';
+const SuperadminPage = lazy(() => import('./pages/Superadmin'));
 
 /** Map i18n language → antd Locale bundle. Falls back to zhCN. */
 function pickAntdLocale(lang: string | undefined): Locale {
@@ -39,7 +40,7 @@ function ThemedApp() {
     <ConfigProvider theme={antdConfig} locale={antdLocale}>
       <AntdApp>
         <BrowserRouter><Routes>
-          <Route path="/superadmin" element={<SuperadminPage />} />
+          <Route path="/superadmin" element={<Suspense fallback={<RoutePending />}><SuperadminPage /></Suspense>} />
           <Route path="/*" element={<AuthProvider>
           <StreamProvider>
             <FileWorkspaceProvider>

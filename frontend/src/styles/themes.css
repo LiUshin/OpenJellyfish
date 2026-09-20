@@ -47,10 +47,10 @@
 
   --jf-text: #e4e4ed;
   --jf-text-muted: #9494a8;
-  --jf-text-dim: #66668a;
+  --jf-text-dim: #9292aa;
   --jf-text-quaternary: #44445a;
-  --jf-text-on-primary: #fff;
-  --jf-text-on-gradient: #fff;
+  --jf-text-on-primary: #231725;
+  --jf-text-on-gradient: #231725;
 
   --jf-border: #2a2a3a;
   --jf-border-rgb: 42, 42, 58;
@@ -177,3 +177,37 @@
   --jf-glow-strong: 0 0 10px rgba(var(--jf-primary-rgb), 0.6), 0 0 20px rgba(var(--jf-primary-rgb), 0.2);
 }
 
+
+/* Regular workspace: neutral surfaces keep the brand color for actions. */
+[data-style='regular'][data-color='dark'] {
+  --jf-bg-deep:#111214;
+  --jf-bg-panel:#191a1e;
+  --jf-bg-raised:#212328;
+  --jf-bg-code:#151619;
+  --jf-bg-inset:#101113;
+  --jf-border:#2c2e34;
+  --jf-border-rgb:44,46,52;
+  --jf-border-strong:#41434d;
+  --jf-text:#eeeef1;
+  --jf-text-muted:#a1a2ad;
+  --jf-text-dim:#92949f;
+  --jf-menu-selected-bg:#27292f;
+  --jf-menu-hover-bg:#202227;
+  --jf-select-option-bg:#27292f;
+}
+[data-style='regular'][data-color='light'] {
+  --jf-bg-deep:#f7f7f8;
+  --jf-bg-panel:#ffffff;
+  --jf-bg-raised:#f0f0f3;
+  --jf-bg-code:#f3f3f5;
+  --jf-bg-inset:#eeeef1;
+  --jf-border:#e2e2e7;
+  --jf-border-rgb:226,226,231;
+  --jf-border-strong:#b9bbc6;
+  --jf-text:#27282d;
+  --jf-text-muted:#656872;
+  --jf-text-dim:#737681;
+  --jf-menu-selected-bg:#eeeef2;
+  --jf-menu-hover-bg:#f5f5f7;
+  --jf-select-option-bg:#eeeef2;
+}

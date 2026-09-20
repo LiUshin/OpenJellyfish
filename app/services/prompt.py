@@ -137,7 +137,7 @@ def set_user_profile(user_id: str, profile: Dict[str, Any], auto_version: bool =
             save_profile_version(user_id, notes)
 
 
-def build_user_profile_prompt(user_id: str) -> str:
+def build_user_profile_prompt(user_id: str, *, include_agent_notes: bool = True) -> str:
     profile = get_user_profile(user_id)
     string_fields = [v for v in profile.values() if isinstance(v, str)]
     has_content = any(v.strip() for v in string_fields)
@@ -165,6 +165,10 @@ def build_user_profile_prompt(user_id: str) -> str:
             "以及生成的语音、文字、视频、图像等所有输出内容。"
         )
         parts.extend(user_sections)
+
+    # Services publish the admin's chosen persona, never their private memory.
+    if not include_agent_notes:
+        return "\n".join(parts)
 
     # ── Agent 自动维护部分 ──────────────────────────────
     agent_notes = profile.get("agent_notes", "").strip()

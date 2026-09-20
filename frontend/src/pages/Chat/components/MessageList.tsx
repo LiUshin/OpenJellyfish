@@ -108,7 +108,7 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
         virtuosoRef.current?.scrollToIndex({
           index,
           align: 'start',
-          behavior: 'smooth',
+          behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
         });
       },
     }),

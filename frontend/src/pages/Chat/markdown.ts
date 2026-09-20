@@ -23,6 +23,7 @@ function mediaUrl(path: string): string {
 // 服务化（service-chat / consumer）端没有 FilePanel，可调用
 // setFileRevealEnabled(false) 关闭，避免渲染出无效的可点击元素。
 let _fileRevealEnabled = true;
+export function fileRevealEnabled() { return _fileRevealEnabled; }
 export function setFileRevealEnabled(enabled: boolean): void {
   _fileRevealEnabled = enabled;
 }

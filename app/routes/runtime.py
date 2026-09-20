@@ -36,6 +36,7 @@ class TurnRequest(BaseModel):
     request_id: str = Field(pattern=r'^[A-Za-z0-9_-]{16,80}$')
     message: str = Field(default='', max_length=32000)
     attachments: list[InputAttachment] = Field(default_factory=list, max_length=5)
+    yolo: bool = False
     model: str | None = Field(default=None, min_length=1, max_length=300)
 
 
@@ -166,7 +167,7 @@ async def session(sid: str, user=Depends(get_current_user), runtime=Depends(get_
 @router.post('/turns')
 async def turn(req: TurnRequest, user=Depends(get_current_user), runtime=Depends(get_runtime)):
     from app.runtime.chat import enqueue_chat
-    return enqueue_chat(user['user_id'], req.conversation_id, req.request_id, req.message, model=req.model, attachments=[a.model_dump() for a in req.attachments])
+    return enqueue_chat(user['user_id'], req.conversation_id, req.request_id, req.message, model=req.model, attachments=[a.model_dump() for a in req.attachments], yolo=req.yolo)
 
 
 @router.get('/runs/{rid}/events')

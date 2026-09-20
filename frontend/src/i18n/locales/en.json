@@ -171,7 +171,7 @@
     "advOpRulesDesc": "Show the “Operation Rules” tab in Prompt settings — customise the agent system prompt and capability prompts.",
     "advMemorySoul": "Memory & Soul",
     "advMemorySoulDesc": "Show the “Memory & Soul” tab in Prompt settings — configure the memory system and the soul filesystem.",
-    "apiKeysCard": "API Keys",
+    "apiKeysCard": "Model providers and credentials",
     "apiKeysTestAll": "Test all",
     "apiKeysTestAllTip": "Test every connection",
     "apiKeysTest": "Test connection",
@@ -217,7 +217,7 @@
   "profile": {
     "modalTitle": "Personal Rules & Agent Memory",
     "agentMemory": "Agent Memory",
-    "agentMemoryDesc": "Information the agent recognises during chats and considers worth remembering across sessions (overwrite-style writes; the agent merges).",
+    "agentMemoryDesc": "Long-term information accumulated from conversations. Review, edit or lock it here.",
     "agentMemoryPlaceholder": "This is the long-term info about you that the agent records via update_personal_memory (stable preferences, identity, habits, …).\n\n· You can also edit or clear it manually\n· When locked, the agent can no longer write here — useful when you want a stable snapshot",
     "agentMemoryWritable": "Agent can write",
     "agentMemoryLocked": "Agent writes locked",
@@ -229,7 +229,7 @@
     "agentMemoryClearConfirm": "Clear agent memory?",
     "agentMemoryClearDesc": "Click Save afterwards to commit.",
     "rules": "My Personal Rules",
-    "rulesDesc": "Preferences and rules you define manually — the AI always follows them. History is kept and can be rolled back.",
+    "rulesDesc": "These rules guide responses. Saved versions can be reviewed and restored.",
     "rulesPlaceholder": "Write personal rules you want the AI to always follow, e.g.:\n\n- Reply concisely and professionally\n- Lead with the conclusion, then reasoning\n- Give clear, actionable suggestions\n- Always include risk caveats\n- Reply in Chinese",
     "rulesSaved": "Personal rules saved",
     "renameTitle": "Rename history entry",
@@ -300,7 +300,11 @@
     "openMenu": "Open menu",
     "closeFilePanel": "Close file panel",
     "openFilePanel": "File panel",
-    "backToChat": "Back to chat"
+    "backToChat": "Back to chat",
+    "expandSidebar": "Expand sidebar",
+    "collapseSidebar": "Collapse sidebar",
+    "resizePanels": "Resize chat and file panes",
+    "resizePanelsHint": "Drag or use arrow keys to resize; double-click or press Enter to reset"
   },
   "chat": {
     "newChat": "New chat",
@@ -365,7 +369,21 @@
     "suggestionSubagent": "Manage subagents",
     "suggestionSubagentMsg": "How do I create and manage subagents? Describe their purpose and configuration.",
     "suggestionService": "Distribute a Service",
-    "suggestionServiceMsg": "How do I create and distribute a Service? Walk me through publishing and management."
+    "suggestionServiceMsg": "How do I create and distribute a Service? Walk me through publishing and management.",
+    "searchConversations": "Search conversations",
+    "conversationList": "Conversations",
+    "noMatchingConversations": "No matching conversations",
+    "clearSearch": "Clear search",
+    "deleteConversation": "Delete conversation: {{title}}",
+    "sendMessage": "Send message",
+    "stopGeneration": "Stop generating",
+    "addAttachment": "Add images or files",
+    "composeHint": "Enter to send · Shift + Enter for a new line",
+    "backgroundRun": "Continues when you leave",
+    "nextModelHint": "Draft your next message here. Model changes apply to the next message.",
+    "messageTooLong": "Messages can contain up to 32,000 characters",
+    "composePlaceholder": "Send a message…",
+    "startHint": "Start with an idea or a task. Add images or files, or use the microphone."
   },
   "service": {
     "authTitlePlaceholder": "AI Assistant",
@@ -477,7 +495,7 @@
     "importTip": "Upload a previously-exported ZIP to restore or merge into the current account. Only your own data is touched.",
     "importNotice": "Imports affect only the current user — other users are untouched.",
     "importDragText": "Click or drag the backup ZIP here",
-    "importDragHint": "Only ZIPs exported by this app are supported (must contain _openjellyfish_backup.json or legacy _jellyfishbot_backup.json manifest)",
+    "importDragHint": "Supports ZIP backups exported by OpenJellyfish.",
     "importMode": "Import mode",
     "modeMerge": "Merge",
     "modeMergeDesc": "Only fills in missing files; never overwrites existing content. Safe.",
@@ -678,7 +696,9 @@
   },
   "imageAttach": {
     "maxImagesWarn": "Up to {{n}} images",
-    "maxImagesIgnored": "Up to {{n}} images — extras ignored"
+    "maxImagesIgnored": "Up to {{n}} images — extras ignored",
+    "removeAttachment": "Remove attachment: {{name}}",
+    "readFailed": "Could not read the attachment. Please select the file again."
   },
   "mention": {
     "noMatch": "No matching files",
@@ -926,5 +946,181 @@
     "logoutBtn": "Sign out",
     "logoutOk": "Signed out",
     "configIntro": "Configure PaaS credentials, then scan to bind a WeChat client running on Windows — the agent will receive and reply to messages automatically."
+  },
+  "ux": {
+    "loading": "Loading…",
+    "retry": "Try again",
+    "workspaceTitle": "Workspace",
+    "welcomeTitle": "A little thought. A next step.",
+    "welcomeDescription": "Organize knowledge, explore questions, and get work done with Jellyfish. Your conversations and documents stay together, ready to pick up where you left off.",
+    "starterHint": "Choose a starting point, then make it your own.",
+    "configureEngine": "Connect a chat engine",
+    "agentGroup": "Agent & knowledge",
+    "deliverGroup": "Run & deliver",
+    "workspaceGroup": "Workspace",
+    "deleteTitle": "Delete this conversation?",
+    "deleteDescription": "Conversation history will be deleted. Workspace files will be kept.",
+    "delete": "Delete",
+    "loginTitle": "Welcome to your workspace",
+    "loginDescription": "Sign in to pick up your conversations and documents.",
+    "registerTitle": "Create your workspace",
+    "registerDescription": "Join with a registration key from your administrator.",
+    "regKey": "Registration key",
+    "regHelp": "Need a key? Contact the administrator of this service.",
+    "brandHeading": "Give your ideas\nroom to grow.",
+    "brandDescription": "Turn conversations into outcomes. Let documents carry your experience forward.",
+    "brandSteps": [
+      "Gather knowledge",
+      "Work together",
+      "Deliver outcomes"
+    ],
+    "loginFootnote": "Connect your model and start with a real task.",
+    "starters": {
+      "document": {
+        "title": "Make sense of your files",
+        "description": "Turn documents into insights and next steps.",
+        "prompt": "Help me organize some documents. First ask about their scope and purpose, then identify key points, supporting evidence, and next steps."
+      },
+      "research": {
+        "title": "Explore a question",
+        "description": "Compare perspectives and trace the evidence.",
+        "prompt": "Help me research a question. First ask about the topic and goal, then propose a research and verification plan that separates facts from inference."
+      },
+      "routine": {
+        "title": "Set up a recurring task",
+        "description": "Design a workflow for everyday work.",
+        "prompt": "Help me design a scheduled task. First confirm what it should do, how often, and how to deliver the result, then propose a plan."
+      },
+      "service": {
+        "title": "Share your expertise",
+        "description": "Build a useful assistant around your knowledge.",
+        "prompt": "Help me turn my expertise into a Service. First ask about its audience, knowledge sources, and delivery scope, then help me design and validate it."
+      }
+    },
+    "modelsFailed": "Could not load chat engines",
+    "apiModels": "API models",
+    "currentModel": "Current selection",
+    "unavailableModel": "{{model}} (unavailable)",
+    "chatModel": "Chat model",
+    "selectModel": "Choose a model",
+    "noEngine": "Connect a chat engine to begin",
+    "engineHelp": "Add a model API key for DeepAgents, or use a Codex or Cursor connection enabled by your server. Images, video, and voice need their own configured providers.",
+    "later": "Set up later"
+  },
+  "settingsPolish": {
+    "pages": {
+      "prompt": {
+        "title": "Rules & memory",
+        "description": "Shape responses with personal rules and lasting memory."
+      },
+      "subagents": {
+        "title": "Subagents",
+        "description": "Assign specialist roles, tools, and collaboration settings."
+      },
+      "packages": {
+        "title": "Packages",
+        "description": "Manage the workspace Python environment and script dependencies."
+      },
+      "services": {
+        "title": "Services",
+        "description": "Deliver your workspace knowledge and capabilities to others."
+      },
+      "scheduler": {
+        "title": "Scheduled tasks",
+        "description": "Organize recurring work and review its results."
+      },
+      "wechat": {
+        "title": "WeChat connection",
+        "description": "Connect your personal WeChat channel and review its status."
+      },
+      "voice": {
+        "title": "Voice",
+        "description": "Tune greetings, response behavior, and voices for the next call."
+      },
+      "inbox": {
+        "title": "Inbox",
+        "description": "Review messages from your services and track what needs attention."
+      },
+      "usage": {
+        "title": "Usage",
+        "description": "Review model and service consumption over a selected period."
+      },
+      "general": {
+        "title": "General settings",
+        "description": "Connect engines and models, then customize your workspace."
+      },
+      "backup": {
+        "title": "Backup & migration",
+        "description": "Choose your content, estimate its size, and export or import a backup."
+      }
+    },
+    "loadFailed": "Could not load settings",
+    "loadFailedHint": "Try again. Missing data is not treated as your saved configuration.",
+    "unsaved": "Unsaved changes",
+    "saved": "All changes saved",
+    "engine": "Engines & models",
+    "preferences": "Appearance & time",
+    "automation": "Automation",
+    "advanced": "Advanced",
+    "saveFailed": "Save failed. Your change has not been applied. Please try again.",
+    "resetConfirm": "Restore default voice settings? This replaces your custom configuration.",
+    "voiceSaveHint": "Changes apply to the next call.",
+    "reload": "Reload",
+    "modelCatalog": "Model catalogs & visibility"
+  },
+  "settingsDesign": {
+    "exportHint": "Choose content and download",
+    "importHint": "Restore from a ZIP backup",
+    "scope": "Choose what to back up",
+    "scopeHint": "Only selected content is exported. Media and credentials are controlled separately.",
+    "selection": "{{count}} selected",
+    "exportGuide": "Keep a copy of your workspace",
+    "exportGuideHint": "Move to another device or deployment, or save a copy before a major change.",
+    "restoreGuide": "Bring your workspace back",
+    "restoreGuideHint": "Upload a backup, then choose merge or overwrite. Nothing changes before confirmation.",
+    "options": "Additional content",
+    "exportReady": "Download backup",
+    "rulesHint": "Behavior, preferences and delivery standards",
+    "memoryHint": "Review what your Agent remembers",
+    "rulesGuide": "Write rules that last",
+    "rulesGuideHint": "Specify language, required steps and output formats. Describe individual tasks in conversation.",
+    "memoryGuide": "Keep accumulated knowledge under control",
+    "memoryGuideHint": "Edit memory here. Locking stops automatic Agent updates; save to apply edits and lock changes.",
+    "historyHint": "Preview an earlier version before deciding to use it.",
+    "engineHint": "Connections and credentials",
+    "preferencesHint": "Language, appearance and time",
+    "automationHint": "How tasks run",
+    "advancedHint": "Additional controls",
+    "credentialsHint": "Choose a provider and configure the credentials used for requests.",
+    "credentialsDetails": "How credential sources work",
+    "testSaved": "Tests use saved configuration. Save changes first.",
+    "voiceConversation": "Conversation",
+    "voiceConversationHint": "Greeting, personality and delegation",
+    "voiceBehavior": "Interruptions and waiting",
+    "voiceBehaviorHint": "Response behavior and waiting phrases",
+    "voiceModels": "Models and voices",
+    "voiceModelsHint": "Recognition, language model and synthesis",
+    "voiceSetup": "Connection not ready",
+    "voiceSetupHint": "Edit the configuration now. Connect and save before trying a call.",
+    "connectionGuide": "Use Jellyfish in WeChat",
+    "connectionGuideHint": "Generate a code, then scan and confirm in WeChat on your phone. Check connection status and conversations here.",
+    "connectionStep1": "Generate a login code",
+    "connectionStep2": "Scan and confirm on your phone",
+    "connectionStep3": "Start a conversation once connected",
+    "installed": "Installed packages",
+    "packageHint": "Add Python dependencies needed by scripts in your workspace.",
+    "inboxHint": "Review incoming service messages and Agent responses.",
+    "replaceCredential": "Configured · enter a new value to replace",
+    "exportLabel": "Export backup",
+    "importLabel": "Restore backup",
+    "files": "{{count}} files",
+    "modules": {
+      "filesystem": "Documents, scripts and Agent outputs.",
+      "conversations": "Conversation history and attachments.",
+      "services": "Service and delivery configuration.",
+      "tasks": "Scheduled tasks and scheduling options.",
+      "settings": "Rules, preferences and Agent settings.",
+      "api_keys": "Saved provider credentials."
+    }
   }
 }

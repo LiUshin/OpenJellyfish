@@ -555,7 +555,12 @@ async def _run_agent_and_reply(
                 input_payload = Command(resume={"decisions": decisions})
 
             if not sent_via_tool and full_response.strip():
-                await client.send_text(to_user, full_response.strip(), ctx_token)
+                from app.channels.wechat.delivery import deliver_tool_message, extract_media_tags
+                _, media = extract_media_tags(full_response)
+                if media:
+                    await deliver_tool_message(json.dumps({'text': full_response.strip()}), session, client)
+                else:
+                    await client.send_text(to_user, full_response.strip(), ctx_token)
                 log.info("Sent direct response: %s", full_response[:50])
         finally:
             # 助手消息持久化放进 finally：即使流式中途异常(如空流报错)也把已产出内容

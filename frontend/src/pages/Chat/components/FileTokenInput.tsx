@@ -381,6 +381,8 @@ const FileTokenInput = forwardRef<FileTokenInputHandle, FileTokenInputProps>(
 
     // ── onKeyDown ──────────────────────────────────────────────────────────
     function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+      // Enter confirms Chinese/Japanese IME composition before it can send.
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       // Mention picker key handling has priority
       if (mentionPickerActive) {
         if (e.key === 'ArrowDown') { e.preventDefault(); onMentionNavDown?.(); return; }
@@ -487,6 +489,8 @@ const FileTokenInput = forwardRef<FileTokenInputHandle, FileTokenInputProps>(
         // Prevent rich-text drag-and-drop
         onDrop={(e) => e.preventDefault()}
         spellCheck
+        role="textbox"
+        aria-disabled={disabled || undefined}
         aria-multiline="true"
         aria-label={placeholder}
         style={{ opacity: disabled ? 0.5 : undefined, pointerEvents: disabled ? 'none' : undefined }}

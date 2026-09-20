@@ -700,6 +700,8 @@ After key update, automatically calls `clear_agent_cache(user_id)` + `clear_cons
 
 See [runtime operation](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-standard-mode.md) and [host console / Docker setup](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/superadmin-console.md). Regression command: `python -m unittest discover -s tests -p 'test_runtime*.py'`. Supplier-account acceptance is a separate step; unit tests and builds do not prove it.
 
+In v1.3.1, `app/runtime/consumer.py` and `consumer_tools.py` extend authorized plans to Service web, API and WeChat entry points, sharing the Runtime queue and per-connection serialization. The server binds admin / Service / conversation identity and limits documents, scripts and artifacts to the allowed scope. Connection, model or resource changes create a new native session; revocation cancels queued and running work. Plan-backed Services reject BYOK, voice, video and scheduled tasks. Admin YOLO does not widen Service resource scope. See [Service distribution and boundaries](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-service-distribution.md).
+
 ## 5. Frontend Architecture
 
 ### 5.1 Directory Structure

@@ -48,19 +48,22 @@ class RunService:
         self.store.put('session', session)
         return session
 
-    def enqueue(self, actor_id, sid, request_id, message, model=None, attachments=None):
+    def enqueue(self, actor_id, sid, request_id, message, model=None, attachments=None, *, yolo=False):
         if self.closed:
             raise HTTPException(503, '运行服务正在停止')
         session = self.own('session', sid, actor_id)
         binding = {**session['binding'], **({'model': model} if model is not None else {})}
         self.authorize(actor_id, binding)
+        # Per-turn consent belongs to admin chat, never to a shared connection
+        # or a Service visitor. Snapshot it before enqueueing and retries.
+        yolo = yolo is True and not bool(binding.get('service_scope'))
         from app.runtime.media import decode_inputs, fingerprint, save_inputs
         inputs = decode_inputs(attachments or [])
         if not isinstance(message, str) or len(message) > 32000 or (not message.strip() and not inputs):
             raise HTTPException(400, '请输入消息或添加附件')
         prior = self.store.find('run', actor_id=actor_id, request_id=request_id)
         if prior:
-            if prior[0]['session_id'] != sid or prior[0]['message'] != message or fingerprint(prior[0].get('attachments', [])) != fingerprint(inputs) or (model is not None and prior[0]['binding']['model'] != model):
+            if prior[0]['session_id'] != sid or prior[0]['message'] != message or fingerprint(prior[0].get('attachments', [])) != fingerprint(inputs) or (model is not None and prior[0]['binding']['model'] != model) or bool(prior[0].get('yolo')) != yolo:
                 raise HTTPException(409, '同一 request_id 不可用于不同请求')
             return prior[0]
         unfinished = [r for r in self.store.all('run') if r['status'] not in TERMINAL]
@@ -72,7 +75,7 @@ class RunService:
         run = {'id': new_id(), 'session_id': sid, 'actor_id': actor_id, 'data_owner_id': actor_id,
                'binding': binding, 'request_id': request_id, 'message': message,
                'status': 'queued', 'seq': 0, 'pending': None, 'created_at': time.time(),
-               'output': '', 'usage': None, 'artifacts': []}
+               'output': '', 'usage': None, 'artifacts': [], 'yolo': yolo}
         run['attachments'] = save_inputs(self.backend.workspace(session), run['id'], inputs)
         session['binding'] = dict(binding)
         self.store.put('session', session)
@@ -131,6 +134,11 @@ class RunService:
             await adapter.rpc.send({'id': req_id, 'error': {'code': -32601, 'message': 'Unsupported request'}})
             self._emit(state, 'notice', {'message': '当前运行服务未支持此类请求，已拒绝'})
             return
+        if session['binding'].get('service_scope'):
+            offered = params.get('availableDecisions') or ['decline']
+            await adapter.respond(req_id, {'decision': 'decline' if 'decline' in offered else 'cancel'})
+            self._emit(state, 'notice', {'message': 'Service 仅允许已发布的业务工具，已拒绝原生命令或文件修改'})
+            return
         workspace = self.backend.workspace(session).resolve()
         allowed = ['accept', 'decline']
         changes = state['changes'].get(params.get('itemId'))
@@ -161,6 +169,18 @@ class RunService:
             allowed = [d for d in allowed if decisions[d] in offered]
         if not allowed:
             raise RuntimeFailure('审批选项不受支持')
+        if state['run'].get('yolo'):
+            # Reuse the same authorization and workspace checks as manual
+            # approval. YOLO skips the human wait; it grants no extra access.
+            decision = 'accept' if 'accept' in allowed else 'decline'
+            self.authorize(session['actor_id'], session['binding'])
+            await adapter.respond(req_id, {'decision': decisions[decision]})
+            self._emit(state, 'approval_resolved', {
+                'approval_id': new_id(), 'kind': method, 'decision': decision, 'automatic': True,
+            }, status='running')
+            if decision == 'decline':
+                self._emit(state, 'notice', {'message': 'YOLO 已拒绝超出当前权限或无法核实的操作'})
+            return
         pending = {'id': new_id(), 'kind': method, 'allowed': allowed,
                    'command': params.get('command'), 'reason': params.get('reason'), 'changes': changes}
         state['run']['pending'] = pending
@@ -204,7 +224,9 @@ class RunService:
                     workspace = self.backend.workspace(session)
                     from app.runtime.media import input_files
                     adapter.input_files = input_files(workspace, run.get('attachments', []))
-                    updated_instructions = session.get('instructions_version', 1) < 3
+                    adapter.dynamic_tools = session.get('dynamic_tools', [])
+                    adapter.service_scope = session['binding'].get('service_scope')
+                    updated_instructions = not adapter.service_scope and session.get('instructions_version', 1) < 3
                     if updated_instructions and self.tool_bridge:
                         from app.runtime.business_tools import instructions
                         session['instructions'] = instructions(session['actor_id'], session['binding']['runtime'])
@@ -285,6 +307,15 @@ class RunService:
                                     raise RuntimeFailure('事件数量超过本轮限制')
                                 if event.type == 'tool' and event.payload.get('changes'):
                                     state['changes'][event.payload['item_id']] = event.payload['changes']
+                                    # An exact workspace-relative key lets the UI link only archived
+                                    # files, without treating a provider's host path as a storage path.
+                                    for change in event.payload['changes']:
+                                        source = Path(change.get('path', ''))
+                                        source = source if source.is_absolute() else workspace / source
+                                        try:
+                                            change['workspace_path'] = source.resolve().relative_to(workspace.resolve()).as_posix()
+                                        except ValueError:
+                                            pass
                                 if event.type == 'usage':
                                     run['usage'] = event.payload.get('usage')
                                 self._emit(state, event.type, event.payload)
@@ -340,7 +371,13 @@ class RunService:
                 if state['cancel']:
                     raise RuntimeFailure('归档已取消')
                 path = root + '/' + rel
-                await asyncio.to_thread(self.storage.write_bytes, session['actor_id'], path, data)
+                self.authorize(session['actor_id'], session['binding'])
+                scope = session['binding'].get('service_scope')
+                if scope:
+                    await asyncio.to_thread(self.storage.write_consumer_bytes, session['actor_id'], scope['service_id'],
+                                            scope['conversation_id'], path.removeprefix('/generated/'), data)
+                else:
+                    await asyncio.to_thread(self.storage.write_bytes, session['actor_id'], path, data)
                 artifact = {'id': new_id(), 'name': rel, 'path': path, 'sha256': sha, 'mime': mime,
                             'size': len(data), 'native_image': native, 'run_id': run['id']}
                 session['artifacts'].append(artifact)

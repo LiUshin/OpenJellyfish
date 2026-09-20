@@ -32,8 +32,9 @@ import hljs from 'highlight.js/lib/core';
 import { FileArrowUp, FileCode, CircleNotch, CheckCircle, XCircle } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import type { ToolBlock } from '../types';
+import { toolOutcome } from '../utils/responsePresentation';
 import { extractStreamingField } from '../../../utils/partialJson';
-import { escapeHtml } from '../markdown';
+import { escapeHtml, fileRevealEnabled } from '../markdown';
 // 副作用 import：确保 markdown.ts 被加载，从而完成 hljs 语言注册
 import '../markdown';
 import EditDiffViewer from './EditDiffViewer';
@@ -236,7 +237,7 @@ export function FilePreviewBody({
       <div className={styles.streamFileHeader}>
         <div className={styles.streamFileHeaderLeft}>
           {isWrite ? <FileArrowUp size={16} weight="duotone" /> : <FileCode size={16} weight="duotone" />}
-          <span className={styles.streamFilePath} title={filePath ?? ''}>{headerPath}</span>
+          {filePath && fileRevealEnabled() ? <button type="button" className={styles.filePathButton} data-jf-file={filePath} title="在右侧预览文件">{headerPath}</button> : <span className={styles.streamFilePath}>{headerPath}</span>}
           {lang && <span className={styles.streamFileLang}>{lang}</span>}
         </div>
         <div className={`${styles.streamFileStatus} ${statusClass}`}>{statusNode}</div>
@@ -268,7 +269,8 @@ function StreamingFilePreview({ block, isStreaming = false }: Props) {
   const parsed = useMemo(() => parseArgs(block.args || ''), [block.args]);
 
   const body = isWrite ? parsed.content : parsed.newString;
-  const isError = block.done && /^(error|failed|failure|✗|❌|失败|出错)/i.test(block.result.trim());
+  const outcome = toolOutcome(block);
+  const isError = ['failed', 'stopped', 'unknown'].includes(outcome);
 
   let status: FilePreviewStatus;
   if (isError) status = 'error';

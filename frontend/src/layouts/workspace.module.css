@@ -1,0 +1,12 @@
+.brandButton { display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 0; flex: 1; padding: 0; border: 0; background: none; color: var(--jf-text); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.brandButton img { object-fit: contain; flex-shrink: 0; }
+.brandButton span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brandButton:hover { color: var(--jf-primary); }
+.brandButton:focus-visible, .fileTab:focus-visible { outline: 2px solid var(--jf-primary); outline-offset: -2px; }
+.divider { background: var(--jf-border); }
+.divider:hover, .divider:focus-visible { background: var(--jf-primary); outline: none; box-shadow: 0 0 8px rgba(var(--jf-primary-rgb), .3); }
+.fileToolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 8px 10px; min-height: 48px; flex-shrink: 0; border-bottom: 1px solid var(--jf-border); }
+.fileToolbarGroup { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.fileToolbar :global(.ant-btn) { min-width: 28px; }
+.fileTab:hover { background: rgba(var(--jf-primary-rgb), .06) !important; }
+.fileTab button:focus-visible { outline: 2px solid var(--jf-primary); outline-offset: 1px; }

@@ -1,64 +1,27 @@
-import { memo, useState } from 'react';
-import { Wrench, CircleNotch, CheckCircle } from '@phosphor-icons/react';
+import { memo, useId, useState } from 'react';
+import { CaretDown, CircleNotch, CheckCircle, WarningCircle, MinusCircle } from '@phosphor-icons/react';
 import type { ToolBlock } from '../types';
-import { escapeHtml } from '../markdown';
-import styles from '../chat.module.css';
+import { toolLabel, toolOutcome } from '../utils/responsePresentation';
+import styles from './workProgress.module.css';
 
-interface Props {
-  block: ToolBlock;
-}
-
-function ToolIndicator({ block }: Props) {
+function ToolIndicator({ block }: { block: ToolBlock }) {
   const [expanded, setExpanded] = useState(false);
-  const hasArgs = block.args.trim().length > 0;
-  const hasResult = block.result.trim().length > 0;
-  const longResult = block.result.length > 500;
-
-  if (!block.done) {
-    return (
-      <div className={styles.toolPill}>
-        <span className={styles.toolPillSpin}>
-          <CircleNotch size={14} weight="bold" />
-        </span>
-        <span className={styles.toolPillName}>{escapeHtml(block.name)}</span>
-        {hasArgs && (
-          <span className={styles.toolPillArgs}>{block.args.slice(0, 60)}</span>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <div
-        className={`${styles.toolPill} ${styles.toolPillDone}`}
-        onClick={() => (hasArgs || hasResult) && setExpanded(!expanded)}
-        style={{ cursor: hasArgs || hasResult ? 'pointer' : 'default' }}
-      >
-        <CheckCircle size={14} weight="fill" />
-        <span className={styles.toolPillName}>{escapeHtml(block.name)}</span>
-        {(hasArgs || hasResult) && (
-          <span className={styles.toolPillChevron}>{expanded ? '▾' : '▸'}</span>
-        )}
-      </div>
-      {expanded && (
-        <div className={styles.toolExpandedDetail}>
-          {hasArgs && (
-            <div className={styles.toolStreamPreview}>{block.args}</div>
-          )}
-          {hasResult && (
-            <div
-              className={`${styles.toolResultPreview} ${longResult && !expanded ? styles.collapsedResult : ''}`}
-            >
-              {block.result}
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  );
+  const id = useId();
+  const outcome = toolOutcome(block);
+  const label = { running: '进行中', done: '已完成', failed: '失败', stopped: block.status === 'declined' || block.result === '已拒绝' ? '已拒绝' : '已取消', unknown: '状态未确认' }[outcome];
+  const Icon = outcome === 'running' ? CircleNotch : outcome === 'failed' ? WarningCircle : outcome === 'done' ? CheckCircle : MinusCircle;
+  return <div className={styles.tool} data-outcome={outcome}>
+    <button type="button" className={styles.toolButton} aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(!expanded)}>
+      <Icon size={14} /> <span className={styles.toolName}>{toolLabel(block.name)}</span>
+      <span className={styles.toolState}>{label}</span><CaretDown size={12} className={expanded ? styles.caretOpen : styles.caret} />
+    </button>
+    {expanded && <div className={styles.toolDetails} id={id}>
+      <code>{block.name}</code>
+      {block.exit_code != null && <p>退出码：{block.exit_code}</p>}
+      {block.args.trim() && <><h5>输入</h5><pre>{block.args}</pre></>}
+      {block.result.trim() && <><h5>结果</h5>{['已完成', '失败', '已取消', '已拒绝'].includes(block.result) ? <p>仅有执行状态；此记录未包含详细结果。</p> : <pre>{block.result}</pre>}</>}
+      {!block.args.trim() && !block.result.trim() && <p>暂无调用详情</p>}
+    </div>}
+  </div>;
 }
-
-// block 引用在 streamContext 的指纹 flush 下保持稳定（未变即复用同一对象），
-// memo 让已完成的 tool pill 在流式期间不再每帧重渲染。
 export default memo(ToolIndicator);

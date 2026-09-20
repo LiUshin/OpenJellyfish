@@ -65,8 +65,8 @@ export default function PromptPage() {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <div style={{
-        padding: isMobile ? '12px 12px 0 52px' : '12px 24px 0',
+      {tabItems.length > 1 && <div style={{
+        padding: isMobile ? '8px 14px 0' : '8px 24px 0',
         flexShrink: 0,
       }}>
         <Tabs
@@ -75,7 +75,7 @@ export default function PromptPage() {
           items={tabItems}
           style={{ marginBottom: 0 }}
         />
-      </div>
+      </div>}
       <div style={{ flex: 1, overflow: 'hidden' }}>
         <UserProfileEditor open={tab === 'profile'} onClose={() => {}} inline />
         {showSystem && <SystemPromptEditor open={tab === 'system'} onClose={() => {}} inline />}

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.runtime.rpc import StdioRPC, RuntimeFailure
 from app.runtime.types import RuntimeEvent
+from app.runtime.tool_details import codex_tool
 
 
 def codex_environment(home: Path) -> dict[str, str]:
@@ -123,6 +124,17 @@ class CodexAdapter:
             params['config']['features.skip_host_skill_discovery'] = True
             params['config']['web_search'] = 'live'
             params['config']['features.image_generation'] = True
+        if getattr(self, 'service_scope', None):
+            # Service callers never receive the main-chat native filesystem tools.
+            params['sandbox'] = 'read-only'
+            params['approvalPolicy'] = 'never'
+            params['config'].update({f'features.{feature}': False for feature in (
+                'shell_tool', 'unified_exec', 'apply_patch_freeform', 'js_repl', 'exec', 'hooks',
+            )})
+            params['config']['tools.view_image'] = False
+            # Capabilities are supplied by the scheduler from the immutable scope.
+            params['config']['web_search'] = 'live' if self.service_scope.get('web') else 'disabled'
+            params['config']['features.image_generation'] = bool(self.service_scope.get('image'))
         if self.dynamic_tools and not thread_id:
             params['dynamicTools'] = self.dynamic_tools
         if self.model:
@@ -174,10 +186,9 @@ class CodexAdapter:
                                                 "saved_path": item.get("savedPath"), "failure": item.get("failure"),
                                                 "result": item.get("result")})
                 elif item.get("type") in ("commandExecution", "fileChange", "mcpToolCall", "webSearch", "imageGeneration"):
-                    yield RuntimeEvent("tool", {"item_id": item.get("id"), "kind": item.get("type"),
-                                               "status": item.get("status") or ("completed" if method == "item/completed" else "inProgress"),
-                                               "command": item.get("command") or item.get("query"), "changes": item.get("changes"),
-                                               "action": item.get("action"), "results": item.get("results")})
+                    yield RuntimeEvent("tool", codex_tool(item, method == "item/completed"))
+            elif method == "item/commandExecution/outputDelta":
+                yield RuntimeEvent("tool", {"item_id": p.get("itemId"), "result_delta": p.get("delta", "")})
             elif method == "serverRequest/resolved":
                 yield RuntimeEvent("request_resolved", {"request_id": p.get("requestId")})
             elif method == "thread/tokenUsage/updated":

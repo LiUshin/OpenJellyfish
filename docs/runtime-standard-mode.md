@@ -9,10 +9,18 @@ v1.3.0：PR 00–06、Cursor 接入、主机超管控制台及可选 Docker CLI 
 - 在后端部署环境执行 `python3 launcher.py --superadmin-key`（Docker 用 `docker compose exec openjellyfish python launcher.py --superadmin-key`），由操作者在页面输入 key。创建 Codex 或 Cursor 连接，使用官方登录（Codex 支持设备码 / 浏览器，Cursor 使用浏览器），探测模型并授权可信 admin。普通 admin 设置页只显示获授权的团队连接。
 - admin 只能使用授权模型；其会话、文档工具、记忆、服务文档和产物归自己。共享的是超管的供应商账号与额度。
 - 新对话直接在聊天输入区选择 API / Codex / Cursor 模型，首次发送时自动建立内部会话，不再经过创建配置弹窗。已有会话可在同一连接内逐轮切换模型；每轮保存实际选择并重新检查授权。引擎、连接、账号代次、授权版本和生图模式仍绑定会话；不会跨账号或供应商自动迁移上下文。
-- Codex / Cursor 请求在单调度进程的 SQLite 队列中运行；同连接并发为 1，全局和每 admin 排队有上限。断开浏览器不停止任务；刷新后重新打开会话可恢复输出和审批。
+- Codex / Cursor 请求在单调度进程的 SQLite 队列中运行；同连接并发为 1，全局和每 admin 排队有上限。管理员主聊天断开浏览器不停止任务；刷新后重新打开会话可恢复输出和审批。内部 Service 的流断开会取消该次任务。
 - 支持文本、文档副本、原生命令/文件审批、停止、产物预览 / 下载。业务工具包含文档读取、带版本检查的个人记忆更新及当前 admin 的服务文档读取。
 
 **范围说明：** DeepAgents 适配器保留原 LangGraph/checkpointer/HITL 执行机制与 SSE 行为；新增 CLI 队列、账号并发和凭据租用作用于 Codex / Cursor。没有把旧 DeepAgents 任务伪装为 Codex 持久队列任务。
+
+admin 还可将已授权连接与模型用于[内部 Service 的网页、API 和微信](runtime-service-distribution.md)。访客仅通过 Service 工具访问发布的资源，不能取得超管凭据或使用管理员主聊天工具。
+
+## Admin YOLO 模式
+
+「设置 → 通用 → YOLO」同时作用于 DeepAgents、Codex 与 Cursor 的 admin 聊天。新对话首条消息及后续消息均传递该设置，服务端按每轮请求保存；关闭后下一轮恢复手动审批，已发出的轮次保留发送时的设置。网络重试复用原请求及原设置。
+
+Codex / Cursor 的普通命令、文件修改和 Cursor 计划请求，先经过原有账号授权、工作区范围和供应商审批选项检查，再自动批准。超范围或无法核实的操作自动拒绝，不扩大沙箱权限，不生成等待点击的审批卡。自动处理记录保存在该轮事件中，界面用 YOLO 标签标识开启状态。Service 访客的执行范围及拒绝原生命令 / 文件审批的规则不受此开关影响。
 
 ## 部署开关
 
@@ -84,7 +92,7 @@ python scripts/runtime_admin.py recover --profile-id <profile_id> --confirm-stop
 ## 能力与验收边界
 
 - Codex 原生生图已通过本机 API 生成与归档 PNG 验证；Cursor 生图适配已实现，但未完成真实生图验收。支持 `image_mode=native/off`，前端生图最终视觉验收尚未完成。详见 [流式聊天与原生能力](runtime-streaming-chat.md)。
-- 每租户 Docker / Cloudflare 执行后端、多副本协调、公开消费者 Web、微信、调度与语音的外部引擎接入尚未开放。整套应用的 Docker 部署不等于这些隔离后端。
+- 每租户 Docker / Cloudflare 执行后端、多副本协调、不可信公众的套餐分发、管理员个人微信、调度与语音的外部引擎接入尚未开放。内部 Service 微信已接入共享执行路径，实际微信收发仍需部署侧验收。整套应用的 Docker 部署不等于这些隔离后端。
 - Cloudflare、第二个独立供应商身份没有真实验证。两个测试 admin 共享同一供应商账号的成功不能替代这些验收。
 
 ## 验证方法

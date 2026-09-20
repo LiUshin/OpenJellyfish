@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import SettingsLoadError from '../../components/SettingsLoadError';
+import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { List, Tag, Button, Empty, Spin, Typography, Popconfirm, message, Badge, Tooltip, Collapse } from 'antd';
 import {
   Envelope, EnvelopeOpen, Trash, Eye, Robot, ArrowClockwise, User,
@@ -20,18 +21,24 @@ export default function InboxPage() {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [messages, setMessages] = useState<api.InboxMessage[]>([]);
+  const [loadError, setLoadError] = useState(false);
+  const requestSequence = useRef(0);
+  useEffect(() => () => { ++requestSequence.current; }, []);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string | undefined>(undefined);
 
   const load = useCallback(async () => {
+    const sequence = ++requestSequence.current;
+    setLoadError(false);
     setLoading(true);
     try {
       const res = await api.listInbox(filter);
+      if (sequence !== requestSequence.current) return;
       setMessages(res.messages);
     } catch {
-      message.error(t('inbox.loadFail'));
+      if (sequence === requestSequence.current) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (sequence === requestSequence.current) setLoading(false);
     }
   }, [filter, t]);
 
@@ -65,12 +72,8 @@ export default function InboxPage() {
   const unreadCount = messages.filter((m) => m.status === 'unread').length;
 
   return (
-    <div style={{
-      padding: isMobile ? '16px 12px 24px' : '24px 32px',
-      paddingLeft: isMobile ? 52 : undefined,
-      maxWidth: 960, margin: '0 auto', width: '100%',
-    }}>
-      <div style={{
+    <div className="settings-page inbox-settings">
+      <div className="settings-toolbar" style={{
         display: 'flex',
         alignItems: isMobile ? 'flex-start' : 'center',
         justifyContent: 'space-between',
@@ -79,7 +82,7 @@ export default function InboxPage() {
         gap: isMobile ? 12 : 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Text style={{ fontSize: 18, fontWeight: 600, color: '#e0e0e8' }}>{t('inbox.title')}</Text>
+          <Text style={{ fontSize: 18, fontWeight: 600, color: 'var(--jf-text)' }}>{t('inbox.title')}</Text>
           {unreadCount > 0 && (
             <Badge count={unreadCount} style={{ backgroundColor: '#e8524a' }} />
           )}
@@ -88,6 +91,7 @@ export default function InboxPage() {
           {(['all', 'unread', 'handled'] as const).map((f) => (
             <Button
               key={f}
+              aria-pressed={(filter === undefined && f === 'all') || filter === f}
               size="small"
               type={(filter === undefined && f === 'all') || filter === f ? 'primary' : 'default'}
               onClick={() => setFilter(f === 'all' ? undefined : f)}
@@ -97,13 +101,14 @@ export default function InboxPage() {
             </Button>
           ))}
           <Tooltip title={t('inbox.refresh')}>
-            <Button type="text" size="small" icon={<ArrowClockwise size={16} />} onClick={load} style={{ color: 'var(--jf-text-muted)' }} />
+            <Button aria-label={t('inbox.refresh')} type="text" size="small" icon={<ArrowClockwise size={16} />} onClick={load} style={{ color: 'var(--jf-text-muted)' }} />
           </Tooltip>
         </div>
       </div>
 
-      <Spin spinning={loading}>
-        {messages.length === 0 && !loading ? (
+      {loadError && <SettingsLoadError onRetry={() => void load()} />}
+      <div className="settings-list-panel"><Spin spinning={loading}>
+        {messages.length === 0 && !loading && !loadError ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={<Text style={{ color: 'var(--jf-text-muted)' }}>{t('inbox.empty')}</Text>}
@@ -121,9 +126,9 @@ export default function InboxPage() {
                   style={{
                     padding: '14px 16px',
                     marginBottom: 8,
-                    background: item.status === 'unread' ? 'rgba(232, 82, 74, 0.06)' : 'rgba(255,255,255,0.03)',
+                    background: item.status === 'unread' ? 'rgba(var(--jf-primary-rgb), 0.04)' : 'var(--jf-bg-panel)',
                     borderRadius: 'var(--jf-radius-md)',
-                    border: `1px solid ${item.status === 'unread' ? 'rgba(232, 82, 74, 0.15)' : 'rgba(255,255,255,0.06)'}`,
+                    border: '1px solid var(--jf-border)',
                   }}
                 >
                   <div style={{
@@ -141,7 +146,7 @@ export default function InboxPage() {
                         <EnvelopeOpen size={18} style={{ color: 'var(--jf-text-muted)', flexShrink: 0 }} />
                       )}
                       <Text style={{
-                        color: '#e0e0e8', fontWeight: 500,
+                        color: 'var(--jf-text)', fontWeight: 500,
                         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                         maxWidth: isMobile ? '55vw' : 'unset',
                       }}>
@@ -177,7 +182,7 @@ export default function InboxPage() {
                   </div>
 
                   <Paragraph
-                    style={{ color: '#c4c4d4', fontSize: 13, marginBottom: item.agent_response ? 8 : 4, whiteSpace: 'pre-wrap' }}
+                    style={{ color: 'var(--jf-text)', fontSize: 13, marginBottom: item.agent_response ? 8 : 4, whiteSpace: 'pre-wrap' }}
                     ellipsis={{ rows: 3, expandable: true, symbol: t('inbox.expand') }}
                   >
                     {item.message}
@@ -191,7 +196,7 @@ export default function InboxPage() {
                         key: '1',
                         label: <Text style={{ color: 'var(--jf-text-muted)', fontSize: 12 }}>{t('inbox.agentResultLabel')}</Text>,
                         children: (
-                          <Paragraph style={{ color: '#a0a0b8', fontSize: 12, margin: 0, whiteSpace: 'pre-wrap' }}>
+                          <Paragraph style={{ color: 'var(--jf-text-muted)', fontSize: 12, margin: 0, whiteSpace: 'pre-wrap' }}>
                             {item.agent_response}
                           </Paragraph>
                         ),
@@ -202,12 +207,12 @@ export default function InboxPage() {
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 4 }}>
                     {item.status === 'unread' && (
                       <Tooltip title={t('inbox.markRead')}>
-                        <Button type="text" size="small" icon={<Eye size={14} />} onClick={() => handleMarkRead(item.id)} style={{ color: 'var(--jf-text-muted)' }} />
+                        <Button aria-label={t('inbox.markRead')} type="text" size="small" icon={<Eye size={14} />} onClick={() => handleMarkRead(item.id)} style={{ color: 'var(--jf-text-muted)' }} />
                       </Tooltip>
                     )}
                     <Popconfirm title={t('inbox.deleteConfirm')} onConfirm={() => handleDelete(item.id)} okText={t('inbox.deleteBtn')} cancelText={t('common.cancel')}>
                       <Tooltip title={t('inbox.deleteBtn')}>
-                        <Button type="text" size="small" danger icon={<Trash size={14} />} />
+                        <Button aria-label={t('inbox.deleteBtn')} type="text" size="small" danger icon={<Trash size={14} />} />
                       </Tooltip>
                     </Popconfirm>
                   </div>
@@ -216,7 +221,7 @@ export default function InboxPage() {
             }}
           />
         )}
-      </Spin>
+      </Spin></div>
     </div>
   );
 }

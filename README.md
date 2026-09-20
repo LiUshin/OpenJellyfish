@@ -121,11 +121,11 @@ docker compose up -d --build
 
 #### Optional — Codex / Cursor for trusted teams
 
-v1.3.0 adds Codex and Cursor to the main admin chat. DeepAgents remains the default. On macOS/Linux, enable `JELLYFISH_RUNTIME_ENABLED=1` with one API worker; install the chosen CLI in the backend environment. Docker supports independent pinned build options for either CLI in `.env.example`.
+v1.3.0 added Codex and Cursor to the main admin chat; v1.3.1 extends authorized plans to internal Services and improves chat and settings workflows. DeepAgents remains the default. On macOS/Linux, enable `JELLYFISH_RUNTIME_ENABLED=1` with one API worker; install the chosen CLI in the backend environment. Docker supports independent pinned build options for either CLI in `.env.example`.
 
 Open `/superadmin` and enter the host key obtained with `python3 launcher.py --superadmin-key` (Docker: `docker compose exec openjellyfish python launcher.py --superadmin-key`). Complete supplier login, probe models, then grant selected models to existing admins. Admins select an authorized engine/model in chat; they do not manage supplier credentials. Supplier accounts and quota are shared only within a trusted team; this mode is not OS isolation between tenants.
 
-Follow the [deployment and login guide](docs/superadmin-console.md) and [runtime scope / recovery guide](docs/runtime-standard-mode.md). Codex/Cursor currently serve admin web chat; Service, WeChat, scheduled tasks and voice keep their existing engine paths. Source updates do not imply new desktop installers have been published.
+Follow the [deployment and login guide](docs/superadmin-console.md) and [runtime scope / recovery guide](docs/runtime-standard-mode.md). Codex/Cursor support admin web chat and [internal Services over web, API and WeChat](docs/runtime-service-distribution.md). Admin WeChat, scheduled tasks and voice retain their existing engine paths. Source updates do not imply new desktop installers have been published.
 
 ### 🏗️ Architecture
 
@@ -147,7 +147,7 @@ Follow the [deployment and login guide](docs/superadmin-console.md) and [runtime
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Release notes: [v1.3.0](docs/release-v1.3.0.md).
+Release notes: [v1.3.1](docs/release-v1.3.1.md).
 
 ### 📚 Documentation
 
@@ -267,13 +267,13 @@ docker compose up -d --build   # 构建并启动
 
 #### 可选：可信团队使用 Codex / Cursor
 
-v1.3.0 将 Codex 与 Cursor 接入管理员主聊天，DeepAgents 仍为默认。macOS / Linux 部署设 `JELLYFISH_RUNTIME_ENABLED=1`，保持单 API worker，并在后端执行环境安装所需 CLI。Docker 可在 `.env.example` 中按固定版本独立选装一种或两种 CLI，修改后需重建镜像。
+v1.3.0 将 Codex 与 Cursor 接入管理员主聊天；v1.3.1 新增授权套餐的内部 Service 分发，并改进聊天与设置工作流。DeepAgents 仍为默认。macOS / Linux 部署设 `JELLYFISH_RUNTIME_ENABLED=1`，保持单 API worker，并在后端执行环境安装所需 CLI。Docker 可在 `.env.example` 中按固定版本独立选装一种或两种 CLI，修改后需重建镜像。
 
 进入 `/superadmin`，输入 `python3 launcher.py --superadmin-key` 查看得到的主机 key（Docker 使用 `docker compose exec openjellyfish python launcher.py --superadmin-key`）。完成供应商登录、探测模型，再将指定模型授权给已有 admin。admin 在聊天中选择获授权的引擎 / 模型，不管理供应商凭据。共享账号和额度仅面向可信团队，不提供恶意租户之间的操作系统隔离。
 
-完整步骤见 [超管部署与登录](docs/superadmin-console.md)、[标准模式与故障恢复](docs/runtime-standard-mode.md)。Codex / Cursor 当前用于管理员 Web 聊天；Service、微信、定时任务和语音沿用原有执行路径。源码更新不代表已发布新版桌面安装包。
+完整步骤见 [超管部署与登录](docs/superadmin-console.md)、[标准模式与故障恢复](docs/runtime-standard-mode.md)。Codex / Cursor 支持管理员 Web 聊天和[内部 Service 的网页、API、微信分发](docs/runtime-service-distribution.md)。管理员个人微信、定时任务和语音沿用原有执行路径。源码更新不代表已发布新版桌面安装包。
 
-版本说明：[v1.3.0](docs/release-v1.3.0.md)。
+版本说明：[v1.3.1](docs/release-v1.3.1.md)。
 
 ### 📚 项目文档
 
