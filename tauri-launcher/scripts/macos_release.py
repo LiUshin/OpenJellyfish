@@ -5,7 +5,6 @@ import argparse
 import hashlib
 from pathlib import Path
 import os
-import plistlib
 import subprocess
 import tempfile
 
@@ -24,7 +23,7 @@ def macho_files(root: Path):
 
 
 def run(*args: str):
-    return subprocess.run(args, check=True, capture_output=True, text=True).stdout
+    return subprocess.run(args, check=True, capture_output=True, text=True, timeout=300).stdout
 
 
 def sign_resources(root: Path):
@@ -65,7 +64,7 @@ def verify_app(app: Path, arch: str):
     subprocess.run([
         str(resources / "python/bin/python3"), "-B", "-c",
         "import ssl, sqlite3, pydantic_core; from Crypto.Cipher import AES; print('Bundled Python OK')",
-    ], check=True, env=env, cwd=resources)
+    ], check=True, env=env, cwd=resources, timeout=300)
     run(str(resources / "node/bin/node"), "-e", "require('crypto').randomBytes(16); console.log('Bundled Node OK')")
     # Running the bundled interpreters must not alter the application seal.
     run("codesign", "--verify", "--deep", "--strict", str(app))
@@ -74,15 +73,14 @@ def verify_app(app: Path, arch: str):
 
 def verify_dmg(dmg: Path, arch: str, notarized: bool = False):
     run("hdiutil", "verify", str(dmg))
-    with tempfile.TemporaryDirectory(prefix="ojf-dmg-check-") as temporary:
-        mount = Path(temporary) / "mount"
-        mount.mkdir()
-        result = subprocess.run([
-            "hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen", "-plist",
-            "-mountpoint", str(mount), str(dmg),
-        ], check=True, capture_output=True)
-        entities = plistlib.loads(result.stdout)["system-entities"]
-        device = next(item["dev-entry"] for item in entities if item.get("mount-point") == str(mount))
+    # macOS reports /private/var/... even if TMPDIR uses /var/... . Detach by
+    # canonical mountpoint, not by comparing differently spelled plist paths.
+    temporary = Path(tempfile.mkdtemp(prefix="ojf-dmg-check-")).resolve()
+    mount = temporary / "mount"
+    mount.mkdir()
+    try:
+        run("hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
+            "-mountpoint", str(mount), str(dmg))
         try:
             apps = list(mount.glob("*.app"))
             if len(apps) != 1:
@@ -94,7 +92,14 @@ def verify_dmg(dmg: Path, arch: str, notarized: bool = False):
             else:
                 print("NOTICE: ad-hoc only; Gatekeeper user approval is still required.")
         finally:
-            run("hdiutil", "detach", device)
+            run("hdiutil", "detach", str(mount))
+    finally:
+        # Never recursively remove a mountpoint if detaching fails.
+        try:
+            mount.rmdir()
+            temporary.rmdir()
+        except OSError:
+            pass
     digest = hashlib.sha256()
     with dmg.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):

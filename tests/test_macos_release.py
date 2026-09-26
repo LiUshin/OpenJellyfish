@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("macos_release", ROOT / "tauri-launcher/scripts/macos_release.py")
@@ -43,6 +44,26 @@ class ReleaseIntegrityTests(unittest.TestCase):
             wrong_arch = "x86_64" if arch == "arm64" else "arm64"
             with self.assertRaises(subprocess.CalledProcessError):
                 release.verify_signatures(app, wrong_arch)
+            # A real mounted DMG catches macOS /var -> /private/var aliases and
+            # exercises detach-on-failure. Only the unrelated runtime smoke is replaced.
+            dmg = root / "test.dmg"
+            # Use a containing directory so the verifier sees an application.
+            image_root = root / "image"
+            image_root.mkdir()
+            moved = image_root / app.name
+            app.rename(moved)
+            release.run("hdiutil", "create", "-srcfolder", str(image_root), "-volname", "ReleaseTest",
+                        "-format", "UDZO", str(dmg))
+            with patch.object(release, "verify_app", side_effect=release.verify_signatures):
+                release.verify_dmg(dmg, arch)
+            self.assertTrue(dmg.with_suffix(".dmg.sha256").is_file())
+            with patch.object(release, "verify_app", side_effect=RuntimeError("simulated failure")):
+                with self.assertRaisesRegex(RuntimeError, "simulated failure"):
+                    release.verify_dmg(dmg, arch)
+            # It must be possible to mount again after either success or failure.
+            with patch.object(release, "verify_app", side_effect=release.verify_signatures):
+                release.verify_dmg(dmg, arch)
+            moved.rename(app)
             resource.write_text("modified after signing")
             with self.assertRaises(subprocess.CalledProcessError):
                 release.verify_signatures(app, arch)
