@@ -481,7 +481,7 @@ def tauri_build(target: str):
     print("\n[5/5] Tauri build...")
 
     subprocess.run(
-        ["npm", "install"], cwd=TAURI_DIR, check=True,
+        ["npm", "ci"], cwd=TAURI_DIR, check=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=IS_WINDOWS,
     )
 
@@ -522,6 +522,26 @@ def tauri_build(target: str):
                 size_mb = item.stat().st_size / (1024 * 1024)
                 print(f"   → {item.name}  ({size_mb:.1f} MB)")
 
+    if IS_MACOS:
+        from macos_release import verify_dmg
+        arch = "arm64" if target.startswith("aarch64-") else "x86_64"
+        suffix = "aarch64" if arch == "arm64" else "x64"
+        dmg = bundle_dir / "dmg" / f"OpenJellyfish_{get_version()}_{suffix}.dmg"
+        verify_dmg(dmg, arch)
+
+
+def write_payload_id():
+    """Identify the complete staged payload, including same-version rebuilds."""
+    digest = hashlib.sha256()
+    for path in sorted(STAGE_DIR.rglob("*")):
+        if path.is_file() and path.name != "payload-id.txt":
+            digest.update(path.relative_to(STAGE_DIR).as_posix().encode() + b"\0")
+            digest.update(str(path.stat().st_mode & 0o777).encode() + b"\0")
+            with path.open("rb") as source:
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(block)
+    (STAGE_DIR / "payload-id.txt").write_text(digest.hexdigest() + "\n", encoding="utf-8")
+
 
 # ── Main ──────────────────────────────────────────────────────────
 
@@ -555,6 +575,11 @@ def main():
     stage_project(target)
     stage_frontend(skip_build=args.no_frontend)
     stage_node(target)
+
+    if IS_MACOS:
+        from macos_release import sign_resources
+        sign_resources(STAGE_DIR)
+    write_payload_id()
 
     if not args.stage_only:
         tauri_build(target)

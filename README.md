@@ -75,6 +75,9 @@ Download the latest installer from [GitHub Releases](https://github.com/LiUshin/
 - macOS Apple Silicon: `OpenJellyfish_x.y.z_aarch64.dmg`
 - macOS Intel: `OpenJellyfish_x.y.z_x64.dmg`
 
+macOS builds are currently **ad-hoc signed, not Apple-notarized**. First launch
+may require approval in Privacy & Security. See the [macOS installation and upgrade notes](docs/MACOS_INSTALL.md), especially before replacing an older app containing user data.
+
 Install, open, enter your LLM API Key on the **Console** page, press **START**.
 The browser opens at `http://localhost:3000`. Register with a code from the
 **Registration Keys** tab.
@@ -220,6 +223,9 @@ git merge   # 融合两个 Agent
 - Windows：`OpenJellyfish_x.y.z_x64-setup.exe`
 - macOS Apple Silicon：`OpenJellyfish_x.y.z_aarch64.dmg`
 - macOS Intel：`OpenJellyfish_x.y.z_x64.dmg`
+
+macOS 当前使用 **ad-hoc 签名，尚未通过 Apple 公证**，首次打开可能需要在“隐私与安全性”中允许。
+请先阅读 [Mac 安装与升级说明](docs/MACOS_INSTALL.md)，尤其是旧版 app 内用户数据的备份与迁移。
 
 安装并打开，在 **控制台** 页填入 LLM API Key，点击 **START**，浏览器自动打开
 `http://localhost:3000`，用 **注册码管理** 里的注册码创建账号即可。
