@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       platform:
-        description: 'Platform to build (all / windows / macos)'
+        description: 'Platform to build (all / windows / macos / macos-arm64)'
         required: false
         default: 'all'
         type: choice
@@ -19,6 +19,7 @@ on:
           - all
           - windows
           - macos
+          - macos-arm64
 
 permissions:
   contents: write
@@ -44,6 +45,8 @@ jobs:
           PLATFORM="${{ inputs.platform || 'all' }}"
           if [ "$PLATFORM" = "windows" ]; then
             echo 'matrix={"include":[{"os":"windows-latest","target":"x86_64-pc-windows-msvc","label":"Windows-x64"}]}' >> $GITHUB_OUTPUT
+          elif [ "$PLATFORM" = "macos-arm64" ]; then
+            echo 'matrix={"include":[{"os":"macos-14","target":"aarch64-apple-darwin","label":"macOS-arm64"}]}' >> $GITHUB_OUTPUT
           elif [ "$PLATFORM" = "macos" ]; then
             echo 'matrix={"include":[{"os":"macos-14","target":"aarch64-apple-darwin","label":"macOS-arm64"},{"os":"macos-15-intel","target":"x86_64-apple-darwin","label":"macOS-x64"}]}' >> $GITHUB_OUTPUT
           else
@@ -131,19 +134,36 @@ jobs:
           fi
           echo "RELEASE_VERSION=$VERSION" >> $GITHUB_ENV
 
+      - name: Test macOS release integrity and workspace migration
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python -m unittest discover -s tests -p test_macos_release.py -v
+          rustc --test tauri-launcher/src-tauri/src/macos_workspace.rs -o "$RUNNER_TEMP/workspace-tests"
+          "$RUNNER_TEMP/workspace-tests"
+
       - name: Build release
         shell: bash
         run: |
           cd tauri-launcher
           python scripts/build.py --target ${{ matrix.target }} --version "$RELEASE_VERSION"
 
+      - name: Explain macOS signing status
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          echo '### macOS: ad-hoc signed, not notarized' >> "$GITHUB_STEP_SUMMARY"
+          echo 'DMG, nested signatures, native architecture and embedded runtimes were checked by build.py. Users must explicitly allow this app in macOS Privacy & Security. Developer ID signing and Apple notarization remain required for trusted public distribution.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Collect artifacts (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           mkdir -p dist
-          cp tauri-launcher/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg dist/ 2>/dev/null || true
-          cp tauri-launcher/src-tauri/target/release/bundle/dmg/*.dmg dist/ 2>/dev/null || true
+          # Native builds use target/release; build.py verifies this exact DMG first.
+          cp tauri-launcher/src-tauri/target/release/bundle/dmg/*.dmg dist/
+          cp tauri-launcher/src-tauri/target/release/bundle/dmg/*.dmg.sha256 dist/
+          cp docs/MACOS_INSTALL.md dist/MACOS_INSTALL-${{ matrix.target }}.md
           ls -la dist/
 
       - name: Collect artifacts (Windows)
@@ -169,6 +189,8 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/*.dmg
+            dist/*.dmg.sha256
+            dist/MACOS_INSTALL-*.md
 
       - name: Publish to GitHub Release (Windows)
         if: runner.os == 'Windows'

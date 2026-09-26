@@ -15,6 +15,9 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
+#[cfg(target_os = "macos")]
+mod macos_workspace;
+
 // ── State ────────────────────────────────────────────────────────
 
 struct AppState {
@@ -223,13 +226,27 @@ fn find_project_dir_dev() -> PathBuf {
     strip_win_extended_prefix(&cwd)
 }
 
-fn resolve_project_dir(app: &tauri::AppHandle) -> PathBuf {
+fn resolve_project_dir(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Ok(res_dir) = app.path().resource_dir() {
         if res_dir.join("app").join("main.py").exists() {
-            return strip_win_extended_prefix(&res_dir);
+            #[cfg(target_os = "macos")]
+            {
+                use std::os::fd::AsRawFd;
+                let home = app.path().app_local_data_dir()?;
+                fs::create_dir_all(&home)?;
+                let lock = fs::OpenOptions::new().create(true).truncate(false)
+                    .read(true).write(true).open(home.join("workspace.lock"))?;
+                // flock is released by the OS on crash and by File::drop on return.
+                if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                return Ok(macos_workspace::prepare(&res_dir, &home)?);
+            }
+            #[cfg(not(target_os = "macos"))]
+            return Ok(strip_win_extended_prefix(&res_dir));
         }
     }
-    find_project_dir_dev()
+    Ok(find_project_dir_dev())
 }
 
 fn find_bundled_python(project_dir: &std::path::Path) -> Option<(PathBuf, bool)> {
@@ -333,9 +350,8 @@ fn find_free_port(start: u16) -> u16 {
 // ── Existing Commands ────────────────────────────────────────────
 
 #[tauri::command]
-fn detect_environment(app: tauri::AppHandle, state: State<'_, AppState>) -> EnvStatus {
-    let project_dir = resolve_project_dir(&app);
-    *state.project_dir.lock().unwrap() = project_dir.clone();
+fn detect_environment(state: State<'_, AppState>) -> EnvStatus {
+    let project_dir = state.project_dir.lock().unwrap().clone();
 
     let (has_python, python_path, python_bundled) = match find_bundled_python(&project_dir) {
         Some((path, bundled)) => (true, path.to_string_lossy().to_string(), bundled),
@@ -358,7 +374,8 @@ fn detect_environment(app: tauri::AppHandle, state: State<'_, AppState>) -> EnvS
     };
 
     let has_deps = project_dir.join("app").join("main.py").exists();
-    let first_run = !project_dir.join(".env").exists() && !project_dir.join("users").exists();
+    let first_run = fs::metadata(project_dir.join(".env")).map(|m| m.len() == 0).unwrap_or(true)
+        && !project_dir.join("users/users.json").exists();
 
     EnvStatus {
         has_python,
@@ -1765,6 +1782,11 @@ pub fn run() {
             project_dir: Mutex::new(find_project_dir_dev()),
             backend_port: Mutex::new(8000),
             frontend_port: Mutex::new(3000),
+        })
+        .setup(|app| {
+            let project_dir = resolve_project_dir(app.handle())?;
+            *app.state::<AppState>().project_dir.lock().unwrap() = project_dir;
+            Ok(())
         })
         .on_window_event(|window, event| {
             // 用户点 X 关闭窗口时，先把后台 launcher.py 及其孙子进程
