@@ -709,7 +709,7 @@ Admin 项目在 `users/{uid}/projects/{pid}/` 保存元数据与一份 `brief.md
 
 v1.3.1 的 `app/runtime/consumer.py` 与 `consumer_tools.py` 将授权套餐扩展至 Service 网页、API 与微信，复用 Runtime 队列和单连接串行。服务端绑定 admin / Service / conversation 身份，限制开放文档、脚本与当前会话产物；连接、模型或资源配置变更后重建原生会话，撤权会取消排队及运行任务。套餐 Service 拒绝 BYOK、语音、视频与定时任务；管理员 YOLO 不改变 Service 的资源范围。详见[Service 分发与边界](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-service-distribution.md)。
 
-### 4.12 v1.4.0 项目、Service 测试与 Tracing
+### 4.12 v1.4.1 项目、Service 测试与 Tracing
 
 `app/routes/projects.py` 与 `app/services/projects.py` 管理 owner 范围内的对话分组；`project_context.py` 每轮注入最多 5,000 token（含包装）的 brief。项目不是新文件工作区，不进入消费者或 Service 测试上下文。删除项目只解除分组。
 
@@ -1385,7 +1385,7 @@ Service 镜像路径：`/api/scheduler/services/{service_id}/...`
 
 ---
 
-### 8.12 v1.4.0 持久执行与消息投递
+### 8.12 v1.4.1 持久执行与消息投递
 
 `app/execution/` 保存 Run、执行授权、恢复和 outbox；`app/services/service_messaging.py` 在同一 `users/.scheduler/executions.sqlite3` 中使用独立 `sm_*` 表保存反馈、回复与明确正文的通知。执行完成、历史投影和微信回执是独立状态；外部发送结果未知时不自动重发。
 

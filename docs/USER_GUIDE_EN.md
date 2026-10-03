@@ -379,13 +379,13 @@ Codex / Cursor runs support streamed text and tools, per-request approval, cance
 
 Since v1.3.1, this path supports admin web chat and internal Services over web, API and Service WeChat using authorized Codex / Cursor plans. Admin personal WeChat keeps its existing path; plan-backed Services do not support scheduled tasks, voice or video. In Service settings, admins fix the connection, model and resource scope, then create a key using the authorized plan. Plan-backed keys do not support BYOK. This mode is for trusted internal members and does not provide OS isolation between hostile tenants. See [internal Service distribution](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-service-distribution.md). Codex native image generation has local API evidence; Cursor image generation and final image UI verification remain incomplete.
 
-### 4.13 Test a Service inside admin chat (v1.4.0)
+### 4.13 Test a Service inside admin chat (v1.4.1)
 
 Select one of your Services in the conversation bar and enable test mode. The next message runs with that Service's saved configuration; both drafts and published Services can be tested. Disable the mode to return to the admin Agent, keeping test questions and responses in the same conversation for review and revision.
 
 The test uses the Service's model / CLI core, prompt, allowed documents and capabilities with separate context, without earlier admin chat or the project brief. Test records stay out of real consumer records. External `contact_admin` notifications are disabled; other authorized tools can still perform real actions. This does not replace web, API or WeChat channel acceptance testing.
 
-### 4.14 Tracing: inspect and replay work (v1.4.0)
+### 4.14 Tracing: inspect and replay work (v1.4.1)
 
 Switch admin chat to Tracing to inspect questions, responses and recorded tool activity. The workspace canvas connects files and actions, with input, output, diff and file-position details. Replay actions in sequence, pan, zoom or fit the canvas.
 

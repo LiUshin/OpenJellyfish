@@ -376,13 +376,13 @@ chat 顶栏 **锁** 按钮可查看当前活跃进程、占用路径，并手动
 
 自 v1.3.1 起，此路径支持管理员 Web 聊天，以及已授权 Codex / Cursor 套餐的内部 Service 网页、API 和 Service 微信。管理员个人微信沿用原有执行路径；套餐 Service 暂不支持定时任务、语音与视频。管理员在 Service 设置中固定连接、模型和开放资源，并创建「使用已授权套餐」Key；套餐 Key 不支持 BYOK。此模式仅面向可信内部成员，不提供恶意租户间的操作系统隔离。详见[内部 Service 分发](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-service-distribution.md)。Codex 原生生图有本机 API 验证，Cursor 真实生图与生图前端最终视觉验收仍未完成。
 
-### 4.13 在管理员对话中测试 Service（v1.4.0）
+### 4.13 在管理员对话中测试 Service（v1.4.1）
 
 在对话栏选择自己的 Service 并开启「测试模式」，下一条消息由该 Service 按当前保存的配置执行；草稿与已发布 Service 均可测试。关闭后回到管理员 Agent，测试提问和回复仍留在同一对话中，可以直接要求 Agent 复盘和修改。
 
 测试使用 Service 的模型 / CLI core、Prompt、开放文档与能力，独立维护上下文，不继承管理员此前的聊天或项目 brief。测试记录不混入真实使用者记录；`contact_admin` 外部提醒在测试中禁用，其他已授权工具仍可能执行真实操作。测试通过不能代替真实网页、API 或微信渠道验收。
 
-### 4.14 Tracing：查看与回放工作过程（v1.4.0）
+### 4.14 Tracing：查看与回放工作过程（v1.4.1）
 
 在管理员聊天切换到 Tracing，可查看每轮提问、回答和已记录的工具活动；用工作区画布查看涉及的文件与动作，展开输入、输出、差异和文件位置，也可按动作顺序回放。画布支持平移、缩放和适应视图。
 
