@@ -63,7 +63,8 @@ def _build_consumer_system_prompt(
     tz_hours = get_tz_offset(admin_id)
     user_tz = timezone(timedelta(hours=tz_hours))
     user_now = datetime.now(user_tz)
-    today_str = user_now.strftime("%Y年%m月%d日")
+    # Avoid locale-dependent strftime literals on Windows.
+    today_str = f"{user_now.year:04d}年{user_now.month:02d}月{user_now.day:02d}日"
     base_prompt = base_prompt.replace("{today}", today_str)
     base_prompt = base_prompt.replace("{user_profile_context}", profile_context)
 

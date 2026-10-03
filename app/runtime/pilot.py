@@ -91,7 +91,8 @@ class Pilot:
             from app.services.prompt import get_user_system_prompt, build_user_profile_prompt
             from app.services.preferences import get_tz_offset
             from datetime import datetime, timezone, timedelta
-            today = datetime.now(timezone(timedelta(hours=get_tz_offset(self.user_id)))).strftime('%Y年%m月%d日')
+            user_now = datetime.now(timezone(timedelta(hours=get_tz_offset(self.user_id))))
+            today = f"{user_now.year:04d}年{user_now.month:02d}月{user_now.day:02d}日"
             prompt = get_user_system_prompt(self.user_id).replace('{today}', today)
             profile = build_user_profile_prompt(self.user_id)
             prompt = prompt.replace('{user_profile_context}', profile) if '{user_profile_context}' in prompt else prompt + '\n' + profile

@@ -433,7 +433,8 @@ def create_user_agent(
     tz_hours = get_tz_offset(user_id)
     user_tz = timezone(timedelta(hours=tz_hours))
     user_now = datetime.now(user_tz)
-    today_str = user_now.strftime("%Y年%m月%d日")
+    # Avoid locale-dependent strftime literals on Windows.
+    today_str = f"{user_now.year:04d}年{user_now.month:02d}月{user_now.day:02d}日"
     user_profile_prompt = build_user_profile_prompt(user_id)
     system_prompt = get_user_system_prompt(user_id)
     system_prompt = system_prompt.replace("{today}", today_str)

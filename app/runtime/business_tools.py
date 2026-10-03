@@ -252,7 +252,8 @@ def instructions(actor_id, runtime='codex', *, project_brief_write=True):
     from app.services.prompt import get_user_system_prompt, build_user_profile_prompt
     from app.services.preferences import get_tz_offset
     profile = build_user_profile_prompt(actor_id)[:16000]
-    today = datetime.now(timezone(timedelta(hours=get_tz_offset(actor_id)))).strftime('%Y年%m月%d日')
+    user_now = datetime.now(timezone(timedelta(hours=get_tz_offset(actor_id))))
+    today = f"{user_now.year:04d}年{user_now.month:02d}月{user_now.day:02d}日"
     prompt = get_user_system_prompt(actor_id)[:32000].replace('{today}', today)
     if '{user_profile_context}' in prompt:
         prompt = prompt.replace('{user_profile_context}', profile)
