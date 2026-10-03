@@ -151,7 +151,7 @@ Follow the [deployment and login guide](docs/superadmin-console.md) and [runtime
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Release notes: [v1.4.0](docs/release-v1.4.0.md): projects with shared briefs, in-chat Service tests, Tracing playback, durable scheduled runs and contact replies.
+Release notes: [v1.4.0](docs/release-v1.4.0.md): projects with shared briefs, in-chat Service tests, Tracing playback, durable scheduled runs and contact replies. Keep `constraints-release.txt` with `requirements.txt`; installer builds validate real Agent graphs before publication.
 
 ### 📚 Documentation
 
@@ -282,7 +282,7 @@ v1.3.0 将 Codex 与 Cursor 接入管理员主聊天；v1.3.1 新增授权套餐
 
 完整步骤见 [超管部署与登录](docs/superadmin-console.md)、[标准模式与故障恢复](docs/runtime-standard-mode.md)。Codex / Cursor 已有管理员 Web 聊天、个人微信、授权的 Agent 定时任务、语音后台委派，以及[内部 Service 的网页、API、微信分发](docs/runtime-service-distribution.md)代码路径；语音前台仍由低延迟模型处理。[Plan 与 CLI mode 契约草案](docs/runtime-plan-mode-contract.md)说明当前架构及待接入范围。源码更新不代表已发布新版桌面安装包。
 
-版本说明：[v1.4.0](docs/release-v1.4.0.md)：项目 brief、对话内 Service 测试、Tracing 回放、持久定时执行与反馈回复。
+版本说明：[v1.4.0](docs/release-v1.4.0.md)：项目 brief、对话内 Service 测试、Tracing 回放、持久定时执行与反馈回复。源码安装请保留与 `requirements.txt` 同目录的 `constraints-release.txt`；安装包发布前会验证真实 Agent 图能完成离线执行。
 
 ### 📚 项目文档
 

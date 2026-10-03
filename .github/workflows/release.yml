@@ -10,6 +10,11 @@ on:
         description: 'Version to release (e.g. 1.2.0). Required for manual runs.'
         required: true
         type: string
+      release_tag:
+        description: 'Optional existing draft tag to rebuild; requires platform=all and unchanged application source.'
+        required: false
+        default: ''
+        type: string
       platform:
         description: 'Platform to build (all / windows / macos / macos-arm64)'
         required: false
@@ -29,6 +34,7 @@ env:
   PYTHON_VERSION: '3.11'
   NODE_VERSION: '22'
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  PYTHONUNBUFFERED: '1'
 
 jobs:
   prepare:
@@ -55,8 +61,19 @@ jobs:
 
       - id: tag
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REBUILD_TAG: ${{ inputs.release_tag }}
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          if [ -n "$REBUILD_TAG" ]; then
+            [[ "$REBUILD_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            test "$REBUILD_TAG" = "v${{ inputs.version }}"
+            test "${{ inputs.platform }}" = all
+            test "$(gh release view "$REBUILD_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+            echo "tag=$REBUILD_TAG" >> $GITHUB_OUTPUT
+            echo "name=OpenJellyfish $REBUILD_TAG" >> $GITHUB_OUTPUT
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
             echo "tag=$TAG" >> $GITHUB_OUTPUT
             echo "name=OpenJellyfish $TAG" >> $GITHUB_OUTPUT
@@ -81,6 +98,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Verify application source for an existing-tag rebuild
+        if: inputs.release_tag != ''
+        env:
+          REBUILD_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          git fetch origin "refs/tags/$REBUILD_TAG:refs/tags/$REBUILD_TAG"
+          git diff --exit-code "$REBUILD_TAG" -- app config frontend launcher.py tauri-launcher/src-tauri/src tauri-launcher/src-tauri/build.rs tauri-launcher/src-tauri/Cargo.toml tauri-launcher/src-tauri/Cargo.lock tauri-launcher/dist
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -183,7 +209,7 @@ jobs:
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
           name: ${{ needs.prepare.outputs.release_name }}
-          draft: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          draft: true
           prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
           generate_release_notes: ${{ startsWith(github.ref, 'refs/tags/v') }}
           fail_on_unmatched_files: true
@@ -198,12 +224,43 @@ jobs:
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
           name: ${{ needs.prepare.outputs.release_name }}
-          draft: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          draft: true
           prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
           generate_release_notes: ${{ startsWith(github.ref, 'refs/tags/v') }}
           fail_on_unmatched_files: true
           files: |
             dist/*.exe
+
+  publish:
+    needs: [prepare, build]
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    name: Publish complete release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require all installers and publish dependency constraints
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,assets > "$RUNNER_TEMP/release.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          release = json.loads((Path(os.environ['RUNNER_TEMP'])/'release.json').read_text())
+          version = os.environ['RELEASE_TAG'].removeprefix('v')
+          expected = [f'OpenJellyfish_{version}_aarch64.dmg', f'OpenJellyfish_{version}_x64.dmg', f'OpenJellyfish_{version}_x64-setup.exe']
+          expected += [name+'.sha256' for name in expected if name.endswith('.dmg')]
+          assets = {item['name']: item for item in release['assets']}
+          for name in expected:
+              assert name in assets and assets[name]['state'] == 'uploaded' and assets[name]['size'] > 0, name
+          PY
+          cp constraints-release.txt "$RUNNER_TEMP/constraints-$RELEASE_TAG.txt"
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" "$RUNNER_TEMP/constraints-$RELEASE_TAG.txt" --clobber
+          if [ -f "docs/release-$RELEASE_TAG.md" ]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file "docs/release-$RELEASE_TAG.md"
+          fi
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
 
   prune-cache:
     needs: build

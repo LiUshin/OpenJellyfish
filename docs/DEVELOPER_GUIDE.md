@@ -177,6 +177,8 @@ python generate_keys.py
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+`requirements.txt` 自动加载同目录的 `constraints-release.txt`，锁定已验证的框架与 SDK 组合。不要单独升级 DeepAgents：升级时必须运行 `python -m unittest discover -s tests -p test_agent_graph_compatibility.py`，验证真实 Agent 图的构建与首轮执行；打包脚本还会在嵌入的 Python 中执行同一检查。
+
 API 文档：<http://localhost:8000/docs>（Swagger UI）。
 
 > **提示**：项目根目录提供跨平台启动器 `python launcher.py [--dev]`，自动检测旧实例、端口冲突、双进程管理，详见 §13。

@@ -52,8 +52,8 @@ class ReleaseIntegrityTests(unittest.TestCase):
             image_root.mkdir()
             moved = image_root / app.name
             app.rename(moved)
-            release.run("hdiutil", "create", "-srcfolder", str(image_root), "-volname", "ReleaseTest",
-                        "-format", "UDZO", str(dmg))
+            release.create_plain_dmg(moved, dmg)
+            self.assertTrue((image_root / "Applications").is_symlink())
             with patch.object(release, "verify_app", side_effect=release.verify_signatures):
                 release.verify_dmg(dmg, arch)
             self.assertTrue(dmg.with_suffix(".dmg.sha256").is_file())

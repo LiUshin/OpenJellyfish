@@ -50,7 +50,7 @@ WORKDIR /app
 ENV JELLYFISH_SUPERADMIN_KEY_FILE=/app/data/superadmin.key
 
 # ---- Python 依赖 ----
-COPY requirements.txt .
+COPY requirements.txt constraints-release.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ---- 复制应用代码（.dockerignore 排除 node_modules / dist 等）----

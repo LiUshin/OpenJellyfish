@@ -177,6 +177,8 @@ python generate_keys.py
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+`requirements.txt` automatically loads the adjacent `constraints-release.txt` with the verified framework and SDK versions. Do not upgrade DeepAgents alone: run `python -m unittest discover -s tests -p test_agent_graph_compatibility.py` to check real graph construction and first-turn execution. The installer builder runs the same check with its embedded Python.
+
 API documentation: <http://localhost:8000/docs> (Swagger UI).
 
 > **Tip**: The cross-platform launcher `python launcher.py [--dev]` in the project root automatically detects old instances, port conflicts, and manages both processes. See §13 for details.

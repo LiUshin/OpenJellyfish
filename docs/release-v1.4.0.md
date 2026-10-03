@@ -10,6 +10,14 @@
 - **日常工作区**：整理聊天、服务、任务、环境入口，改进审批、队列、文件保存和流式回复的状态处理。
 - **macOS 启动器**：纳入完整应用包签名、嵌入运行环境校验与启动完整性修复。签名仍为 ad-hoc，未完成 Apple 公证。
 
+## 发布环境与依赖
+
+本版安装包按 `constraints-release.txt` 中已验证的框架与 SDK 版本构建，DeepAgents 固定为 0.4.12。未约束的新版本 0.7.x 增加了当前 LockAwareBackend 尚未实现的 `delete` 协议，会导致首轮 Agent 执行失败；不能只凭模拟引擎回归判断依赖升级兼容。
+
+打包流程现在使用包内 Python 真正创建并执行管理员 / 批处理 Agent（固定回答的离线模型，不访问供应商）。所有平台附件完成后才公开 Release。Intel Mac 使用标准拖放安装 DMG，保留签名、架构、嵌入运行时及校验和检查。
+
+`v1.4.0` 标签保留原应用源码历史；安装包包含之后的依赖约束与封装修复，应用功能源码不变。使用当前 `main` 的源码时约束已自动载入；若检出原 `v1.4.0` 标签，请下载本 Release 附件 `constraints-v1.4.0.txt`，然后执行 `python -m pip install -r requirements.txt -c constraints-v1.4.0.txt`。不要复用撤回前的未约束试构建包。
+
 ## 升级前准备
 
 1. 停止当前应用后备份完整 `users/` 及部署配置；或使用 SQLite 一致性备份。`users/.scheduler/executions.sqlite3` 保存任务与消息投递事实源，不能仅备份个人 ZIP、inbox JSON 或运行中的 SQLite 主文件而遗漏 WAL。Runtime 数据库、凭据 vault 和部署加密密钥也需按原部署指南保存。
@@ -27,12 +35,18 @@
 
 ## 验证
 
-本次在隔离工作区完成前端 TypeScript / Vite 生产构建、107 项前端测试、188 项项目 / Service / 调度 / 消息等后端回归、156 项 Runtime 回归及 1 项使用真实 codesign / hdiutil 的 macOS 完整性测试。Runtime 回归同时修正了一个未接收新增 `conversation_id` 参数的旧测试替身。前端保留现有大 chunk 提醒。
+本次在隔离工作区完成前端 TypeScript / Vite 生产构建、107 项前端测试、188 项项目 / Service / 调度 / 消息等后端回归、156 项 Runtime 回归、1 项真实 Agent 图离线执行测试及 1 项使用真实 codesign / hdiutil 的 macOS 完整性测试。Runtime 回归同时修正了一个未接收新增 `conversation_id` 参数的旧测试替身。前端保留现有大 chunk 提醒。
 
 这些检查包含模拟引擎与合成渠道数据，不等于真实供应商、微信终端、LiveKit、生产数据恢复或各目标机器安装验收。安装包以本 Release 的 Actions 构建和附件结果为准。
+
+## 已知界面限制
+
+项目 brief 编辑后，请点击保存再切换项目或对话；当前界面尚未保护未保存的草稿。Service 测试会按配置真实执行授权工具，只有 `contact_admin` 的外部通知被模拟。官网首页与指南的内容同步另行进行，安装包版本以本 Release 附件为准。
 
 ## English summary
 
 v1.4.0 adds admin projects with shared Markdown briefs, in-chat Service testing, an interactive Tracing canvas with sequential playback, durable scheduled execution, and persistent Service feedback/replies/direct text notifications. It also includes workspace interaction and macOS bundle-integrity fixes.
 
 Back up the complete user state and databases consistently before upgrading. Per-user ZIP exports do not include the full execution/delivery ledger. Unknown external-send outcomes require manual review. CLI Runtime remains a trusted-team macOS/Linux feature with one API worker; Windows retains DeepAgents/API workflows. Subscription support is distinct from native Plan mode. Service tests can execute authorized tools and do not replace real channel acceptance tests. macOS builds use ad-hoc signing, without Apple notarization.
+
+Installers use the verified dependency constraints (DeepAgents 0.4.12). The unbounded 0.7.x backend protocol is incompatible with the current lock-aware backend. Real admin and batch Agent graphs are now exercised with the embedded Python before packaging; publication waits for every platform. The v1.4.0 application-source tag is unchanged. For source installs from that tag, apply the attached constraints-v1.4.0.txt; current main already loads these constraints.

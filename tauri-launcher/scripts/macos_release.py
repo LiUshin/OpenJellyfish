@@ -71,6 +71,27 @@ def verify_app(app: Path, arch: str):
     print(f"Verified app seal, {count} Mach-O signatures/architectures and bundled runtimes")
 
 
+def create_plain_dmg(app: Path, dmg: Path):
+    """Package a signed app without Finder/AppleScript presentation steps."""
+    app, dmg = app.resolve(), dmg.resolve()
+    if not app.is_dir() or dmg.is_relative_to(app.parent):
+        raise ValueError("DMG output must be outside the directory containing the app")
+    allowed = {app.name, "Applications", ".DS_Store"}
+    if any(path.name not in allowed for path in app.parent.iterdir()):
+        raise ValueError("DMG source directory contains unexpected files")
+    applications = app.parent / "Applications"
+    if applications.exists() or applications.is_symlink():
+        if not applications.is_symlink() or os.readlink(applications) != "/Applications":
+            raise ValueError("Unexpected Applications entry in DMG source")
+    else:
+        applications.symlink_to("/Applications")
+    dmg.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Creating plain DMG: {dmg.name}")
+    subprocess.run(["hdiutil", "create", "-volname", "OpenJellyfish", "-fs", "HFS+",
+                    "-srcfolder", str(app.parent), "-format", "UDZO", "-ov", str(dmg)],
+                   check=True, timeout=1800)
+
+
 def verify_dmg(dmg: Path, arch: str, notarized: bool = False):
     run("hdiutil", "verify", str(dmg))
     # macOS reports /private/var/... even if TMPDIR uses /var/... . Detach by

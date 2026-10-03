@@ -34,6 +34,7 @@
       "../bundle-resources/node": "node",
       "../bundle-resources/launcher.py": "launcher.py",
       "../bundle-resources/requirements.txt": "requirements.txt",
+      "../bundle-resources/constraints-release.txt": "constraints-release.txt",
       "../bundle-resources/payload-id.txt": "payload-id.txt"
     },
     "icon": [

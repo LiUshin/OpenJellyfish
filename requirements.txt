@@ -1,7 +1,10 @@
 # OpenJellyfish dependencies
+-c constraints-release.txt
 
 # DeepAgents framework (LangChain Deep Agents)
-deepagents>=0.4.1
+# LockAwareBackend implements the 0.4 protocol. Newer protocols add required
+# methods (including delete); upgrade only with real agent-graph smoke tests.
+deepagents==0.4.12
 
 # LangGraph & LangChain core
 langgraph

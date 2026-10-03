@@ -174,7 +174,7 @@ def get_version() -> str:
 
 BACKEND_DIRS = ["app", "config"]
 BACKEND_FILES = [
-    "launcher.py", "requirements.txt",
+    "launcher.py", "requirements.txt", "constraints-release.txt",
 ]
 
 FRONTEND_FILES_TO_COPY = ["server.js", "package.json"]
@@ -323,9 +323,9 @@ def stage_python(target: str, skip_pip: bool):
     # Pre-install requirements
     if not skip_pip:
         print("   downloading pip install requirements.txt...")
-        req = STAGE_DIR / "requirements.txt"
-        if not req.exists():
-            req = PROJECT_ROOT / "requirements.txt"
+        # Always use this checkout's requirements and relative constraints,
+        # never a stale requirements file left by a prior staging run.
+        req = PROJECT_ROOT / "requirements.txt"
         # Drop -q so the user sees which package failed; abort on non-zero.
         # A silent partial install ships incomplete site-packages (see the
         # pycryptodome \\?\ incident — we wasted hours chasing a missing
@@ -341,6 +341,19 @@ def stage_python(target: str, skip_pip: bool):
             print("   Check the output above for the failing package, then re-run build.py.")
             sys.exit(result.returncode)
         print("   [ok] Python dependencies installed")
+
+
+def verify_agent_runtime(target: str):
+    """Exercise real graph construction with the dependencies we will ship."""
+    python_exe = _find_python_exe(STAGE_DIR / "python", target)
+    if not python_exe:
+        raise RuntimeError("Missing staged Python for agent compatibility check")
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
+           "SAFE_STARTUP": "1", "PYTHONPATH": str(PROJECT_ROOT)}
+    env.pop("PYTHONHOME", None)
+    print("   verifying real Agent graphs with staged Python...")
+    subprocess.run([str(python_exe), "-B", str(PROJECT_ROOT / "tests/test_agent_graph_compatibility.py"), "-v"],
+                   cwd=PROJECT_ROOT, env=env, check=True, timeout=300)
 
 
 def _find_python_exe(python_dir: Path, target: str) -> Path | None:
@@ -489,12 +502,17 @@ def tauri_build(target: str):
     native = detect_target()
     if target != native:
         cmd += ["--target", target]
+    # Intel hosted runners have repeatedly failed in Finder-driven DMG layout.
+    # Build the signed app normally, then create a plain drag-install image.
+    plain_dmg = IS_MACOS and target.startswith("x86_64-")
+    if plain_dmg:
+        cmd += ["--bundles", "app", "--ci"]
 
     _cleanup_stuck_dmg_mounts()
     result = subprocess.run(cmd, cwd=TAURI_DIR, shell=IS_WINDOWS)
 
     # On macOS, retry once with a hardened bundle_dmg.sh if the dmg step failed
-    if result.returncode != 0 and IS_MACOS:
+    if result.returncode != 0 and IS_MACOS and not plain_dmg:
         print("\n[warn] Tauri build failed — patching bundle_dmg.sh and retrying...")
         _cleanup_stuck_dmg_mounts()
         _patch_bundle_dmg_script(target, native)
@@ -514,6 +532,11 @@ def tauri_build(target: str):
     if target != native:
         bundle_dir = bundle_dir / target
     bundle_dir = bundle_dir / "release" / "bundle"
+
+    if plain_dmg:
+        from macos_release import create_plain_dmg
+        create_plain_dmg(bundle_dir / "macos/OpenJellyfish.app",
+                         bundle_dir / "dmg" / f"OpenJellyfish_{get_version()}_x64.dmg")
 
     if bundle_dir.exists():
         print(f"\n[output] {bundle_dir}")
@@ -572,6 +595,7 @@ def main():
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     stage_python(target, skip_pip=args.no_pip)
+    verify_agent_runtime(target)
     stage_project(target)
     stage_frontend(skip_build=args.no_frontend)
     stage_node(target)
