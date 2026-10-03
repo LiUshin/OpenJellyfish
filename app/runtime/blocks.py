@@ -21,7 +21,7 @@ def append_event(blocks, kind, payload):
         if block is None:
             block = {'type': 'tool', 'event_key': key, 'name': payload.get('name') or (payload.get('command') if payload.get('kind') == 'other' else None) or payload.get('kind') or '工具',
                      'args': '', 'result': '', 'done': False, 'resultCollapsed': True}
-            block['name'] = {'webSearch': '网页搜索', 'search': '网页搜索', 'imageGeneration': '生成图片', 'fetch': '读取网页'}.get(block['name'], block['name'])
+            block['name'] = {'webSearch': '网页搜索', 'search': '搜索', 'imageGeneration': '生成图片', 'fetch': '读取网页'}.get(block['name'], block['name'])
             blocks.append(block)
         if payload.get('name'):
             block['name'] = payload['name']

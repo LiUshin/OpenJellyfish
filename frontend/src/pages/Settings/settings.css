@@ -1,9 +1,10 @@
 .settings-shell { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; background:var(--jf-bg-deep); }
-.settings-heading { flex-shrink:0; padding:34px max(32px, calc((100% - 1056px) / 2)) 24px; background:var(--jf-bg-deep); }
+.settings-heading { position:relative; flex-shrink:0; padding:34px max(32px, calc((100% - 1056px) / 2)) 24px; background:var(--jf-bg-deep); }
 .settings-heading p { margin:0 0 9px; font-size:11px; letter-spacing:.08em; color:var(--jf-text-muted); }
 .settings-heading p span { margin:0 8px; color:var(--jf-text-dim); }
 .settings-heading h1 { margin:0; font-size:28px; line-height:1.35; font-weight:580; letter-spacing:-.025em; }
-.settings-heading > div { margin-top:7px; color:var(--jf-text-muted); font-size:13px; line-height:1.65; max-width:780px; }
+.settings-heading > .settings-description { margin-top:7px; color:var(--jf-text-muted); font-size:13px; line-height:1.65; max-width:780px; }
+.settings-file-controls { position:absolute; top:30px; right:32px; }
 .settings-content { flex:1; min-width:0; min-height:0; overflow:auto; overscroll-behavior:contain; }
 .settings-content-split { display:flex; flex-direction:column; overflow:hidden; }
 .settings-page { width:100%; max-width:1120px; margin:0 auto; padding:28px 32px 40px; min-width:0; box-sizing:border-box; }
@@ -21,9 +22,11 @@
 .voice-settings .ant-space-item { min-width:0; }
 @media(max-width:767px) {
  .settings-heading { padding:14px 16px 14px 54px; }
+ .settings-heading { padding-right:52px; }
+ .settings-file-controls { top:12px; right:12px; }
  .settings-heading p { display:none; }
  .settings-heading h1 { font-size:19px; }
- .settings-heading > div { font-size:12px; }
+ .settings-heading > .settings-description { font-size:12px; }
  .settings-page { padding:18px 14px 28px; }
  .settings-content .ant-card-body { padding:16px; }
  .voice-settings > .ant-card .ant-space:not(.ant-space-vertical) { flex-wrap:wrap; }
@@ -35,6 +38,12 @@
 .settings-disclosure[open] > summary { margin-bottom:4px; }
 
 .settings-content [hidden] { display:none !important; }
+.prompt-page { height:100%; display:flex; flex-direction:column; min-width:0; }
+.prompt-page-tabs { box-sizing:border-box; width:100%; max-width:1120px; margin:0 auto; padding:8px 32px 0; flex-shrink:0; }
+.prompt-page-tabs .ant-tabs-nav { margin-bottom:0; }
+.prompt-page-tabs .ant-tabs-tab { align-items:center; }
+.prompt-tab-label { display:inline-flex; align-items:center; gap:6px; line-height:20px; white-space:nowrap; }
+.prompt-tab-advanced.ant-tag { display:inline-flex; align-items:center; height:18px; margin:0; padding:0 5px; font-size:10px; line-height:16px; flex-shrink:0; }
 .settings-content .ant-btn:not(.ant-btn-sm) { min-height:36px; }
 .settings-content .ant-input:not(textarea), .settings-content .ant-input-affix-wrapper, .settings-content .ant-select-single:not(.ant-select-sm) { min-height:36px; }
 .settings-content .ant-input-affix-wrapper .ant-input { min-height:0; }
@@ -44,9 +53,13 @@
 .settings-content .ant-empty { padding:24px 0; }
 .settings-surface { background:var(--jf-bg-panel) !important; }
 @media(max-width:767px) { .settings-content .ant-card-body { padding:16px; } .settings-content .ant-card-head { padding:0 16px; } }
+@media(max-width:767px) { .prompt-page-tabs { padding:8px 14px 0; } }
 
-.settings-heading-wide { padding-left:24px; }
-@media(max-width:767px) { .settings-heading-wide { padding-left:54px; } .settings-content .ant-btn { min-height:36px; } }
+.settings-split-heading { flex-shrink:0; min-width:0; display:flex; align-items:flex-start; justify-content:space-between; gap:16px; box-sizing:border-box; padding:20px 28px 18px 32px; border-bottom:1px solid var(--jf-border); background:var(--jf-bg-deep); }
+.settings-split-heading-copy { min-width:0; }
+.settings-split-heading h1 { margin:0; font-size:22px; line-height:1.4; font-weight:580; letter-spacing:-.025em; }
+.settings-split-heading p { margin:4px 0 0; color:var(--jf-text-muted); font-size:12px; line-height:1.6; }
+@media(max-width:767px) { .settings-split-heading { padding:10px 14px 10px 54px; min-height:58px; align-items:center; } .settings-split-heading h1 { font-size:18px; } .settings-split-heading p { display:none; } .settings-content .ant-btn { min-height:36px; } }
 
 [data-style='regular'] .settings-content .ant-btn-primary:not(:disabled) { box-shadow:inset 0 1px 0 rgba(255,255,255,.14), 0 2px 3px rgba(0,0,0,.08); }
 [data-style='regular'] .settings-surface, [data-style='regular'] .credentials-card { border-radius:16px !important; }

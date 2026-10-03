@@ -78,10 +78,11 @@ export default function AppRouter() {
               </ErrorBoundary>
             }
           >
-            <Route index element={<Navigate to="/settings/prompt" replace />} />
+            <Route index element={<Navigate to="/settings/general" replace />} />
             <Route path="prompt" element={<PromptPage />} />
             <Route path="subagents" element={<SubagentPage />} />
             <Route path="packages" element={<PackagesPage />} />
+            <Route path="environment" element={<GeneralPage key="environment" mode="environment" />} />
             <Route path="batch" element={<Navigate to="/settings/general" replace />} />
             <Route path="services" element={<AdminServicesPage />} />
             <Route path="scheduler" element={<SchedulerPage />} />
@@ -89,7 +90,7 @@ export default function AppRouter() {
             <Route path="voice" element={<VoicePage />} />
             <Route path="inbox" element={<InboxPage />} />
             <Route path="usage" element={<UsagePage />} />
-            <Route path="general" element={<GeneralPage />} />
+            <Route path="general" element={<GeneralPage key="settings" mode="settings" />} />
             <Route path="backup" element={<BackupPage />} />
           </Route>
           <Route path="/runtime-pilot" element={<ErrorBoundary scope="runtime-pilot"><RuntimePilot /></ErrorBoundary>} />

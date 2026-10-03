@@ -232,7 +232,7 @@ Agent 会读取文档内容，按照其中描述的步骤逐步执行。
 - service_ids: 指定目标 Service ID 或名称列表（支持名称匹配），不填则广播到全部
 - session_ids: 指定目标微信会话 ID 列表，可精确到单个用户
 - message: 要传达的信息/指令
-- run_now: 是否立即执行（默认 True）
+- run_now: 在未来/周期计划之外额外立即执行（默认 False）；空的一次性计划会自动立即排程
 - schedule_type / schedule: 可设置定时广播
 """,
     "contact_admin": """
@@ -247,7 +247,7 @@ Agent 会读取文档内容，按照其中描述的步骤逐步执行。
 
 ### 注意事项
 - 消息会记录到管理员的收件箱
-- 如果管理员有微信连接，系统会自动评估是否即时通知
+- 系统持久记录管理员微信通知，连接可用时投递；不能承诺已阅读或已解决
 - 只发送有价值的信息，避免过于频繁地打扰管理员
 - 消息应简洁明了，包含关键上下文（如用户问题摘要、时间等）
 """,
@@ -1201,21 +1201,12 @@ def create_spawn_child_task_tool():
             get_current_task_context,
             create_child_task,
         )
-        from app.services.spawn_limits import check_chain_quota
+        from app.services.spawn_limits import peek_chain_quota
 
         ctx = get_current_task_context()
         if ctx is None:
             return ("错误：spawn_child_task 仅可在定时任务执行期间调用。"
                     "如果你在普通对话中想创建定时任务，请使用 schedule_task。")
-
-        # Atomic rate-limit check + register: prevents runaway recursion.
-        # Window/limit are configurable via SCHED_SPAWN_RATE_PER_HOUR.
-        quota = check_chain_quota(ctx.scope, ctx.uid, ctx.root_task_id,
-                                  service_id=ctx.service_id)
-        if not quota.allowed:
-            return (f"错误：派生频次超限。该谱系（root={ctx.root_task_id}）"
-                    f"在过去 {quota.window_seconds}s 内已派生 {quota.current} 次，"
-                    f"上限 {quota.limit}。最早一条配额释放于 {quota.reset_at}。")
 
         # Build child config; inherit defaults from parent ctx where caller didn't specify.
         actual_schedule = schedule
@@ -1254,6 +1245,7 @@ def create_spawn_child_task_tool():
         except Exception as e:
             return f"错误：派生失败 — {e}"
 
+        quota = peek_chain_quota(ctx.scope, ctx.uid, ctx.root_task_id, ctx.service_id)
         next_run = child.get("next_run_at") or "未排定"
         chain_str = "→".join(child.get("spawn_chain") or []) or "(root)"
         return (
@@ -1516,7 +1508,7 @@ def create_publish_service_task_tool(user_id: str):
         session_ids: Optional[List[str]] = None,
         schedule_type: str = "once",
         schedule: str = "",
-        run_now: bool = True,
+        run_now: bool = False,
         task_name: Optional[str] = None,
     ) -> str:
         """向 Service Agent 发布定时任务（广播或定向）。为目标 Service 的活跃微信用户创建并执行任务。
@@ -1526,15 +1518,37 @@ def create_publish_service_task_tool(user_id: str):
 
         Args:
             message: 要传达给 Service Agent 的信息/指令
-            service_ids: 目标 Service ID 或名称列表（支持名称模糊匹配），不填则广播到全部已发布 Service
+            service_ids: 目标 Service ID 或完整名称列表（名称不区分大小写），不填则广播到全部已发布 Service
             session_ids: 目标微信会话 ID 列表，可精确到单个用户。不填则对 Service 下所有活跃会话
             schedule_type: 调度方式："once"（一次性，默认）、"cron"、"interval"
             schedule: 调度值（once 时留空表示立即执行）
-            run_now: 是否立即执行（默认 True）
+            run_now: 是否在未来/周期计划之外额外立即执行（默认 False）；空的一次性计划自动立即排程
             task_name: 任务名称（可选，默认自动生成）
         """
         from app.services.published import list_services
         from app.services.scheduler import create_service_task, get_scheduler
+        from app.execution.grants import validate_service_task_support
+        from app.services.scheduler_policy import validate_task
+        from app.channels.wechat.policy import ensure_wechat_session
+        from app.services.preferences import get_tz_offset
+        from fastapi import HTTPException
+
+        if not message.strip():
+            return "错误：广播内容不能为空，未创建任务。"
+        tz = get_tz_offset(user_id)
+        actual_schedule = _ensure_tz_suffix(schedule, tz) if schedule_type == "once" and schedule else schedule
+        immediate_once = schedule_type == 'once' and actual_schedule in ('', 'now')
+        config = {
+            'prompt': message, 'doc_path': [],
+            'capabilities': ['docs', 'documents', 'humanchat'],
+            'permissions': {'read_dirs': ['docs', 'generated'], 'write_dirs': ['generated']},
+        }
+        try:
+            validate_task({'schedule_type': schedule_type, 'schedule': actual_schedule,
+                           'tz_offset_hours': tz, 'task_type': 'agent', 'task_config': config,
+                           'enabled': True}, user_id)
+        except (ValueError, PermissionError) as exc:
+            return f"错误：{exc}，未创建任务。"
 
         all_services = list_services(user_id)
         if not all_services:
@@ -1563,6 +1577,15 @@ def create_publish_service_task_tool(user_id: str):
         else:
             targets = published
 
+        # Preflight the entire selection before creating the first task. In
+        # particular an external Service must not appear successfully queued
+        # and fail later merely because it has no scheduled grant adapter.
+        try:
+            for svc in targets:
+                validate_service_task_support(user_id, svc['id'], config)
+        except PermissionError as exc:
+            return f"错误：{exc}。未创建任务。"
+
         try:
             from app.channels.wechat.session_manager import get_session_manager
             mgr = get_session_manager()
@@ -1577,7 +1600,7 @@ def create_publish_service_task_tool(user_id: str):
         for svc in targets:
             svc_id = svc["id"]
             svc_name = svc.get("name", svc_id)
-            sessions = mgr.list_sessions(service_id=svc_id) if mgr else []
+            sessions = mgr.list_sessions(service_id=svc_id, admin_id=user_id) if mgr else []
 
             if not sessions:
                 details.append(f"  - {svc_name}: 无活跃微信会话，跳过")
@@ -1589,6 +1612,12 @@ def create_publish_service_task_tool(user_id: str):
                     continue
                 if session_ids_set and sess.session_id not in session_ids_set:
                     continue
+                try:
+                    ensure_wechat_session(user_id, svc_id, sess.session_id,
+                                          conversation_id=sess.conversation_id)
+                except HTTPException as exc:
+                    details.append(f"  - {svc_name}/{sess.session_id}: {exc.detail}，未创建任务")
+                    continue
                 auto_name = task_name or f"广播: {message[:30]}"
                 reply_to = {
                     "channel": "wechat",
@@ -1597,23 +1626,23 @@ def create_publish_service_task_tool(user_id: str):
                     "conversation_id": sess.conversation_id,
                     "session_id": sess.session_id,
                 }
-                from app.services.preferences import get_tz_offset as _get_tz
-                _tz = _get_tz(user_id)
-                _sched = _ensure_tz_suffix(schedule, _tz) if schedule_type == "once" and schedule else schedule
                 task = create_service_task(user_id, svc_id, {
                     "name": auto_name,
                     "description": f"Admin 广播: {message[:200]}",
                     "schedule_type": schedule_type,
-                    "schedule": _sched,
-                    "task_config": {"prompt": message, "doc_path": []},
+                    "schedule": actual_schedule,
+                    "task_config": config,
                     "reply_to": reply_to,
                     "enabled": True,
-                    "tz_offset_hours": _tz,
+                    "tz_offset_hours": tz,
                 })
                 created += 1
                 matched += 1
 
-                if run_now:
+                # Creation already enqueues the immediate once occurrence.
+                # A manual run here would leave that occurrence pending and
+                # execute the same broadcast a second time after completion.
+                if run_now and not immediate_once:
                     try:
                         scheduler = get_scheduler()
                         if scheduler and scheduler.run_service_task_now(user_id, svc_id, task["id"]):
@@ -1631,6 +1660,8 @@ def create_publish_service_task_tool(user_id: str):
 
         parts = [f"已创建 {created} 个任务，覆盖 {len(targets)} 个 Service："]
         parts.extend(details)
+        if immediate_once:
+            parts.append("已安排一次立即执行；实际投递状态请查看任务运行记录。")
         if triggered:
             parts.append(f"已即时触发 {triggered} 个任务。")
         return "\n".join(parts)
@@ -1641,23 +1672,27 @@ def create_publish_service_task_tool(user_id: str):
 def create_contact_admin_tool(
     admin_id: str, service_id: str, conversation_id: str,
     wechat_session_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    preview: bool = False,
 ):
     """Create a contact_admin tool for consumer agents.
 
     Allows service agents to send text notifications to the admin's inbox.
-    If admin has an active WeChat session, triggers a read-only admin agent.
+    Notifications are queued durably without granting an admin Agent authority.
     """
 
     @tool
     def contact_admin(message: str) -> str:
         """向管理员发送通知。用于反馈用户问题、异常情况或需要管理员关注的信息。
 
-        消息会记录到管理员的收件箱。如果管理员有活跃的微信连接，
-        系统会自动评估是否需要即时通知管理员。
+        反馈与通知意图持久化到管理员收件箱。通知会等待管理员微信可投递；
+        提交成功不代表管理员已经阅读或问题已经解决。
 
         Args:
             message: 要传达给管理员的信息
         """
+        if preview:
+            return '测试模式：已模拟提交，不写入真实收件箱。'
         from app.services.inbox import post_to_inbox
 
         result = post_to_inbox(
@@ -1666,8 +1701,9 @@ def create_contact_admin_tool(
             conversation_id=conversation_id,
             message=message,
             wechat_session_id=wechat_session_id,
+            idempotency_key=idempotency_key,
         )
-        return result.get("summary", "已通知管理员，消息已记录到收件箱。")
+        return result.get("summary", "反馈已提交到管理员收件箱。")
 
     return contact_admin
 

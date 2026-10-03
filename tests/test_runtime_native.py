@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from PIL import Image
 from app.runtime.connection_backend import ConnectionBackend
+from app.runtime.rpc import RuntimeFailure
+from app.runtime.types import RuntimeEvent
 from app.runtime.media import decode_inputs, save_inputs, input_files, native_image
 from app.runtime.files import collect_files
 from app.runtime.store import RuntimeStore
@@ -73,6 +75,21 @@ class ConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.warm_up.await_count, 1)
         self.assertEqual(first.prepare_history.await_count, 2)
         self.assertEqual(len(self.adapters), 1)
+
+    async def test_connection_reuse_rebinds_model_and_image_mode(self):
+        off = self.session()
+        off['binding']['image_mode'] = 'off'
+        first = await self.use(off)
+        self.assertEqual((first.model, first.image_mode), ('m1', 'off'))
+        native = self.session('bob', 's2')
+        native['binding'].update(model='m2', image_mode='native')
+        second = await self.use(native)
+        self.assertIs(first, second)
+        self.assertEqual((second.model, second.image_mode), ('m2', 'native'))
+        self.assertTrue(second.reused)
+        third = await self.use(off)
+        self.assertIs(second, third)
+        self.assertEqual((third.model, third.image_mode), ('m1', 'off'))
     async def test_capacity_eviction_pause_and_generation_invalidation(self):
         old = await self.use(self.session())
         new = await self.use(self.session(pid='p2'))
@@ -148,6 +165,116 @@ class MediaTests(unittest.TestCase):
             (root/'link.png').symlink_to(path)
             with self.assertRaises(ValueError): native_image(root, {'saved_path': str(root/'link.png')})
             with self.assertRaises(ValueError): native_image(root, {'saved_path': '/etc/passwd'})
+
+
+class ImageModeAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_codex_session_config_respects_binding_and_scope(self):
+        from app.runtime.codex import CodexAdapter
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = CodexAdapter('unused', Path(tmp), Path(tmp), 'model', managed=True)
+            adapter.initialized = True
+            adapter.rpc = SimpleNamespace(request=AsyncMock(return_value={'thread': {'id': 'thread'}}))
+            adapter.image_mode = 'off'
+            await adapter.open_session(tmp, '')
+            self.assertFalse(adapter.rpc.request.call_args.args[1]['config']['features.image_generation'])
+            adapter.image_mode = 'native'
+            await adapter.open_session(tmp, '')
+            self.assertTrue(adapter.rpc.request.call_args.args[1]['config']['features.image_generation'])
+            adapter.service_scope = {'image': True, 'web': False}
+            adapter.image_mode = 'off'
+            await adapter.open_session(tmp, '')
+            self.assertFalse(adapter.rpc.request.call_args.args[1]['config']['features.image_generation'])
+
+    async def test_cursor_image_callback_and_notification_reject_off(self):
+        from app.runtime.cursor import CursorAdapter
+        from test_runtime_cursor import FakeACP
+        adapter = CursorAdapter('unused', Path('/tmp/home'), Path('/tmp/work'), 'model')
+        adapter.rpc = FakeACP()
+        adapter.image_mode = 'off'
+        request = {'id': 7, 'method': 'cursor/generate_image',
+                   'params': {'toolCallId': 'image-1', 'filePath': '/tmp/work/image.png'}}
+        self.assertEqual([event async for event in adapter.request_events(request)], [])
+        self.assertEqual(adapter.rpc.sent[-1]['error']['code'], -32001)
+        class ImageACP(FakeACP):
+            async def request(self, method, params, **kwargs):
+                if method == 'session/prompt':
+                    self.events.put_nowait({'method': 'cursor/generate_image',
+                                            'params': {'sessionId': 'thread', 'filePath': '/tmp/work/image.png'}})
+                    return {'stopReason': 'end_turn'}
+                return await super().request(method, params, **kwargs)
+        adapter.rpc = ImageACP()
+        with self.assertRaisesRegex(RuntimeFailure, '生图授权'):
+            _ = [event async for event in adapter.stream_turn('thread', 'draw')]
+        adapter.image_mode = 'native'
+        self.assertEqual([event.type async for event in adapter.request_events(request)], ['image'])
+        self.assertEqual(adapter.rpc.sent[-1]['result'], {})
+
+
+class ImageModeRunTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        import test_runtime_service as service_tests
+        await service_tests.ServiceTests.asyncSetUp(self)
+        class ImageAdapter(service_tests.FakeAdapter):
+            def __init__(self, gate, workspace):
+                super().__init__(gate)
+                self.workspace = workspace
+            async def stream_turn(self, thread_id, text):
+                yield RuntimeEvent('image', {'item_id': 'native-image',
+                                             'result': base64.b64encode(png()).decode()})
+                yield RuntimeEvent('completed', {})
+        class ImageBackend(service_tests.FakeBackend):
+            @contextlib.asynccontextmanager
+            async def execution(self, session):
+                adapter = ImageAdapter(self.gate, self.workspace(session))
+                self.adapters.append(adapter)
+                try:
+                    yield adapter
+                finally:
+                    await adapter.close()
+        self.backend = self.service.backend = ImageBackend(self.backend.root)
+        self.writes = []
+        self.service.storage = SimpleNamespace(write_bytes=lambda actor, path, data: self.writes.append((actor, path, data)))
+
+    async def asyncTearDown(self):
+        import test_runtime_service as service_tests
+        await service_tests.ServiceTests.asyncTearDown(self)
+
+    async def until(self, predicate):
+        import test_runtime_service as service_tests
+        await service_tests.ServiceTests.until(self, predicate)
+
+    async def test_off_rejects_native_event_and_on_archives_image(self):
+        off = self.service.create_session('a', {**self.binding, 'runtime': 'codex', 'image_mode': 'off'})
+        run = self.service.enqueue('a', off['id'], 'off-image', 'draw')
+        await self.until(lambda: self.store.get('run', run['id'])['status'] == 'failed')
+        self.assertIn('未开启原生生图', self.store.get('run', run['id'])['error'])
+        self.assertEqual(self.store.get('run', run['id'])['artifacts'], [])
+        self.assertEqual(self.writes, [])
+        native = self.service.create_session('a', {**self.binding, 'runtime': 'codex', 'image_mode': 'native'})
+        run = self.service.enqueue('a', native['id'], 'on-image', 'draw')
+        await self.until(lambda: self.store.get('run', run['id'])['status'] in ('completed', 'failed'))
+        result = self.store.get('run', run['id'])
+        self.assertEqual(result['status'], 'completed', result.get('error'))
+        self.assertTrue(result['artifacts'][0]['native_image'])
+        self.assertEqual(len(self.writes), 1)
+
+    async def test_archive_rechecks_mode_even_if_native_path_is_injected(self):
+        session = self.service.create_session('a', {**self.binding, 'runtime': 'codex', 'image_mode': 'off'})
+        workspace = self.backend.workspace(session)
+        path = workspace / 'native.png'
+        path.write_bytes(png())
+        state = {'run': {'id': 'forced', 'artifacts': []}, 'cancel': False, 'image_paths': [str(path.resolve())]}
+        with self.assertRaisesRegex(RuntimeFailure, '未开启原生生图'):
+            await self.service._archive(session, state)
+        self.assertEqual(self.writes, [])
+
+    async def test_service_scope_without_image_capability_rejects_native_event(self):
+        session = self.service.create_session('a', {**self.binding, 'runtime': 'cursor',
+            'image_mode': 'native', 'service_scope': {'image': False}})
+        run = self.service.enqueue('a', session['id'], 'scope-no-image', 'draw')
+        await self.until(lambda: self.store.get('run', run['id'])['status'] == 'failed')
+        self.assertIn('未获得生图授权', self.store.get('run', run['id'])['error'])
+        self.assertEqual(self.writes, [])
 
 
 class AttachmentAPITests(unittest.IsolatedAsyncioTestCase):

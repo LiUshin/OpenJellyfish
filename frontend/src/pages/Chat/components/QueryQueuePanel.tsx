@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Input, Tooltip } from 'antd';
+import { Input, Popconfirm, Tooltip } from 'antd';
 import { ArrowElbowDownLeft, X, CaretUp, CaretDown } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import type { QueryQueueItem } from '../types/queryQueue';
@@ -15,6 +15,8 @@ interface QueryQueuePanelProps {
   canInterrupt?: boolean;
   /** HITL pending — 中断禁用。 */
   hitlLocked?: boolean;
+  /** A request with this ID may already be executing. Keep its payload stable. */
+  lockedIds?: string[];
 }
 
 function moveItem(items: QueryQueueItem[], from: number, to: number): QueryQueueItem[] {
@@ -32,6 +34,7 @@ function QueryQueuePanel({
   onRunInterrupt,
   canInterrupt = false,
   hitlLocked = false,
+  lockedIds = [],
 }: QueryQueuePanelProps) {
   const { t } = useTranslation();
 
@@ -42,15 +45,24 @@ function QueryQueuePanel({
 
   return (
     <ul className={styles.queryQueueList}>
-      {items.map((item, idx) => (
-        <li key={item.id} className={styles.queryQueueRow}>
+      {items.map((item, idx) => {
+        const locked = lockedIds.includes(item.id);
+        const remove = <button
+          type="button"
+          className={`${styles.queryQueueActBtn} ${styles.queryQueueRemoveBtn}`}
+          onClick={locked ? undefined : () => onRemove(item.id)}
+          aria-label={t('chat.queryRemove')}
+        ><X size={12} /></button>;
+        return <li key={item.id} className={styles.queryQueueRow}>
           <Input.TextArea
             className={styles.queryQueueInput}
             value={item.content}
+            disabled={locked}
             onChange={(e) => onChange(items.map((it) => (it.id === item.id ? { ...it, content: e.target.value } : it)))}
+            onBlur={() => { if (!locked && !item.content.trim()) onRemove(item.id); }}
             autoSize={{ minRows: 1, maxRows: 4 }}
             variant="borderless"
-            placeholder={t('chat.queryQueuePlaceholder')}
+            placeholder={locked ? '发送结果待确认，内容暂不可修改' : t('chat.queryQueuePlaceholder')}
           />
           <div className={styles.queryQueuePrimary}>
             <Tooltip title={interruptHint ?? t('chat.queryInterruptBtn')}>
@@ -69,7 +81,7 @@ function QueryQueuePanel({
             <button
               type="button"
               className={styles.queryQueueActBtn}
-              disabled={idx === 0}
+              disabled={locked || idx === 0}
               onClick={() => onChange(moveItem(items, idx, idx - 1))}
               aria-label={t('chat.queryMoveUp')}
             >
@@ -78,23 +90,17 @@ function QueryQueuePanel({
             <button
               type="button"
               className={styles.queryQueueActBtn}
-              disabled={idx === items.length - 1}
+              disabled={locked || idx === items.length - 1}
               onClick={() => onChange(moveItem(items, idx, idx + 1))}
               aria-label={t('chat.queryMoveDown')}
             >
               <CaretDown size={12} />
             </button>
-            <button
-              type="button"
-              className={`${styles.queryQueueActBtn} ${styles.queryQueueRemoveBtn}`}
-              onClick={() => onRemove(item.id)}
-              aria-label={t('chat.queryRemove')}
-            >
-              <X size={12} />
-            </button>
+            {locked ? <Popconfirm title="这条消息可能已发送，仍要从待发列表移除？"
+              okText="移除" cancelText="保留" onConfirm={() => onRemove(item.id)}>{remove}</Popconfirm> : remove}
           </div>
-        </li>
-      ))}
+        </li>;
+      })}
     </ul>
   );
 }

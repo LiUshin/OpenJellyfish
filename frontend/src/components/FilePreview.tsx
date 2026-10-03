@@ -152,7 +152,7 @@ function MarkdownPreview({ content }: { content: string }) {
   const [activeId, setActiveId] = useState<string | null>(null);
   // TOC starts collapsed on small/medium previews to avoid covering content;
   // user can pin it open via the toggle button.
-  const [tocOpen, setTocOpen] = useState(true);
+  const [tocOpen, setTocOpen] = useState(false);
 
   // Deep-link via <<FILE:/x.md#标题>>: when MarkdownPreview mounts (or html
   // changes) and a pendingAnchor is present, try multiple resolution strategies

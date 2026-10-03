@@ -3,6 +3,8 @@ import type {
   User,
   Conversation,
   ConversationDetail,
+  Project,
+  ProjectSearchResult,
   FileItem,
   ModelsResponse,
   ModelVisibilityResponse,
@@ -87,12 +89,12 @@ export async function request<T = unknown>(
       clearToken();
       window.location.reload();
     }
-    throw new Error(err401.detail || '认证失败，请重新登录');
+    throw Object.assign(new Error(err401.detail || '认证失败，请重新登录'), { status: res.status });
   }
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: '请求失败' }));
-    throw new Error(err.detail || '请求失败');
+    throw Object.assign(new Error(err.detail || '请求失败'), { status: res.status });
   }
 
   return res.json();
@@ -122,8 +124,8 @@ export async function listConversations(): Promise<Conversation[]> {
   return request('GET', '/conversations');
 }
 
-export async function createConversation(title = '新对话', runtime_choice?: import('./runtime').RuntimeChoice, context_paths: string[] = []): Promise<Conversation> {
-  return request('POST', '/conversations', { title, runtime_choice, context_paths });
+export async function createConversation(title = '新对话', runtime_choice?: import('./runtime').RuntimeChoice, context_paths: string[] = [], project_id: string | null = null): Promise<Conversation> {
+  return request('POST', '/conversations', { title, runtime_choice, context_paths, project_id });
 }
 
 export async function getConversation(convId: string): Promise<ConversationDetail> {
@@ -132,6 +134,45 @@ export async function getConversation(convId: string): Promise<ConversationDetai
 
 export async function deleteConversation(convId: string): Promise<void> {
   return request('DELETE', `/conversations/${convId}`);
+}
+
+export async function moveConversation(convId: string, project_id: string | null): Promise<Conversation> {
+  return request('PATCH', `/conversations/${convId}/project`, { project_id });
+}
+
+export async function setConversationTestMode(convId: string, serviceId: string | null): Promise<Conversation> {
+  return request('PATCH', `/conversations/${convId}/test-mode`, { service_id: serviceId });
+}
+
+// ===== Projects: lightweight groups for admin conversations =====
+
+export async function listProjects(): Promise<Project[]> {
+  return request('GET', '/projects');
+}
+
+export async function createProject(name: string): Promise<Project> {
+  return request('POST', '/projects', { name });
+}
+
+export async function getProject(projectId: string): Promise<Project> {
+  return request('GET', `/projects/${encodeURIComponent(projectId)}`);
+}
+
+export async function renameProject(projectId: string, name: string): Promise<Project> {
+  return request('PATCH', `/projects/${encodeURIComponent(projectId)}`, { name });
+}
+
+export async function saveProjectBrief(projectId: string, content: string): Promise<Project> {
+  return request('PUT', `/projects/${encodeURIComponent(projectId)}/brief`, { content });
+}
+
+export async function deleteProject(projectId: string): Promise<{ success: boolean }> {
+  return request('DELETE', `/projects/${encodeURIComponent(projectId)}`);
+}
+
+export async function searchProject(projectId: string, query: string, limit = 30): Promise<{ results: ProjectSearchResult[]; total: number }> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return request('GET', `/projects/${encodeURIComponent(projectId)}/search?${params}`);
 }
 
 // ===== Chat (SSE) =====
@@ -145,7 +186,10 @@ export function abortStream(): void {
   }
 }
 
-function handleSSEStream(res: Response, callbacks: SSECallbacks): void {
+function handleSSEStream(res: Response, callbacks: SSECallbacks, controller: AbortController): void {
+  const releaseController = () => {
+    if (_currentAbortController === controller) _currentAbortController = null;
+  };
   const {
     onToken, onThinking, onToolCall, onToolCallChunk, onToolResult,
     onDone, onError, onInterrupt, onAutoApprove, onWorkspaceLock,
@@ -179,7 +223,7 @@ function handleSSEStream(res: Response, callbacks: SSECallbacks): void {
             switch (data.type) {
               case 'token':              onToken?.(data.content); break;
               case 'thinking':           onThinking?.(data.content); break;
-              case 'interrupt':          onInterrupt?.(data.actions, data.configs); _currentAbortController = null; return;
+              case 'interrupt':          onInterrupt?.(data.actions, data.configs); return;
               case 'auto_approve':       onAutoApprove?.(data.count, data.actions); break;
               case 'workspace_lock':     onWorkspaceLock?.(data.mode, data.granted || [], data.conflicts || []); break;
               case 'tool_call':          onToolCall?.(data.name, data.args); break;
@@ -195,8 +239,8 @@ function handleSSEStream(res: Response, callbacks: SSECallbacks): void {
               case 'subagent_tool_result': onSubagentToolResult?.(data.name, data.content, data.agent, data.subagent_id); break;
               case 'subagent_end':       onSubagentEnd?.(data.name, data.result, data.subagent_id); break;
               case 'run_continued':      onRunContinued?.(data.content, data.queue_id); break;
-              case 'done':              onDone?.(); _currentAbortController = null; return;
-              case 'error':             onError?.(data.content); _currentAbortController = null; return;
+              case 'done':              onDone?.(); return;
+              case 'error':             onError?.(data.content); return;
             }
           } catch { /* ignore JSON parse error */ }
         }
@@ -206,15 +250,18 @@ function handleSSEStream(res: Response, callbacks: SSECallbacks): void {
         try {
           const data = JSON.parse(buffer.slice(6).trim());
           if (data.type === 'token') onToken?.(data.content);
+          if (data.type === 'done') { onDone?.(); return; }
+          if (data.type === 'error') { onError?.(data.content); return; }
+          if (data.type === 'interrupt') { onInterrupt?.(data.actions, data.configs); return; }
         } catch { /* ignore */ }
       }
 
-      onDone?.();
+      onError?.('连接已结束，但未收到执行结束确认。请刷新状态或重试停止。');
     } catch (e: unknown) {
       if (e instanceof Error && e.name === 'AbortError') return;
       onError?.(e instanceof Error ? e.message : '连接中断');
     } finally {
-      _currentAbortController = null;
+      releaseController();
     }
   })();
 }
@@ -254,7 +301,7 @@ export function streamChat(
         callbacks.onError?.(err.detail || '请求失败');
         return;
       }
-      handleSSEStream(res, callbacks);
+      handleSSEStream(res, callbacks, controller);
     })
     .catch((err) => {
       if (err.name === 'AbortError') return;
@@ -262,17 +309,24 @@ export function streamChat(
     });
 }
 
+export interface StopChatResult {
+  status: 'stopping' | 'stopped' | 'not_running';
+}
+
 export async function stopChat(
   conversationId: string,
-  opts?: { followUp?: string | unknown[]; queueId?: string; keepStream?: boolean },
-): Promise<void> {
-  if (!opts?.keepStream) {
-    abortStream();
-  }
+  opts?: { followUp?: string | unknown[]; queueId?: string },
+): Promise<StopChatResult> {
+  // Keep the reader alive until the server's terminal event. A failed stop must
+  // leave both the running output and the user's retry path intact.
   const body: Record<string, unknown> = { conversation_id: conversationId };
   if (opts?.followUp !== undefined) body.follow_up = opts.followUp;
   if (opts?.queueId) body.queue_id = opts.queueId;
-  await request('POST', '/chat/stop', body).catch(() => {});
+  const result = await request<StopChatResult>('POST', '/chat/stop', body);
+  if (!['stopping', 'stopped', 'not_running'].includes(result?.status)) {
+    throw new Error('停止请求返回了无法确认的状态');
+  }
+  return result;
 }
 
 export interface StreamingStatusResult {
@@ -327,7 +381,7 @@ export function resumeChat(
         callbacks.onError?.(err.detail || '请求失败');
         return;
       }
-      handleSSEStream(res, callbacks);
+      handleSSEStream(res, callbacks, controller);
     })
     .catch((err) => {
       if (err.name === 'AbortError') return;
@@ -545,6 +599,12 @@ export async function downloadFile(path: string): Promise<Response> {
 }
 
 export function mediaUrl(path: string): string {
+  const preview = /^\/service-test\/([^/]+)\/([^/]+)\/([^/]+)\/generated\/(.+)$/.exec(path);
+  if (preview) {
+    const [, adminConvId, serviceId, previewConvId, filePath] = preview;
+    const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+    return `${BASE}/conversations/${encodeURIComponent(adminConvId)}/test-files/${encodeURIComponent(serviceId)}/${encodeURIComponent(previewConvId)}/${encodedPath}?token=${encodeURIComponent(getToken())}`;
+  }
   return `${BASE}/files/media?path=${encodeURIComponent(path)}&token=${encodeURIComponent(getToken())}`;
 }
 
@@ -738,6 +798,7 @@ export async function resetCapabilityPrompt(key: string): Promise<void> {
 export interface SoulConfig {
   memory_enabled: boolean;
   include_consumer_conversations: boolean;
+  service_records_enabled: boolean;
   max_recent_messages: number;
   memory_subagent_enabled: boolean;
   soul_edit_enabled: boolean;
@@ -1006,6 +1067,73 @@ export interface InboxMessage {
   status: 'unread' | 'read' | 'handled';
   handled_by: 'agent' | 'manual' | null;
   agent_response: string | null;
+  case_status?: 'open' | 'acknowledged' | 'replied' | 'resolved';
+  read_at?: string | null;
+  channel?: 'web' | 'api' | 'wechat' | 'unknown';
+  messages?: ServiceMessage[];
+  notification?: MessageDelivery | null;
+  deliveries?: MessageDelivery[];
+}
+
+export interface ServiceMessage {
+  id: string;
+  seq: number;
+  role: string;
+  author_type: string;
+  content: string;
+  created_at: string;
+  case_id?: string;
+  broadcast_id?: string;
+  conversation_id: string;
+}
+
+export interface ServiceBroadcast {
+  id: string;
+  service_id: string;
+  content: string;
+  created_at: string;
+  scheduled_at?: string | null;
+  recipient_count: number;
+  messages: ServiceMessage[];
+  deliveries: MessageDelivery[];
+}
+
+export async function listServiceBroadcasts(serviceId: string): Promise<ServiceBroadcast[]> {
+  return request('GET', `/services/${encodeURIComponent(serviceId)}/broadcasts`);
+}
+
+export async function createServiceBroadcast(serviceId: string, data: {
+  message: string; conversation_ids: string[]; idempotency_key: string; scheduled_at?: string;
+}): Promise<ServiceBroadcast> {
+  return request('POST', `/services/${encodeURIComponent(serviceId)}/broadcasts`, data);
+}
+
+export async function manageServiceBroadcast(serviceId: string, broadcastId: string, action: 'cancel' | 'retry', allowUnknown = false): Promise<ServiceBroadcast> {
+  return request('POST', `/services/${encodeURIComponent(serviceId)}/broadcasts/${encodeURIComponent(broadcastId)}/${action}`, action === 'retry' ? { allow_unknown: allowUnknown } : undefined);
+}
+
+export interface MessageDelivery {
+  id: string;
+  message_id: string;
+  channel: 'web' | 'wechat' | 'admin_wechat';
+  status: 'pending' | 'inflight' | 'retry_wait' | 'delivered' | 'cancelled' | 'unknown';
+  attempt: number;
+  error?: string;
+  updated_at: string;
+}
+
+export async function replyInbox(msgId: string, content: string, idempotencyKey: string): Promise<{
+  case: InboxMessage; message: ServiceMessage; deliveries: MessageDelivery[];
+}> {
+  return request('POST', `/inbox/${encodeURIComponent(msgId)}/replies`, { message: content, idempotency_key: idempotencyKey });
+}
+
+export async function resolveInbox(msgId: string): Promise<InboxMessage> {
+  return request('PUT', `/inbox/${encodeURIComponent(msgId)}`, { case_status: 'resolved' });
+}
+
+export async function retryInboxDelivery(msgId: string, deliveryId: string, allowUnknown = false): Promise<unknown> {
+  return request('POST', `/inbox/${encodeURIComponent(msgId)}/deliveries/${encodeURIComponent(deliveryId)}/retry`, { allow_unknown: allowUnknown });
 }
 
 export async function listInbox(status?: string): Promise<{ messages: InboxMessage[]; unread_count: number }> {
@@ -1341,6 +1469,12 @@ export interface UsageRow extends UsageBucket {
 export interface UsageSummary {
   total: UsageBucket;
   months_scanned: number;
+  by_core?: UsageRow[];
+  coverage?: {
+    unreported_runs: number;
+    unreported_by_core: Record<string, number>;
+    runtime_read_error: boolean;
+  };
   by_model: UsageRow[];
   by_service: UsageRow[];
   by_key: UsageRow[];

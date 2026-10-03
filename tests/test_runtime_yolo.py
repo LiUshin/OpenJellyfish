@@ -32,7 +32,8 @@ class ApprovalAdapter(service_tests.FakeAdapter):
             self.native.rpc = SimpleNamespace(send=AsyncMock())
             self.native.service_scope = getattr(self, 'service_scope', None)
             if text == 'plan':
-                event = {'id': 7, 'method': 'cursor/create_plan', 'params': {'name': 'write a report'}}
+                event = {'id': 7, 'method': 'cursor/create_plan',
+                         'params': {'name': 'write a report', 'plan': 'Draft and review the report'}}
             else:
                 options = [{'kind': 'reject_once', 'optionId': 'no'}]
                 if text != 'deny-only':
@@ -88,10 +89,10 @@ class YoloApprovalTests(unittest.IsolatedAsyncioTestCase):
     def session(self, engine='codex', **extra):
         return self.service.create_session('a', {**self.binding, 'runtime': engine, **extra})
 
-    async def test_yolo_auto_approves_native_commands_files_and_cursor_plans(self):
+    async def test_yolo_auto_approves_native_commands_and_files(self):
         for engine in ('codex', 'cursor'):
             session = self.session(engine)
-            for action in ('command', 'file', *(('plan',) if engine == 'cursor' else ())):
+            for action in ('command', 'file'):
                 with self.subTest(engine=engine, action=action):
                     run = self.service.enqueue('a', session['id'], engine + action, action, yolo=True)
                     await self.until(lambda: self.store.get('run', run['id'])['status'] in TERMINAL)
@@ -108,7 +109,47 @@ class YoloApprovalTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(adapter.responses, [{'decision': 'accept'}])
                     if engine == 'cursor':
                         outcome = adapter.native.rpc.send.call_args.args[0]['result']['outcome']
-                        self.assertEqual(outcome, {'outcome': 'accepted'} if action == 'plan' else {'outcome': 'selected', 'optionId': 'yes'})
+                        self.assertEqual(outcome, {'outcome': 'selected', 'optionId': 'yes'})
+
+    async def test_cursor_plan_requires_human_approval_even_with_yolo(self):
+        session = self.session('cursor')
+        run = self.service.enqueue('a', session['id'], 'cursor-plan-yolo', 'plan', yolo=True)
+        await self.until(lambda: self.store.get('run', run['id'])['status'] == 'waiting_approval')
+        waiting = self.store.get('run', run['id'])
+        pending = waiting['pending']
+        self.assertTrue(waiting['yolo'])
+        self.assertEqual(pending['kind'], 'plan/requestApproval')
+        self.assertEqual(pending['title'], 'write a report')
+        self.assertEqual(pending['plan'], 'Draft and review the report')
+        self.assertEqual(pending['allowed'], ['accept', 'decline'])
+        self.assertEqual(pending['command'], '计划：write a report')
+        self.assertEqual(pending['reason'], pending['plan'])
+        self.assertFalse(self.backend.adapters[-1].responses)
+        events = self.store.events(run['id'])
+        self.assertIn('approval_requested', [e['type'] for e in events])
+        self.assertFalse(any(e['type'] == 'approval_resolved' and e['payload'].get('automatic') for e in events))
+        self.service.approve('a', run['id'], pending['id'], 'accept')
+        await self.until(lambda: self.store.get('run', run['id'])['status'] == 'completed')
+        adapter = self.backend.adapters[-1]
+        self.assertEqual(adapter.responses, [{'decision': 'accept'}])
+        self.assertEqual(adapter.native.rpc.send.call_args.args[0]['result']['outcome'], {'outcome': 'accepted'})
+
+    async def test_cursor_plan_decline_and_restricted_scope(self):
+        run = self.service.enqueue('a', self.session('cursor')['id'], 'cursor-plan-decline', 'plan', yolo=True)
+        await self.until(lambda: self.store.get('run', run['id'])['status'] == 'waiting_approval')
+        pending = self.store.get('run', run['id'])['pending']
+        self.service.approve('a', run['id'], pending['id'], 'decline')
+        await self.until(lambda: self.store.get('run', run['id'])['status'] == 'completed')
+        self.assertEqual(self.backend.adapters[-1].native.rpc.send.call_args.args[0]['result']['outcome'], {'outcome': 'rejected'})
+        for scope in ('service_scope', 'scheduler_scope'):
+            with self.subTest(scope=scope):
+                run = self.service.enqueue('a', self.session('cursor', **{scope: {'run_id': 'outer'}})['id'],
+                                           'cursor-plan-' + scope, 'plan', yolo=True)
+                await self.until(lambda: self.store.get('run', run['id'])['status'] == 'completed')
+                self.assertFalse(self.store.get('run', run['id'])['yolo'])
+                self.assertNotIn('approval_requested', [e['type'] for e in self.store.events(run['id'])])
+                self.assertEqual(self.backend.adapters[-1].responses, [{'decision': 'decline'}])
+                self.assertEqual(self.backend.adapters[-1].native.rpc.send.call_args.args[0]['result']['outcome'], {'outcome': 'rejected'})
 
     async def test_yolo_denies_outside_missing_diff_network_and_unoffered_accept(self):
         for engine in ('codex', 'cursor'):

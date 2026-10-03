@@ -42,6 +42,20 @@ class FakeACP:
 
 
 class CursorAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prompt_response_usage_is_forwarded_when_supplier_reports_it(self):
+        class MeteredACP(FakeACP):
+            async def request(self, method, params, **kwargs):
+                result = await super().request(method, params, **kwargs)
+                if method == 'session/prompt':
+                    result['usage'] = {'inputTokens': 15, 'outputTokens': 4, 'totalTokens': 19}
+                return result
+
+        adapter = CursorAdapter('unused', Path('/tmp/home'), Path('/tmp/work'), 'model')
+        adapter.rpc = MeteredACP()
+        events = [event async for event in adapter.stream_turn('thread', 'hello')]
+        self.assertEqual([event.payload['usage'] for event in events if event.type == 'usage'],
+                         [{'inputTokens': 15, 'outputTokens': 4, 'totalTokens': 19}])
+
     async def test_missing_git_is_rejected_before_browser_login(self):
         with tempfile.TemporaryDirectory() as tmp:
             adapter = CursorAdapter('unused', tmp, tmp)
@@ -404,8 +418,13 @@ class CursorServiceApprovalTests(unittest.IsolatedAsyncioTestCase):
         adapter = CursorAdapter('unused', self.store.root, self.store.root, 'test')
         adapter.rpc = FakeACP()
         for decision, expected in [('accept', 'accepted'), ('decline', 'rejected')]:
-            events = [e async for e in adapter.request_events({'id': 9, 'method': 'cursor/create_plan', 'params': {'name': 'test'}})]
+            events = [e async for e in adapter.request_events({'id': 9, 'method': 'cursor/create_plan',
+                'params': {'name': 'test', 'plan': 'First do one thing, then another.'}})]
             self.assertEqual(events[0].type, 'request')
+            self.assertEqual(events[0].payload['method'], 'plan/requestApproval')
+            self.assertEqual(events[0].payload['params'], {
+                'title': 'test', 'plan': 'First do one thing, then another.',
+                'availableDecisions': ['accept', 'decline']})
             await adapter.respond(9, {'decision': decision})
             self.assertEqual(adapter.rpc.sent[-1]['result'], {'outcome': {'outcome': expected}})
 

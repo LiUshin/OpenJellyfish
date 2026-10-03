@@ -702,6 +702,12 @@ See [runtime operation](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/
 
 In v1.3.1, `app/runtime/consumer.py` and `consumer_tools.py` extend authorized plans to Service web, API and WeChat entry points, sharing the Runtime queue and per-connection serialization. The server binds admin / Service / conversation identity and limits documents, scripts and artifacts to the allowed scope. Connection, model or resource changes create a new native session; revocation cancels queued and running work. Plan-backed Services reject BYOK, voice, video and scheduled tasks. Admin YOLO does not widen Service resource scope. See [Service distribution and boundaries](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-service-distribution.md).
 
+### 4.12 v1.4.0 projects, Service tests and Tracing
+
+`app/routes/projects.py` and `app/services/projects.py` implement owner-scoped conversation groups; `project_context.py` injects a brief bounded to 5,000 tokens including its wrapper per turn. A project is not a new filesystem workspace and is not injected into consumer or Service-test context. Deleting a project only ungroups its conversations.
+
+`app/services/service_test.py` routes the persisted admin conversation `test_service_id` to a separate Service test session using saved Service configuration, excluding real consumer records and external feedback notifications. Frontend `TracingView.tsx`, `TraceCanvas.tsx` and `tracePosition.ts` derive file/action views from recorded messages and tool blocks. Missing locations remain unknown and are not evidence of complete read coverage.
+
 ## 5. Frontend Architecture
 
 ### 5.1 Directory Structure
@@ -1357,6 +1363,12 @@ Consumer agent via:
 Service mirror: `/api/scheduler/services/{service_id}/...`
 
 ---
+
+### 8.12 v1.4.0 durable execution and message delivery
+
+`app/execution/` stores Runs, grants, recovery and outbox state. `app/services/service_messaging.py` uses separate `sm_*` tables in the same `users/.scheduler/executions.sqlite3` for feedback, replies and explicit-text notifications. Execution completion, history projection and WeChat acknowledgement are distinct; unknown external-send outcomes are not retried automatically.
+
+Admin agent tasks may bind authorized DeepAgents / Codex / Cursor engines; CLI Service agent tasks remain unavailable. Direct text notifications do not invoke a model. `DISABLE_SCHEDULER` does not stop the message worker; `DISABLE_SERVICE_MESSAGING=1` stops it separately, and `SAFE_STARTUP=1` stops both. Before upgrade or rollback, stop the app and back up all user data and databases, or use SQLite consistent backup. Per-user ZIP exports do not include the complete execution / delivery ledger. See [messaging and backup boundaries](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/service-messaging.md).
 
 ## 9. Inbox
 

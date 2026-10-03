@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Empty } from 'antd';
+import { Alert, Empty } from 'antd';
 import { type UsageSummary, type UsageRow } from '../services/api';
 import styles from '../pages/Settings/UsagePage.module.css';
 
@@ -31,6 +31,7 @@ const DONUT_COLORS = [
 
 /** 控制显示哪些维度。未传的字段默认 true（admin 全量）。 */
 export interface UsageDims {
+  core?: boolean;
   channel?: boolean;
   model?: boolean;
   day?: boolean;
@@ -40,6 +41,7 @@ export interface UsageDims {
 }
 
 const ALL_DIMS: Required<UsageDims> = {
+  core: true,
   channel: true,
   model: true,
   day: true,
@@ -52,6 +54,10 @@ export default function UsageView({ data, dims }: { data: UsageSummary; dims?: U
   const { t } = useTranslation();
   const d = { ...ALL_DIMS, ...(dims || {}) };
   const { total } = data;
+  const unreported = data.coverage?.unreported_runs || 0;
+  const missingByCore = Object.entries(data.coverage?.unreported_by_core || {})
+    .map(([core, count]) => `${core === 'codex' ? 'Codex' : core === 'cursor' ? 'Cursor' : core}: ${count}`)
+    .join(' · ');
 
   const channelCard = (
     <div className={styles.glass}>
@@ -83,6 +89,19 @@ export default function UsageView({ data, dims }: { data: UsageSummary; dims?: U
 
   return (
     <>
+      {(unreported > 0 || data.coverage?.runtime_read_error) && (
+        <Alert
+          className={styles.coverageNotice}
+          type="warning"
+          showIcon
+          message={t('usage.incomplete', '部分 CLI Token 用量未完整上报')}
+          description={[
+            unreported > 0 ? t('usage.unreportedRuns', '{{count}} 个运行未完整上报 Token（{{cores}}）。', { count: unreported, cores: missingByCore }) : '',
+            data.coverage?.runtime_read_error ? t('usage.runtimeReadError', 'CLI 运行记录暂时无法读取。') : '',
+            t('usage.reportedOnly', '下方 Token 总数只包含已上报的数值，可能低于实际用量。'),
+          ].filter(Boolean).join(' ')}
+        />
+      )}
       {/* 汇总 */}
       <div className={styles.statGrid}>
         <StatCard
@@ -105,11 +124,18 @@ export default function UsageView({ data, dims }: { data: UsageSummary; dims?: U
         />
         <StatCard
           color="pu"
-          label={t('usage.calls', '调用次数')}
+          label={unreported > 0 ? t('usage.meteredCalls', '已计量调用') : t('usage.calls', '调用次数')}
           value={fmtNum(total.calls)}
           sub={(data.months_scanned || 0) + ' ' + t('usage.monthsScanned', '个月数据')}
         />
       </div>
+
+      {d.core && (data.by_core?.length || 0) > 0 && (
+        <div className={styles.glass} style={{ marginBottom: 16 }}>
+          <CardTitle title={t('usage.byCore', '按 Agent Core')} badge={`${data.by_core?.length || 0}`} />
+          <BarList rows={data.by_core || []} limit={8} variant="default" />
+        </div>
+      )}
 
       {/* 渠道环形 + 模型条 */}
       {d.channel && d.model ? (
@@ -164,7 +190,7 @@ export default function UsageView({ data, dims }: { data: UsageSummary; dims?: U
       )}
 
       <div className={styles.footer}>
-        openjellyfish · {t('usage.footer', '本人用量 · 服务端聚合 llm_usage/*.jsonl')}
+        openjellyfish · {t('usage.footer', '本人用量 · DeepAgents 按模型调用计数，CLI 按运行轮次计数')}
       </div>
     </>
   );

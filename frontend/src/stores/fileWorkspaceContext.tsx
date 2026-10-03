@@ -19,6 +19,8 @@ export interface FileTab {
   path: string;
   content: string;
   dirty: boolean;
+  id: number;
+  revision: number;
 }
 
 export interface FileTabSummary {
@@ -110,7 +112,10 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
 
   const [tabs, setTabs] = useState<FileTab[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [savingPaths, setSavingPaths] = useState<Set<string>>(() => new Set());
+  const tabIdRef = useRef(0);
+  const savesRef = useRef(new Map<string, { promise: Promise<void>; tabId: number; revision: number }>());
+  const saving = activePath !== null && savingPaths.has(activePath);
   const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
 
   const [splitMode, setSplitModeRaw] = useState<SplitMode>(readSplitMode);
@@ -159,7 +164,7 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     const path = activePathRef.current;
     if (!path) return;
     setTabs((prev) =>
-      prev.map((t) => (t.path === path ? { ...t, content: s, dirty: true } : t)),
+      prev.map((t) => (t.path === path ? { ...t, content: s, dirty: true, revision: t.revision + 1 } : t)),
     );
   }, []);
 
@@ -199,7 +204,8 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
     const kind = getFileKind(fileName);
 
     if (!shouldLoadText(kind)) {
-      setTabs((prev) => [...prev, { path, content: '', dirty: false }]);
+      const tab: FileTab = { path, content: '', dirty: false, id: ++tabIdRef.current, revision: 0 };
+      setTabs((prev) => [...prev, tab]);
       setActivePath(path);
       enterSplit();
       pushRecentFile(path);
@@ -215,7 +221,8 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
         pushRecentFile(path);
         return;
       }
-      setTabs((prev) => [...prev, { path, content: data.content, dirty: false }]);
+      const tab: FileTab = { path, content: data.content, dirty: false, id: ++tabIdRef.current, revision: 0 };
+      setTabs((prev) => [...prev, tab]);
       setActivePath(path);
       enterSplit();
       pushRecentFile(path);
@@ -227,19 +234,34 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
   const saveFile = useCallback(async () => {
     const path = activePathRef.current;
     const tab = tabsRef.current.find((t) => t.path === path);
-    if (!path || !tab) return;
-    setSaving(true);
-    try {
-      await api.writeFile(path, tab.content);
-      setTabs((prev) =>
-        prev.map((t) => (t.path === path ? { ...t, dirty: false } : t)),
-      );
-      message.success('已保存');
-    } catch {
-      message.error('保存失败');
-    } finally {
-      setSaving(false);
-    }
+    if (!path || !tab || !tab.dirty) return;
+    const previous = savesRef.current.get(path);
+    if (previous?.tabId === tab.id && previous.revision === tab.revision) return previous.promise;
+
+    // Snapshot each explicit save and serialize writes to the same path. A later
+    // edit (or a closed/reopened tab) must never inherit this snapshot's receipt.
+    const writeSnapshot = async () => {
+      try {
+        await api.writeFile(path, tab.content);
+        setTabs((prev) => prev.map((current) =>
+          current.path === path && current.id === tab.id && current.revision === tab.revision
+            ? { ...current, dirty: false } : current,
+        ));
+        const latest = tabsRef.current.find((current) => current.id === tab.id);
+        message.success(latest && latest.revision !== tab.revision
+          ? '已保存此前版本，新增修改尚未保存' : '已保存');
+      } catch {
+        message.error('保存失败');
+      }
+    };
+    const promise = (previous?.promise ?? Promise.resolve()).then(writeSnapshot).finally(() => {
+      if (savesRef.current.get(path)?.promise !== promise) return;
+      savesRef.current.delete(path);
+      setSavingPaths((prev) => { const next = new Set(prev); next.delete(path); return next; });
+    });
+    savesRef.current.set(path, { promise, tabId: tab.id, revision: tab.revision });
+    setSavingPaths((prev) => new Set(prev).add(path));
+    return promise;
   }, [message]);
 
   const closeTab = useCallback((path: string, force = false) => {

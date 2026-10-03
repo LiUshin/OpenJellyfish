@@ -54,12 +54,13 @@ export const preferences = () => request<RuntimeChoice>('GET', '/runtime/prefere
 export const savePreferences = (choice: RuntimeChoice) => request<RuntimeChoice>('PUT', '/runtime/preferences', choice);
 export interface RuntimeApproval {
   id: string; kind: string; command?: string; reason?: string;
+  title?: string; plan?: string;
   changes?: { path: string; diff?: string }[]; allowed: ('accept' | 'decline')[];
 }
 export interface RuntimeArtifact { id: string; name: string; mime: string; size: number; path: string }
 export interface RuntimeInput { name: string; data_url: string }
 export interface RuntimeRun {
-  id: string; status: string; seq: number; message: string; output: string; yolo?: boolean;
+  id: string; request_id?: string; status: string; seq: number; message: string; output: string; yolo?: boolean;
   blocks?: StreamBlock[];
   prepare_timings?: Record<string, number>;
   binding: RuntimeChoice; client_reused?: boolean; client_acquired_at?: number;
@@ -74,7 +75,7 @@ export interface RuntimeEvent {
   payload: { started_at?: number; client_acquired_at?: number; item_id?: string; text?: string; message?: string; approval?: RuntimeApproval; artifact?: RuntimeArtifact; name?: string; kind?: string; status?: string; command?: string; input?: unknown; result?: unknown; result_delta?: string; changes?: FileChange[]; exit_code?: number | null };
 }
 export const terminal = (status: string) => ['completed', 'failed', 'cancelled'].includes(status);
-export const session = (sid: string) => request<RuntimeSession>('GET', `/runtime/sessions/${sid}`);
+export const session = (sid: string, signal?: AbortSignal) => request<RuntimeSession>('GET', `/runtime/sessions/${sid}`, undefined, signal ? { signal } : {});
 export const turn = (conversation_id: string, request_id: string, message: string, model?: string, attachments: RuntimeInput[] = [], yolo = false) => request<RuntimeRun>('POST', '/runtime/turns', { conversation_id, request_id, message, model, attachments, yolo });
 export const cancel = (rid: string) => request<RuntimeRun>('POST', `/runtime/runs/${rid}/cancel`);
 export const approve = (rid: string, approval_id: string, decision: 'accept' | 'decline') => request('POST', `/runtime/runs/${rid}/approve`, { approval_id, decision });

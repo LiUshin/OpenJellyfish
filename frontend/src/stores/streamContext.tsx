@@ -16,9 +16,21 @@ interface InterruptPayload {
   configs: unknown;
 }
 
+export interface StreamIdentity {
+  conversationId: string;
+  generation: number;
+}
+
+interface StopOutcome extends api.StopChatResult {
+  identity: StreamIdentity;
+  pending: boolean;
+}
+
 interface StreamContextType {
   streamingConvId: string | null;
   isStreaming: boolean;
+  stopState: 'idle' | 'requesting' | 'requested' | 'failed';
+  stopError: string | null;
   streamBlocks: StreamBlock[];
   interruptData: InterruptPayload | null;
   planSteps: PlanStep[];
@@ -37,8 +49,10 @@ interface StreamContextType {
     decisions: unknown[],
     opts: StreamOpts,
   ) => void;
-  stopStream: () => Promise<void>;
-  clearFinished: () => void;
+  stopStream: () => Promise<StopOutcome | null>;
+  clearFinished: (identity: StreamIdentity) => boolean;
+  isCurrentStream: (identity: StreamIdentity) => boolean;
+  getStreamGeneration: () => number;
   restoreInterrupt: (convId: string, data: InterruptPayload) => void;
 }
 
@@ -49,11 +63,11 @@ interface StreamOpts {
   yolo?: boolean;
   lock_mode?: 'auto' | 'manual' | 'agent';
   lock_paths?: string[];
-  onDone?: (convId: string) => void;
-  onError?: (convId: string, msg: string) => void;
+  onDone?: (convId: string, identity: StreamIdentity, continueQueue: boolean) => void;
+  onError?: (convId: string, msg: string, identity: StreamIdentity) => void;
   onInterrupt?: () => void;
   onWorkspaceLock?: (mode: string, granted: string[], conflicts?: { path: string; holder: string }[]) => void;
-  onRunContinued?: (convId: string, content: string, queueId?: string) => void;
+  onRunContinued?: (convId: string, content: string, queueId: string | undefined, identity: StreamIdentity) => void;
 }
 
 const StreamContext = createContext<StreamContextType>(null!);
@@ -61,9 +75,21 @@ export const useStream = () => useContext(StreamContext);
 
 export function StreamProvider({ children }: { children: ReactNode }) {
   const [streamingConvId, setStreamingConvId] = useState<string | null>(null);
-  const [isStreaming, setIsStreaming] = useState(false);
+  const [isStreaming, setIsStreamingRaw] = useState(false);
+  const streamingRef = useRef(false);
+  const setIsStreaming = useCallback((value: boolean) => {
+    streamingRef.current = value;
+    setIsStreamingRaw(value);
+  }, []);
+  const [stopState, setStopState] = useState<StreamContextType['stopState']>('idle');
+  const [stopError, setStopError] = useState<string | null>(null);
   const [streamBlocks, setStreamBlocks] = useState<StreamBlock[]>([]);
-  const [interruptData, setInterruptData] = useState<InterruptPayload | null>(null);
+  const [interruptData, setInterruptDataRaw] = useState<InterruptPayload | null>(null);
+  const interruptDataRef = useRef<InterruptPayload | null>(null);
+  const setInterruptData = useCallback((value: InterruptPayload | null) => {
+    interruptDataRef.current = value;
+    setInterruptDataRaw(value);
+  }, []);
   const [planSteps, setPlanSteps] = useState<PlanStep[]>([]);
   const [yoloApprovedConvs, setYoloApprovedConvs] = useState<Set<string>>(() => new Set());
 
@@ -74,12 +100,33 @@ export function StreamProvider({ children }: { children: ReactNode }) {
   const emittedFingerprintsRef = useRef<string[]>([]);
   const rafRef = useRef<number>(0);
   const pendingRef = useRef(false);
-  const convIdRef = useRef<string | null>(null);
-  const doneRef = useRef<((convId: string) => void) | null>(null);
-  const errorRef = useRef<((convId: string, msg: string) => void) | null>(null);
+  const generationRef = useRef(0);
+  const identityRef = useRef<StreamIdentity | null>(null);
+  const stopIntentRef = useRef<StreamIdentity | null>(null);
+  const stopRequestRef = useRef<{ identity: StreamIdentity; promise: Promise<StopOutcome | null> } | null>(null);
+  const getStreamGeneration = useCallback(() => generationRef.current, []);
+  const isCurrentStream = useCallback((identity: StreamIdentity) => (
+    identityRef.current?.generation === identity.generation
+    && identityRef.current.conversationId === identity.conversationId
+  ), []);
+
+  function bindStream(convId: string): StreamIdentity {
+    cancelAnimationFrame(rafRef.current);
+    pendingRef.current = false;
+    const identity = { conversationId: convId, generation: ++generationRef.current };
+    identityRef.current = identity;
+    stopIntentRef.current = null;
+    stopRequestRef.current = null;
+    setStopState('idle');
+    setStopError(null);
+    setStreamingConvId(convId);
+    return identity;
+  }
+  const doneRef = useRef<((convId: string, identity: StreamIdentity, continueQueue: boolean) => void) | null>(null);
+  const errorRef = useRef<((convId: string, msg: string, identity: StreamIdentity) => void) | null>(null);
   const interruptRef = useRef<(() => void) | null>(null);
   const wsLockRef = useRef<((mode: string, granted: string[], conflicts?: { path: string; holder: string }[]) => void) | null>(null);
-  const runContinuedRef = useRef<((convId: string, content: string, queueId?: string) => void) | null>(null);
+  const runContinuedRef = useRef<((convId: string, content: string, queueId: string | undefined, identity: StreamIdentity) => void) | null>(null);
 
   /**
    * 把 blocksRef 的当前状态提交到 React state（指纹感知，见 streamFlush.ts）。
@@ -140,8 +187,8 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     if (last?.type === 'thinking') last.collapsed = true;
   }
 
-  function buildCallbacks() {
-    return {
+  function buildCallbacks(identity: StreamIdentity) {
+    const callbacks = {
       onThinking(content: string) {
         const last = getLastBlock();
         if (last?.type === 'thinking') {
@@ -291,7 +338,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
         // YOLO 自动批准：不再向消息流插入显眼徽章，仅记录当前会话发生过自动批准，
         // 由 Chat 页面在输入区底部显示一个不显眼的小 tag（直到刷新或切换会话失效）。
         closeThinking();
-        const cid = convIdRef.current;
+        const cid = identity.conversationId;
         if (cid) {
           setYoloApprovedConvs((prev) => {
             if (prev.has(cid)) return prev;
@@ -316,8 +363,8 @@ export function StreamProvider({ children }: { children: ReactNode }) {
         pendingRef.current = false;
         flushBlocksToReact();
         setIsStreaming(false);
-        const cid = convIdRef.current;
-        if (cid) doneRef.current?.(cid);
+        const cid = identity.conversationId;
+        if (cid) doneRef.current?.(cid, identity, stopIntentRef.current?.generation !== identity.generation);
       },
       onError(msg: string) {
         cancelAnimationFrame(rafRef.current);
@@ -325,8 +372,8 @@ export function StreamProvider({ children }: { children: ReactNode }) {
         blocksRef.current.push({ type: 'text', content: `❌ 错误: ${msg}` });
         flushBlocksToReact();
         setIsStreaming(false);
-        const cid = convIdRef.current;
-        if (cid) errorRef.current?.(cid, msg);
+        const cid = identity.conversationId;
+        if (cid) errorRef.current?.(cid, msg, identity);
       },
       onInterrupt(actions: unknown[], configs: unknown) {
         cancelAnimationFrame(rafRef.current);
@@ -343,10 +390,17 @@ export function StreamProvider({ children }: { children: ReactNode }) {
         blocksRef.current = [];
         clearEmittedCache();
         scheduleFlush();
-        const cid = convIdRef.current;
-        if (cid) runContinuedRef.current?.(cid, content, queueId);
+        const cid = identity.conversationId;
+        if (cid) runContinuedRef.current?.(cid, content, queueId, identity);
       },
     };
+    // An aborted reader can still deliver buffered events. Fence every callback,
+    // including terminal/error events, before it can touch the shared stream.
+    return Object.fromEntries(Object.entries(callbacks).map(([name, callback]) => [
+      name, (...args: unknown[]) => {
+        if (isCurrentStream(identity)) Reflect.apply(callback, undefined, args);
+      },
+    ])) as typeof callbacks;
   }
 
   const startStream = useCallback((
@@ -354,8 +408,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     content: string | unknown[],
     opts: StreamOpts,
   ) => {
-    setStreamingConvId(convId);
-    convIdRef.current = convId;
+    const identity = bindStream(convId);
     setIsStreaming(true);
     setInterruptData(null);
     blocksRef.current = [];
@@ -369,7 +422,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     wsLockRef.current = opts.onWorkspaceLock ?? null;
     runContinuedRef.current = opts.onRunContinued ?? null;
 
-    api.streamChat(convId, content, buildCallbacks(), {
+    api.streamChat(convId, content, buildCallbacks(identity), {
       model: opts.model,
       capabilities: opts.capabilities?.length ? opts.capabilities : undefined,
       plan_mode: opts.plan_mode,
@@ -384,6 +437,7 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     decisions: unknown[],
     opts: StreamOpts,
   ) => {
+    const identity = bindStream(convId);
     setInterruptData(null);
     setIsStreaming(true);
 
@@ -393,52 +447,86 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     wsLockRef.current = opts.onWorkspaceLock ?? null;
     runContinuedRef.current = opts.onRunContinued ?? null;
 
-    api.resumeChat(convId, decisions, buildCallbacks(), {
+    api.resumeChat(convId, decisions, buildCallbacks(identity), {
       model: opts.model,
       capabilities: opts.capabilities?.length ? opts.capabilities : undefined,
       yolo: opts.yolo,
     });
   }, []);
 
-  const stopStream = useCallback(async () => {
+  const stopStream = useCallback(async (): Promise<StopOutcome | null> => {
+    const identity = identityRef.current;
+    if (!identity) return null;
+    if (stopRequestRef.current?.identity.generation === identity.generation) {
+      return stopRequestRef.current.promise;
+    }
+    stopIntentRef.current = identity;
+    setStopState('requesting');
+    setStopError(null);
+    const promise = api.stopChat(identity.conversationId).then((result) => {
+      if (!isCurrentStream(identity)) return null;
+      if (result.status === 'not_running' && streamingRef.current) {
+        // The start request may still be preparing the agent, before the server
+        // registers its cancellation flag. Keep observing it and allow retry.
+        setStopState('failed');
+        setStopError('后端暂未找到本轮执行，尚不能确认停止，请重试');
+        return null;
+      }
+      setStopState('requested');
+      // A live reader still owns completion even if an adapter calls its
+      // acceptance "stopped". The legacy approval case has no live reader.
+      const pending = streamingRef.current || result.status === 'stopping';
+      if (!pending) setInterruptData(null);
+      return { identity, status: result.status, pending };
+    }).catch((error: unknown) => {
+      if (isCurrentStream(identity)) {
+        setStopState('failed');
+        setStopError(error instanceof Error ? error.message : '停止请求失败');
+      }
+      return null;
+    }).finally(() => {
+      if (stopRequestRef.current?.promise === promise) stopRequestRef.current = null;
+    });
+    stopRequestRef.current = { identity, promise };
+    return promise;
+  }, [isCurrentStream]);
+
+  const clearFinished = useCallback((identity: StreamIdentity) => {
+    if (!isCurrentStream(identity)) return false;
     cancelAnimationFrame(rafRef.current);
     pendingRef.current = false;
-    blocksRef.current.push({ type: 'text', content: '\n\n⚠️ 已中止' });
-    flushBlocksToReact();
-    setIsStreaming(false);
-    setInterruptData(null);
-
-    const cid = convIdRef.current;
-    if (cid) {
-      try { await api.stopChat(cid); } catch { /* ignore */ }
-    } else {
-      api.abortStream();
-    }
-  }, []);
-
-  const clearFinished = useCallback(() => {
+    identityRef.current = null;
+    stopIntentRef.current = null;
+    setStopState('idle');
+    setStopError(null);
     blocksRef.current = [];
     clearEmittedCache();
     setStreamBlocks([]);
     setStreamingConvId(null);
+    setIsStreaming(false);
     setInterruptData(null);
     setPlanSteps([]);
-  }, []);
+    return true;
+  }, [isCurrentStream]);
 
   const restoreInterrupt = useCallback((convId: string, data: InterruptPayload) => {
-    setStreamingConvId(convId);
+    // Protect live execution / approvals, but a terminal stream whose history
+    // refresh failed must not permanently block another conversation's approval.
+    if (identityRef.current && (streamingRef.current || interruptDataRef.current)) return;
+    bindStream(convId);
     setIsStreaming(false);
     setInterruptData(data);
     blocksRef.current = [];
     clearEmittedCache();
     setStreamBlocks([]);
+    setPlanSteps([]);
   }, []);
 
   return (
     <StreamContext.Provider value={{
-      streamingConvId, isStreaming, streamBlocks, interruptData, planSteps,
+      streamingConvId, isStreaming, stopState, stopError, streamBlocks, interruptData, planSteps,
       yoloApprovedConvs,
-      startStream, resumeStream, stopStream, clearFinished, restoreInterrupt,
+      startStream, resumeStream, stopStream, clearFinished, isCurrentStream, getStreamGeneration, restoreInterrupt,
     }}>
       {children}
     </StreamContext.Provider>

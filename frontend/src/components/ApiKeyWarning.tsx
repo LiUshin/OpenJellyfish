@@ -37,7 +37,7 @@ export default function ApiKeyWarning() {
   const handleGoSettings = () => {
     setVisible(false);
     sessionStorage.setItem(DISMISSED_KEY, '1');
-    navigate('/settings/general');
+    navigate('/settings/environment');
   };
 
   const handleDismiss = () => {

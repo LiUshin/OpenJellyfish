@@ -45,6 +45,8 @@ export default function VoicePage() {
   const [configured, setConfigured] = useState(false);
   const [cfg, setCfg] = useState<VoiceAgentConfig | null>(null);
   const [callOpen, setCallOpen] = useState(false);
+  const [callConversationId, setCallConversationId] = useState<string | null>(null);
+  const [startingCall, setStartingCall] = useState(false);
   // 可选 LLM 模型(来自 OpenJellyfish /api/models,仅保留 worker 支持的供应商)
   const [llmModels, setLlmModels] = useState<ModelInfo[]>([]);
 
@@ -130,6 +132,22 @@ export default function VoicePage() {
     }
   }, []);
 
+  const startTestCall = useCallback(async () => {
+    if (startingCall) return;
+    setStartingCall(true);
+    try {
+      // A real conversation freezes the selected chat engine and owns the
+      // voice delegate history. The token endpoint requires this binding.
+      const conversation = await api.createConversation('语音测试');
+      setCallConversationId(conversation.id);
+      setCallOpen(true);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setStartingCall(false);
+    }
+  }, [startingCall]);
+
   if (loadError) return <div className="settings-state"><SettingsLoadError onRetry={() => void load()} /></div>;
   if (loading || !cfg) {
     return <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div>;
@@ -159,7 +177,8 @@ export default function VoicePage() {
             type="primary"
             icon={<Phone size={16} />}
             disabled={!configured || !cfg.enabled || dirty || saving}
-            onClick={() => setCallOpen(true)}
+            loading={startingCall}
+            onClick={() => void startTestCall()}
           >
             试通话
           </Button>
@@ -258,7 +277,7 @@ export default function VoicePage() {
               })()}
               notFoundContent={
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  无可用模型,请先在「设置 → 通用设置」配置对应供应商凭据
+                  无可用模型,请先在「环境 → 模型与连接」配置对应供应商凭据
                 </Text>
               }
             />
@@ -470,7 +489,7 @@ export default function VoicePage() {
           </Text>
         )}
         <Text type="secondary" style={{ display: 'block', marginTop: 4, fontSize: 12 }}>
-          前台 LLM 模型下拉与 Chat 完全一致（OpenAI / Anthropic / Kimi / MiniMax / Bedrock）；没出现的模型请先在「设置 → 通用设置」配置对应凭据。思考(-thinking)型号在实时语音里按基础模型运行以降低延迟。
+          前台 LLM 模型下拉与 Chat 完全一致（OpenAI / Anthropic / Kimi / MiniMax / Bedrock）；没出现的模型请先在「环境 → 模型与连接」配置对应凭据。思考(-thinking)型号在实时语音里按基础模型运行以降低延迟。
         </Text>
       </Card>
 
@@ -484,11 +503,11 @@ export default function VoicePage() {
         </Popconfirm>
       </div>
 
-      <VoiceCallModal
+      {callConversationId && <VoiceCallModal
         open={callOpen}
-        conversationId={`voice-test-${Date.now()}`}
-        onClose={() => setCallOpen(false)}
-      />
+        conversationId={callConversationId}
+        onClose={() => { setCallOpen(false); setCallConversationId(null); }}
+      />}
     </div>
   );
 }

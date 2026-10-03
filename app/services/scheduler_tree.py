@@ -46,12 +46,23 @@ import json
 import logging
 import os
 import shutil
+from threading import RLock
 from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
 
 from app.core.fileutil import atomic_json_save
 from app.core.security import get_user_dir
 
 log = logging.getLogger("scheduler_tree")
+TASK_STORAGE_LOCK = RLock()
+
+
+def _serialized(fn):
+    @functools.wraps(fn)
+    def call(*args, **kwargs):
+        with TASK_STORAGE_LOCK:
+            return fn(*args, **kwargs)
+    return call
+
 
 # ── Constants ────────────────────────────────────────────────────────────
 
@@ -68,6 +79,12 @@ SERVICE_TASK_PREFIX = "stask_"
 
 # ── Path helpers ─────────────────────────────────────────────────────────
 
+def _identifier(value: str) -> str:
+    if not value or value in (".", "..") or "/" in value or "\\" in value:
+        raise ValueError("Invalid scheduler identifier")
+    return value
+
+
 def scope_root(scope: Scope, uid: str,
                service_id: Optional[str] = None) -> str:
     """Absolute path to the tasks root for a (scope, uid[, svc]) tuple."""
@@ -76,7 +93,7 @@ def scope_root(scope: Scope, uid: str,
     if scope == "service":
         if not service_id:
             raise ValueError("service scope requires service_id")
-        return os.path.join(get_user_dir(uid), "services", service_id, "tasks")
+        return os.path.join(get_user_dir(uid), "services", _identifier(service_id), "tasks")
     raise ValueError(f"Unknown scope: {scope!r}")
 
 
@@ -244,6 +261,8 @@ def list_root_tasks(scope: Scope, uid: str,
     root = scope_root(scope, uid, service_id)
     if not os.path.isdir(root):
         return []
+    for task_id, _ in find_legacy_task_files(scope, uid, service_id):
+        migrate_legacy_task(scope, uid, task_id, service_id)
     out: List[Dict[str, Any]] = []
     for name in os.listdir(root):
         if not (name.startswith(ADMIN_TASK_PREFIX)
@@ -270,8 +289,9 @@ def list_all_tasks_flat(scope: Scope, uid: str,
                                        include_root=True)
         for m in descendants:
             if not include_runs:
+                count = m.get("run_count", len(m.get("runs", [])))
                 m = {k: v for k, v in m.items() if k != "runs"}
-                m["run_count"] = len((m.get("runs") if include_runs else []) or [])
+                m["run_count"] = count
             out.append(m)
     return out
 
@@ -314,6 +334,7 @@ def delete_task_subtree(scope: Scope, uid: str, task_id: str,
 
 # ── Lazy migration from v1 flat layout ──────────────────────────────────
 
+@_serialized
 def migrate_legacy_task(scope: Scope, uid: str, task_id: str,
                         service_id: Optional[str] = None,
                         delete_legacy: bool = True) -> Optional[str]:
@@ -336,18 +357,14 @@ def migrate_legacy_task(scope: Scope, uid: str, task_id: str,
     Idempotent: if the new tree dir already exists, returns early without
     overwriting it.
     """
+    _identifier(task_id)
     root = scope_root(scope, uid, service_id)
     legacy_json = os.path.join(root, f"{task_id}.json")
     legacy_steps = os.path.join(root, f"{task_id}.steps")
     new_dir = os.path.join(root, task_id)
 
-    if os.path.isfile(meta_path(new_dir)):
-        # Already migrated — nothing to do.
-        invalidate_path_cache()
-        return new_dir
-
     if not os.path.isfile(legacy_json):
-        return None
+        return new_dir if os.path.isfile(meta_path(new_dir)) else None
 
     try:
         with open(legacy_json, "r", encoding="utf-8") as f:
@@ -367,18 +384,29 @@ def migrate_legacy_task(scope: Scope, uid: str, task_id: str,
     legacy_meta.setdefault("descendants_count", 0)
     legacy_meta.setdefault("spawn_reason", "")
 
+    # Copy first, commit metadata last. A failed copy keeps every legacy source
+    # intact. Retrying also repairs deployments that had already written meta.
     os.makedirs(runs_dir(new_dir), exist_ok=True)
-    save_task_meta(new_dir, legacy_meta)
-
-    # Migrate per-run step JSONLs (best-effort).
-    if os.path.isdir(legacy_steps):
-        for fname in os.listdir(legacy_steps):
-            src = os.path.join(legacy_steps, fname)
-            dst = os.path.join(runs_dir(new_dir), fname)
-            try:
-                shutil.move(src, dst)
-            except OSError:
-                log.exception("migrate_legacy_task: failed to move %s", src)
+    try:
+        if os.path.isdir(legacy_steps):
+            for fname in os.listdir(legacy_steps):
+                src = os.path.join(legacy_steps, fname)
+                dst = os.path.join(runs_dir(new_dir), fname)
+                if not os.path.isfile(src) or os.path.islink(src):
+                    raise OSError("Unexpected legacy step entry")
+                temp = dst + ".migrating"
+                try:
+                    shutil.copy2(src, temp)
+                    os.replace(temp, dst)
+                finally:
+                    if os.path.exists(temp):
+                        os.unlink(temp)
+        if not os.path.isfile(meta_path(new_dir)):
+            legacy_meta.setdefault("run_count", len(legacy_meta.get("runs", [])))
+            save_task_meta(new_dir, legacy_meta)
+    except OSError:
+        log.exception("Migration incomplete; retaining legacy source %s", legacy_json)
+        return None
 
     if delete_legacy:
         try:

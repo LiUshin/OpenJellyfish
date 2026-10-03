@@ -1,0 +1,76 @@
+.card {
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 12px;
+  border: 1px solid rgba(var(--jf-warning-rgb), .4);
+  border-radius: var(--jf-radius-md);
+  background: var(--jf-bg-panel);
+  color: var(--jf-text);
+  overflow: hidden;
+  box-shadow: var(--jf-shadow-float);
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  background: rgba(var(--jf-warning-rgb), .08);
+  border-bottom: 1px solid var(--jf-border);
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(var(--jf-warning-rgb), .14);
+  color: var(--jf-warning);
+}
+
+.heading { flex: 1 1 190px; min-width: 0; }
+.heading h3 { margin: 0; font-size: 14px; line-height: 1.5; color: var(--jf-text); }
+.heading p { margin: 3px 0 0; font-size: 12px; line-height: 1.5; color: var(--jf-text-muted); }
+.pendingLabel { flex-shrink: 0; font-size: 11px; line-height: 20px; color: var(--jf-warning); }
+
+.body { display: grid; gap: 14px; min-width: 0; padding: 14px 16px; }
+.field { min-width: 0; }
+.label { margin-bottom: 6px; font-size: 11px; font-weight: 600; color: var(--jf-text-muted); }
+.reason, .noDetails { margin: 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.noDetails { color: var(--jf-text-muted); }
+.command, .previewText {
+  max-width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--jf-bg-inset);
+  border: 1px solid var(--jf-border);
+  border-radius: var(--jf-radius-sm);
+  color: var(--jf-text);
+  font: 12px/1.6 var(--jf-font-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.files { display: grid; gap: 10px; min-width: 0; }
+.file { min-width: 0; border: 1px solid var(--jf-border); border-radius: var(--jf-radius-sm); overflow: hidden; }
+.fileHeader { display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 8px 10px; background: var(--jf-bg-inset); }
+.fileHeader svg { flex-shrink: 0; color: var(--jf-primary); }
+.filePath { flex: 1; min-width: 0; font: 12px/1.5 var(--jf-font-code); overflow-wrap: anywhere; word-break: break-word; }
+.fileHeader .pendingLabel { line-height: 18px; }
+.diff { max-height: 320px; min-width: 0; overflow: auto; background: var(--jf-bg-inset); font: 12px/1.55 var(--jf-font-code); }
+.diff code { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.diffHeader { padding: 4px 12px; white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(var(--jf-primary-rgb), .08); color: var(--jf-text-muted); }
+.previewLabel { padding: 6px 12px; color: var(--jf-text-muted); font-size: 11px; }
+.previewText { border: 0; border-radius: 0; }
+.noDiff { margin: 0; padding: 12px; color: var(--jf-text-muted); font-size: 12px; }
+
+.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--jf-border); }
+
+@media (max-width: 600px) {
+  .header, .body, .actions { padding-inline: 12px; }
+  .actions > * { max-width: 100%; }
+}

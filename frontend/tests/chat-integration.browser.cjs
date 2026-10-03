@@ -33,6 +33,7 @@ const text=content=>({type:'text',content});
     else if(path==='/api/conversations')value=[conv];
     else if(path==='/api/conversations/ui-review')value=conv;
     else if(path==='/api/runtime/sessions/fixture-session')value={id:'fixture-session',binding,runs,artifacts:[]};
+    else if(path==='/api/runtime/turns') {const body=route.request().postDataJSON();const next={id:'run-9',request_id:body.request_id,seq:0,status:'completed',message:body.message,output:'已按顺序执行排队消息。',blocks:[text('已按顺序执行排队消息。')],binding,artifacts:[],pending:null,created_at:Date.now()/1000};runs.push(next);value=next;}
     else if(path.endsWith('/events')) {await new Promise(resolve=>context.once('close',resolve));return;}
     else if(path.endsWith('/cancel')) {active.status='cancelled';active.finished_at=Date.now()/1000;active.pending=null;value={status:'cancelled'};}
     else if(path.endsWith('/approve')) {assert.equal(route.request().postDataJSON().decision,'accept');active.status='running';active.pending=null;active.blocks=[...active.blocks.slice(0,-1),text('组件已定位，正在检索可复用的交互模式。'),tool('web_search',false)];value={status:'accepted'};}
@@ -59,14 +60,15 @@ const text=content=>({type:'text',content});
    if(engine!=='legacy') {
     const composer=page.locator('[data-chat-composer]');
     await composer.getByRole('textbox').fill('下一条消息草稿');
-    assert(await composer.getByRole('button',{name:'发送消息',exact:true}).isDisabled());
+    assert(await composer.getByRole('button',{name:'发送消息',exact:true}).isEnabled());
+    await composer.getByRole('button',{name:'发送消息',exact:true}).click();
+    assert.equal(await page.locator('[class*="queryQueueInput"]').inputValue(),'下一条消息草稿');
     await composer.getByRole('button',{name:'停止生成',exact:true}).click();
     await composer.getByRole('button',{name:'停止生成',exact:true}).waitFor({state:'hidden'});
-    assert((await composer.getByRole('textbox').innerText()).includes('下一条消息草稿'));
-    assert(await composer.getByRole('button',{name:'发送消息',exact:true}).isEnabled());
+    await page.getByText('已按顺序执行排队消息。').first().waitFor();
    }
    assert.equal(await page.locator('vite-error-overlay').count(),0);assert.deepEqual(errors,[]);
-   console.log(JSON.stringify({engine,actual_app:true,mocked_api:true,left_navigation:true,approval_controls_preserved:engine!=='legacy',stop_preserves_draft:engine!=='legacy',page_errors:0}));
+   console.log(JSON.stringify({engine,actual_app:true,mocked_api:true,left_navigation:true,approval_controls_preserved:engine!=='legacy',cli_follow_up_queue:engine!=='legacy',page_errors:0}));
    await context.close();
   }
  }finally{await browser.close();}

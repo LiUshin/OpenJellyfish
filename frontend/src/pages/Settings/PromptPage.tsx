@@ -4,14 +4,12 @@ import { useTranslation } from 'react-i18next';
 import UserProfileEditor from '../../components/modals/UserProfileEditor';
 import SystemPromptEditor from '../../components/modals/SystemPromptEditor';
 import SoulSettings from '../../components/modals/SoulSettings';
-import { useIsMobile } from '../../hooks/useMediaQuery';
 
 const ADV_SYSTEM_KEY = 'show_advanced_system';
 const ADV_SOUL_KEY = 'show_advanced_soul';
 
 export default function PromptPage() {
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
   const [tab, setTab] = useState<'profile' | 'system' | 'soul'>('profile');
   const [showSystem, setShowSystem] = useState(localStorage.getItem(ADV_SYSTEM_KEY) === '1');
   const [showSoul, setShowSoul] = useState(localStorage.getItem(ADV_SOUL_KEY) === '1');
@@ -38,9 +36,9 @@ export default function PromptPage() {
       items.push({
         key: 'system',
         label: (
-          <span>
-            {t('promptPage.tabOpsRules')}
-            <Tag color="purple" style={{ marginLeft: 6, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
+          <span className="prompt-tab-label">
+            <span>{t('promptPage.tabOpsRules')}</span>
+            <Tag color="purple" className="prompt-tab-advanced">
               Advanced
             </Tag>
           </span>
@@ -51,9 +49,9 @@ export default function PromptPage() {
       items.push({
         key: 'soul',
         label: (
-          <span>
-            {t('promptPage.tabMemorySoul')}
-            <Tag color="purple" style={{ marginLeft: 6, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
+          <span className="prompt-tab-label">
+            <span>{t('promptPage.tabMemorySoul')}</span>
+            <Tag color="purple" className="prompt-tab-advanced">
               Advanced
             </Tag>
           </span>
@@ -64,11 +62,8 @@ export default function PromptPage() {
   }, [showSystem, showSoul, t]);
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {tabItems.length > 1 && <div style={{
-        padding: isMobile ? '8px 14px 0' : '8px 24px 0',
-        flexShrink: 0,
-      }}>
+    <div className="prompt-page">
+      {tabItems.length > 1 && <div className="prompt-page-tabs">
         <Tabs
           activeKey={tab}
           onChange={(k) => setTab(k as 'profile' | 'system' | 'soul')}

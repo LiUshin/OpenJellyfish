@@ -14,9 +14,11 @@ export interface Conversation {
   title: string;
   created_at: string;
   updated_at: string;
+  project_id?: string | null;
   message_count?: number;
   runtime_session_id?: string | null;
   runtime_binding?: { runtime: string; model?: string; profile_id?: string } | null;
+  test_service_id?: string | null;
 }
 
 export interface MessageAttachment {
@@ -36,6 +38,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp?: string;
+  test_service_id?: string;
   tool_calls?: { name: string; args: string; result: string }[];
   attachments?: MessageAttachment[];
   blocks?: MessageBlock[];
@@ -45,8 +48,29 @@ export interface ConversationDetail {
   id: string;
   title: string;
   messages: Message[];
+  project_id?: string | null;
   runtime_session_id?: string | null;
   runtime_binding?: Conversation['runtime_binding'];
+  test_service_id?: string | null;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  conversation_count: number;
+  brief?: string;
+  brief_token_count?: number;
+  brief_truncated?: boolean;
+}
+
+export interface ProjectSearchResult {
+  conversation_id: string;
+  title: string;
+  snippet: string;
+  role: 'user' | 'assistant' | 'title';
+  message_index: number;
 }
 
 export interface FileItem {

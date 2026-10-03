@@ -182,6 +182,10 @@ function getMediaType(filePath: string): string | null {
   return null;
 }
 
+function isServiceTestFile(filePath: string): boolean {
+  return /^\/service-test\/[^/]+\/[^/]+\/[^/]+\/generated\//.test(filePath);
+}
+
 /** 生成 caption 里「📁 在文件浏览器打开」的小按钮 HTML（可作为 a 标签文本添加，
  *  父元素 .jf-media-caption 已是 flex；此处用 margin-left:auto 把它推到右边）。
  *  仅在 _fileRevealEnabled = true 时返回内容；否则返回空串。
@@ -189,7 +193,7 @@ function getMediaType(filePath: string): string | null {
  *  anchor: 可选的章节锚点（markdown heading 文本/id 或 PDF 的 page=N），通过
  *  data-jf-anchor 透传给 revealInBrowser 处理深链跳转。 */
 function buildRevealAction(filePath: string, anchor?: string): string {
-  if (_fileDownloadMode) {
+  if (_fileDownloadMode || isServiceTestFile(filePath)) {
     const url = mediaUrl(filePath);
     const dlName = escapeHtml(filePath.split('/').pop() || 'download');
     return ` <a href="${url}" download="${dlName}" class="jf-media-download" title="下载">⬇</a>`;
@@ -264,7 +268,7 @@ function filePathToHtml(filePath: string, anchor?: string): string | null {
 function nonMediaFileToHtml(filePath: string, anchor?: string): string {
   const safePath = escapeHtml(filePath);
   const name = escapeHtml(filePath.split('/').pop() || filePath);
-  if (_fileDownloadMode) {
+  if (_fileDownloadMode || isServiceTestFile(filePath)) {
     // consumer：渲染成直接下载链接（mediaUrl 已带会话级 token）
     const url = mediaUrl(filePath);
     return `<a href="${url}" download="${name}" class="jf-file-link" title="下载 ${safePath}"><span class="jf-file-link-icon">📄</span><span class="jf-file-link-name">${name}</span></a>`;

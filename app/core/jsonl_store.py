@@ -26,6 +26,11 @@ from __future__ import annotations
 import io
 import json
 import os
+try:
+    import fcntl
+except ImportError:  # Preserve ordinary chat storage on Windows too.
+    fcntl = None
+from contextlib import contextmanager
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -35,33 +40,79 @@ def _ensure_dir(path: str) -> None:
         os.makedirs(d, exist_ok=True)
 
 
-def append_jsonl(path: str, record: Dict[str, Any]) -> None:
-    """Append a single JSON record as one line.
-
-    Creates the parent directory if needed.  Uses ``ensure_ascii=False``
-    so Chinese stays human-readable when the file is inspected manually.
-    """
+@contextmanager
+def _writer_lock(path):
     _ensure_dir(path)
-    line = json.dumps(record, ensure_ascii=False, default=str)
-    with open(path, "ab") as f:
-        f.write(line.encode("utf-8"))
-        f.write(b"\n")
+    with open(path + '.lock', 'ab') as lock:
+        if fcntl:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        else:
+            import msvcrt
+            if os.fstat(lock.fileno()).st_size == 0:
+                lock.write(b'0')
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            yield
+        finally:
+            if fcntl:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+            else:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def _append_records(path, records, *, durable=False, event_id=None):
+    with _writer_lock(path):
+        with open(path, 'a+b') as f:
+            if event_id:
+                f.seek(0)
+                for line in f:
+                    try:
+                        if json.loads(line).get('event_id') == event_id:
+                            os.fsync(f.fileno())
+                            parent = os.open(os.path.dirname(path) or '.', os.O_RDONLY)
+                            try:
+                                os.fsync(parent)
+                            finally:
+                                os.close(parent)
+                            return False
+                    except (ValueError, AttributeError):
+                        pass
+            f.seek(0, os.SEEK_END)
+            if f.tell():
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b'\n':
+                    f.write(b'\n')  # isolate a torn final record from new data
+            for record in records:
+                f.write((json.dumps(record, ensure_ascii=False, default=str) + '\n').encode('utf-8'))
+            if durable:
+                f.flush()
+                os.fsync(f.fileno())
+        if durable:
+            fd = os.open(os.path.dirname(path) or '.', os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    return True
+
+
+def append_jsonl(path: str, record: Dict[str, Any]) -> None:
+    _append_records(path, [record])
+
+
+def append_jsonl_once(path: str, record: Dict[str, Any], event_id: str) -> bool:
+    """Durable projection with an event marker in the same fsynced record."""
+    return _append_records(path, [{**record, 'event_id': event_id}], durable=True, event_id=event_id)
 
 
 def append_jsonl_many(path: str, records: Iterable[Dict[str, Any]]) -> int:
-    """Append many records in one open()/write() — used by migration."""
-    _ensure_dir(path)
-    count = 0
-    buf = io.BytesIO()
-    for rec in records:
-        buf.write(json.dumps(rec, ensure_ascii=False, default=str).encode("utf-8"))
-        buf.write(b"\n")
-        count += 1
-    if count == 0:
-        return 0
-    with open(path, "ab") as f:
-        f.write(buf.getvalue())
-    return count
+    records = list(records)
+    if records:
+        _append_records(path, records)
+    return len(records)
 
 
 def read_jsonl(path: str) -> List[Dict[str, Any]]:
@@ -134,6 +185,11 @@ def read_jsonl_tail(path: str, last_n: int) -> List[Dict[str, Any]]:
 
 
 def rewrite_jsonl(path: str, records: List[Dict[str, Any]]) -> None:
+    with _writer_lock(path):
+        _rewrite_jsonl_locked(path, records)
+
+
+def _rewrite_jsonl_locked(path: str, records: List[Dict[str, Any]]) -> None:
     """Atomically rewrite the whole file (used for delete / cap ops).
 
     Goes through ``atomic_json_save``-style temp+rename so a crash mid

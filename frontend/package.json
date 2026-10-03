@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "legacy": "node server.js",
-    "test:chat": "node --test tests/chat-presentation.test.cjs"
+    "test:chat": "node --test tests/chat-presentation.test.cjs",
+    "test:safety": "node --test tests/async-state-safety.test.cjs tests/runtime-pending.test.cjs"
   },
   "dependencies": {
     "@ant-design/icons": "^5.6.1",

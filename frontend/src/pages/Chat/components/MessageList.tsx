@@ -2,6 +2,8 @@ import { forwardRef, useCallback, useImperativeHandle, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import type { Message } from '../../../types';
 import MessageBubble from './MessageBubble';
+import { useTranslation } from 'react-i18next';
+import styles from '../chat.module.css';
 
 /**
  * MessageList — 基于 react-virtuoso 的虚拟化消息列表。
@@ -51,6 +53,7 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
   { messages, conversationId, scrollParent, followStream, onAtBottomChange },
   ref,
 ) {
+  const { t } = useTranslation();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   // atBottomRef 只用于 isScrolledUp 查询；不进 state 避免 follow tail 时频繁 re-render。
   const atBottomRef = useRef(true);
@@ -125,6 +128,7 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
     (idx: number, msg: Message) => {
       return (
         <div data-jf-msg-index={idx} data-jf-msg-role={msg.role}>
+          {msg.test_service_id && <span className={styles.serviceTestMessageLabel}>{t('chat.serviceTestMessage')}</span>}
           <MessageBubble
             role={msg.role}
             content={msg.content}
@@ -136,7 +140,7 @@ const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
         </div>
       );
     },
-    [conversationId],
+    [conversationId, t],
   );
 
   // computeItemKey 让 Virtuoso 在消息追加 / swap 时正确复用 DOM 节点。

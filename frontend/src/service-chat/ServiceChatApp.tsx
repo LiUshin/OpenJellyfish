@@ -27,6 +27,7 @@ import {
   consumeKeyFromUrl,
   createConversation,
   getConversation,
+  getConversationEvents,
   getMediaToken,
   getServiceModels,
   getStoredByok,
@@ -65,9 +66,17 @@ interface AssistantMessage {
   blocks: import('../pages/Chat/types').StreamBlock[];
 }
 
-type MessageEntry =
+interface PendingSend {
+  id: string;
+  text: string;
+  images: { dataUrl: string; name: string }[];
+  phase: 'creating' | 'streaming';
+}
+
+type MessageEntry = (
   | { kind: 'user'; data: UserMessage }
-  | { kind: 'assistant'; data: AssistantMessage };
+  | { kind: 'assistant'; data: AssistantMessage }
+) & { id?: string; authorType?: string };
 
 const MAX_PENDING_IMAGES = 5;
 
@@ -135,7 +144,7 @@ function backendMsgToEntry(m: ConsumerMessage): MessageEntry | null {
       if (m.content) blocks.push({ type: 'text', content: m.content });
     }
     if (blocks.length === 0) return null;
-    return { kind: 'assistant', data: { blocks } };
+    return { kind: 'assistant', data: { blocks }, id: m.event_id || m.message_id, authorType: m.author_type };
   }
   return null;
 }
@@ -160,6 +169,19 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageEntry[]>([]);
+  const [updatesDelayed, setUpdatesDelayed] = useState(false);
+  const [historyEpoch, setHistoryEpoch] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const conversationRequest = useRef(0);
+  const openingConversation = useRef<string | null>(null);
+  const pendingSend = useRef<PendingSend | null>(null);
+  const nextLocalMessageId = useRef(0);
+  const [creatingMessageId, setCreatingMessageId] = useState<string | null>(null);
+  const [sendError, setSendError] = useState('');
+  useEffect(() => () => {
+    ++conversationRequest.current;
+    pendingSend.current = null;
+  }, []);
   const [pendingImgs, setPendingImgs] = useState<{ dataUrl: string; name: string }[]>([]);
   const [draft, setDraft] = useState('');
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
@@ -213,18 +235,23 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
   // ── 取会话级媒体 token（恢复/切换/新建时刷新） ────────────────────
   const refreshMediaToken = useCallback(async (key: string, convId: string) => {
     try {
-      setMediaToken(await getMediaToken(key, convId));
+      const token = await getMediaToken(key, convId);
+      if (convIdRef.current === convId && apiKeyRef.current === key) setMediaToken(token);
     } catch (tokErr) {
       console.error('Failed to fetch media token:', tokErr);
-      setMediaToken('');
+      if (convIdRef.current === convId && apiKeyRef.current === key) setMediaToken('');
     }
   }, []);
 
   // ── 恢复/切换到某个已存在的会话（从后端拉历史消息） ────────────────
   const openConversation = useCallback(
     async (convId: string, key: string) => {
+      const sequence = ++conversationRequest.current;
+      openingConversation.current = convId;
+      setHistoryLoading(true);
       try {
         const conv = await getConversation(key, convId);
+        if (sequence !== conversationRequest.current) return;
         if (!conv) {
           // 后端已无此会话（被 admin 删了等）→ 从本地列表清掉
           setConvList((prev) => prev.filter((c) => c.id !== convId));
@@ -238,12 +265,22 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
           .map(backendMsgToEntry)
           .filter((e): e is MessageEntry => e !== null);
         setMessages(entries as MessageEntry[]);
+        convIdRef.current = convId;
         setConversationId(convId);
         setWelcomeDismissed(true);
         void refreshMediaToken(key, convId);
       } catch (err) {
+        if (sequence !== conversationRequest.current) return;
         if (err instanceof AuthError) handleAuthFail(err.message);
         else console.error('Failed to open conversation:', err);
+      } finally {
+        if (sequence === conversationRequest.current) {
+          openingConversation.current = null;
+          setHistoryLoading(false);
+          // Even a failed switch back to the same ID must restart its event
+          // reader. History and event reads share a generation fence.
+          setHistoryEpoch((value) => value + 1);
+        }
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -259,31 +296,41 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
     // 标记 init 完成 → 之后持久化 effect 才会写盘（避免清掉 activeId）
     didInitRef.current = true;
     if (activeId) void openConversation(activeId, apiKey);
+    // React StrictMode remounts effects; allow the cancelled initial read to
+    // restart instead of leaving the restored conversation permanently blank.
+    return () => { didInitRef.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKey]);
 
   // ── 懒创建会话（首次发消息时才建，并登记到本地列表） ───────────────
   const createAndRegister = useCallback(
-    async (key: string, firstText: string): Promise<string | null> => {
-      try {
-        const conv = await createConversation(key);
-        setConversationId(conv.id);
-        const title = makeTitle(firstText);
-        setConvList((prev) => [
-          { id: conv.id, title, updatedAt: new Date().toISOString() },
-          ...prev.filter((c) => c.id !== conv.id),
-        ]);
-        void refreshMediaToken(key, conv.id);
-        return conv.id;
-      } catch (err) {
-        if (err instanceof AuthError) handleAuthFail(err.message);
-        else console.error('Failed to create conversation:', err);
-        return null;
-      }
+    async (key: string, firstText: string, sequence: number): Promise<string | null> => {
+      const conv = await createConversation(key);
+      if (sequence !== conversationRequest.current || apiKeyRef.current !== key) return null;
+      convIdRef.current = conv.id;
+      setConversationId(conv.id);
+      const title = makeTitle(firstText);
+      setConvList((prev) => [
+        { id: conv.id, title, updatedAt: new Date().toISOString() },
+        ...prev.filter((c) => c.id !== conv.id),
+      ]);
+      void refreshMediaToken(key, conv.id);
+      return conv.id;
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [refreshMediaToken],
   );
+
+  // A switch during the first create request cannot cancel an already-sent
+  // HTTP request. Keep its unsent text in the composer and fence its response.
+  const releasePendingSend = useCallback(() => {
+    const pending = pendingSend.current;
+    pendingSend.current = null;
+    setCreatingMessageId(null);
+    if (pending?.phase !== 'creating') return false;
+    setDraft(pending.text);
+    setPendingImgs(pending.images);
+    return true;
+  }, []);
 
   // ── Stream handler ──────────────────────────────────────────────
   const stream = useServiceStream({
@@ -316,54 +363,140 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
     },
   });
 
+  // Durable admin replies/notices are independent of this turn's POST stream.
+  // Serial polling + focus recovery also works after a browser was offline.
+  useEffect(() => {
+    if (!apiKey || !conversationId) return;
+    const sequence = conversationRequest.current;
+    const controller = new AbortController();
+    let stopped = false;
+    let busy = false;
+    let cursor = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const valid = () => !stopped && sequence === conversationRequest.current;
+    const poll = async () => {
+      if (!valid() || busy) return;
+      clearTimeout(timer);
+      if (document.hidden) { timer = setTimeout(poll, 3000); return; }
+      busy = true;
+      try {
+        const result = await getConversationEvents(apiKey, conversationId, cursor, controller.signal);
+        if (!valid()) return;
+        setMessages((previous) => {
+          if (!valid()) return previous;
+          const seen = new Set(previous.map((m) => m.id).filter(Boolean));
+          const next = [...previous];
+          for (const event of result.events) {
+            if (event.conversation_id !== conversationId || seen.has(event.message.id)) continue;
+            const entry = backendMsgToEntry({ ...event.message, event_id: event.message.id });
+            if (entry) { next.push(entry); seen.add(event.message.id); }
+          }
+          return next.length === previous.length ? previous : next;
+        });
+        cursor = result.next_cursor;
+        setUpdatesDelayed(false);
+        timer = setTimeout(poll, result.has_more ? 0 : 3000);
+      } catch (error) {
+        if (!valid()) return;
+        if (error instanceof AuthError) handleAuthFail(error.message);
+        else { setUpdatesDelayed(true); timer = setTimeout(poll, 5000); }
+      } finally { busy = false; }
+    };
+    const focus = () => { void poll(); };
+    void poll();
+    window.addEventListener('focus', focus);
+    document.addEventListener('visibilitychange', focus);
+    return () => {
+      stopped = true;
+      controller.abort();
+      clearTimeout(timer);
+      window.removeEventListener('focus', focus);
+      document.removeEventListener('visibilitychange', focus);
+    };
+    // handleAuthFail only uses the current service and stable state setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiKey, conversationId, historyEpoch]);
+
   // ── 抽屉操作 ──────────────────────────────────────────────────────
   const handleSelectConversation = useCallback(
     (convId: string) => {
       setDrawerOpen(false);
-      if (convId === convIdRef.current) return;
+      if (convId === convIdRef.current && !openingConversation.current) return;
+      releasePendingSend();
+      setSendError('');
       stream.abort();
       stream.reset();
       void openConversation(convId, apiKeyRef.current);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [openConversation, stream],
+    [openConversation, releasePendingSend, stream],
   );
 
   const handleNewConversation = useCallback(() => {
+    const recoveredDraft = releasePendingSend();
+    ++conversationRequest.current;
+    openingConversation.current = null;
+    setHistoryLoading(false);
+    convIdRef.current = null;
     setDrawerOpen(false);
     stream.abort();
     stream.reset();
     setConversationId(null);
     setMessages([]);
     setMediaToken('');
-    setDraft('');
-    setPendingImgs([]);
+    if (!recoveredDraft) {
+      setDraft('');
+      setPendingImgs([]);
+    }
+    setSendError('');
     setWelcomeDismissed(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stream]);
+  }, [releasePendingSend, stream]);
 
   const handleDeleteConversation = useCallback(
     (convId: string) => {
       // 仅本地移除（服务器数据保留）
       setConvList((prev) => prev.filter((c) => c.id !== convId));
       if (convIdRef.current === convId) {
+        releasePendingSend();
+        stream.abort();
+        stream.reset();
+        ++conversationRequest.current;
+        openingConversation.current = null;
+        setHistoryLoading(false);
+        convIdRef.current = null;
         setConversationId(null);
         setMessages([]);
         setMediaToken('');
+        setSendError('');
         setWelcomeDismissed(false);
+      } else if (openingConversation.current === convId) {
+        ++conversationRequest.current;
+        openingConversation.current = null;
+        setHistoryLoading(false);
+        setHistoryEpoch((value) => value + 1);
       }
     },
-    [],
+    [releasePendingSend, stream],
   );
 
   function handleAuthFail(msg: string) {
+    releasePendingSend();
+    stream.abort();
+    stream.reset();
+    ++conversationRequest.current;
+    openingConversation.current = null;
+    setHistoryLoading(false);
+    convIdRef.current = null;
     setApiKey('');
     clearStoredKey(config.service_id);
     setAuthError(msg);
     setConversationId(null);
+    setMessages([]);
     setMediaToken('');
     setFilesPanelOpen(false);
     setDrawerOpen(false);
+    setSendError('');
     // 允许重新登录后再次恢复活跃会话（会话列表本身保留在 localStorage）
     didInitRef.current = false;
   }
@@ -470,16 +603,10 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
   // ── 发送消息 ────────────────────────────────────────────────────
   const handleSend = useCallback(
     async (overrideText?: string) => {
-      if (stream.isStreaming) return;
+      if (stream.isStreaming || openingConversation.current || historyLoading || pendingSend.current) return;
       const text = (overrideText ?? draft).trim();
       const imgs = pendingImgs.slice();
       if (!text && imgs.length === 0) return;
-
-      let convId = conversationId;
-      if (!convId) {
-        convId = await createAndRegister(apiKey, text);
-        if (!convId) return;
-      }
 
       let payload: string | unknown[];
       if (imgs.length > 0) {
@@ -493,22 +620,66 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
         payload = text;
       }
 
-      // 立即把用户消息推入 list
+      const submission: PendingSend = {
+        id: `local-${++nextLocalMessageId.current}`,
+        text,
+        images: imgs,
+        phase: convIdRef.current ? 'streaming' : 'creating',
+      };
+      // Set the ref before the first await so a second click cannot submit
+      // the same draft while React is still batching this render.
+      pendingSend.current = submission;
+      setSendError('');
       setMessages((prev) => [
         ...prev,
-        { kind: 'user', data: { text: text || '[image]', images: imgs.map((i) => i.dataUrl) } },
+        { kind: 'user', id: submission.id,
+          data: { text: text || '[image]', images: imgs.map((i) => i.dataUrl) } },
       ]);
       setDraft('');
       setPendingImgs([]);
       setWelcomeDismissed(true);
 
-      void stream.send(apiKey, {
-        conversation_id: convId,
-        message: payload,
-        ...(byokCreds ?? {}),
-      });
+      try {
+        let convId = convIdRef.current;
+        if (!convId) {
+          const sequence = ++conversationRequest.current;
+          setCreatingMessageId(submission.id);
+          convId = await createAndRegister(apiKey, text, sequence);
+          if (!convId || pendingSend.current !== submission) return;
+          submission.phase = 'streaming';
+          setCreatingMessageId(null);
+        }
+        if (pendingSend.current !== submission || apiKeyRef.current !== apiKey) return;
+        await stream.send(apiKey, {
+          conversation_id: convId,
+          message: payload,
+          ...(byokCreds ?? {}),
+        });
+      } catch (err) {
+        if (pendingSend.current !== submission) return;
+        if (submission.phase === 'creating') {
+          // Creation failed before the message could be sent. Roll back its
+          // bubble and restore the exact text/images for an ordinary retry.
+          setMessages((prev) => prev.filter((m) => m.id !== submission.id));
+          releasePendingSend();
+          setWelcomeDismissed(false);
+          if (err instanceof AuthError) handleAuthFail(err.message);
+          else setSendError(t('service.createConvFail', {
+            status: err instanceof Error ? err.message : String(err),
+          }));
+        } else {
+          setSendError(t('service.networkError', {
+            msg: err instanceof Error ? err.message : String(err),
+          }));
+        }
+      } finally {
+        if (pendingSend.current === submission) {
+          pendingSend.current = null;
+          setCreatingMessageId(null);
+        }
+      }
     },
-    [apiKey, byokCreds, conversationId, draft, pendingImgs, stream, createAndRegister],
+    [apiKey, byokCreds, draft, pendingImgs, stream, createAndRegister, historyLoading, releasePendingSend, t],
   );
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -757,7 +928,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
                     type="button"
                     className={styles.quickChip}
                     title={q}
-                    disabled={stream.isStreaming}
+                    disabled={stream.isStreaming || creatingMessageId !== null}
                     onClick={() => void handleSend(q)}
                   >
                     {q}
@@ -768,6 +939,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
         </div>
       ) : (
         <div className={styles.messages} ref={messagesContainerRef}>
+          {updatesDelayed && <p role="status">{t('serviceMessaging.updatesDelayed')}</p>}
           {showEmpty && (
             <div className={styles.emptyState}>
               <div className={styles.emptyStateIcon}>💬</div>
@@ -790,16 +962,21 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
                     ))}
                   </div>
                 )}
+                {m.id === creatingMessageId && (
+                  <div className={styles.userMsgStatus} role="status">{t('service.sending')}</div>
+                )}
               </div>
             ) : (
+              <div key={m.id || `a-${i}`}>
+              {m.authorType === 'admin' && <div className={styles.adminMessageLabel}>{t('serviceMessaging.adminReply')}</div>}
               <StreamingMessage
-                key={`a-${i}`}
                 blocks={m.data.blocks}
                 isStreaming={false}
                 toolRenderer={ServiceToolBadge}
                 hideSubagents
                 scheduledTaskFriendlyMode
               />
+              </div>
             ),
           )}
           {(stream.isStreaming || stream.blocks.length > 0) && (
@@ -819,6 +996,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
       )}
 
       <div className={styles.inputArea}>
+        {sendError && <p className={styles.sendError} role="alert">{sendError}</p>}
         {pendingImgs.length > 0 && (
           <div className={styles.imgPreview}>
             {pendingImgs.map((img, i) => (
@@ -859,7 +1037,7 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
             className={styles.btnAttach}
             title={t('service.uploadImage')}
             onClick={() => fileInputRef.current?.click()}
-            disabled={stream.isStreaming || pendingImgs.length >= MAX_PENDING_IMAGES}
+            disabled={historyLoading || stream.isStreaming || creatingMessageId !== null || pendingImgs.length >= MAX_PENDING_IMAGES}
           >
             <svg
               width="18"
@@ -884,13 +1062,13 @@ export default function ServiceChatApp({ config }: { config: ServiceConfig }) {
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            disabled={stream.isStreaming}
+            disabled={historyLoading || stream.isStreaming || creatingMessageId !== null}
           />
           <button
             type="submit"
             className={styles.btnSend}
             disabled={
-              stream.isStreaming ||
+              historyLoading || stream.isStreaming || creatingMessageId !== null ||
               (!draft.trim() && pendingImgs.length === 0)
             }
           >

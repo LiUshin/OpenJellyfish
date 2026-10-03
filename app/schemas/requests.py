@@ -24,6 +24,27 @@ class CreateConversationRequest(BaseModel):
     title: str = "新对话"
     runtime_choice: RuntimeChoice | None = None
     context_paths: list[str] = Field(default_factory=list, max_length=20)
+    project_id: str | None = None
+
+
+class MoveConversationProjectRequest(BaseModel):
+    project_id: str | None = None
+
+
+class SetConversationTestModeRequest(BaseModel):
+    service_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{1,64}$')
+
+
+class CreateProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class UpdateProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class WriteProjectBriefRequest(BaseModel):
+    content: str
 
 
 class ChatRequest(BaseModel):

@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -92,6 +93,8 @@ async def voice_live_token(req: dict, user=Depends(get_current_user)):
     conv_id = (req.get("conversation_id") or "").strip()
     if not conv_id:
         raise HTTPException(status_code=400, detail="缺少 conversation_id")
+    from app.runtime.chat import conversation_binding
+    conversation_binding(admin_id, conv_id)
     model = req.get("model") or None
     capabilities = req.get("capabilities") or []
 
@@ -248,24 +251,39 @@ async def voice_live_session(sess=Depends(get_voice_worker_session)):
 async def voice_live_delegate(req: dict, sess=Depends(get_voice_worker_session)):
     """Worker 委派一段用户指令给 OpenJellyfish agent,流式返回(SSE)。
 
-    复用 /api/chat 的 ``_stream_agent``:
-    - 与文字对话**共享同一 thread_id**(``{admin_id}-{conv_id}``)→ 语音/文字共用上下文;
-    - ``yolo=True`` 自动批准 HITL,语音场景不弹审批卡;
-    - 任务轮次持久化进**同一 conversation**,刷新后可见。
+    按会话绑定复用文字聊天的执行内核。DeepAgents 保留原来的 LangGraph
+    thread_id 与流式处理；Codex/Cursor 进入同一 CLI 会话的持久运行队列。
+    语音场景使用 yolo 自动处理当前权限内的审批，任务结果保存在原会话。
 
     body: ``{message: str}``
     """
-    from app.routes.chat import (
-        _create_user_agent_bounded, _stream_agent, _sse_response,
-    )
-    from app.services.conversations import save_message
-    from app.services.prompt import stamp_message
-
     admin_id = sess["admin_id"]
     conv_id = sess["conv_id"]
     message = (req.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="缺少 message")
+
+    from app.runtime.chat import conversation_binding
+    meta = conversation_binding(admin_id, conv_id)
+    runtime_kind = (meta.get("runtime_binding") or {}).get("runtime", "deepagents")
+    if runtime_kind in ("codex", "cursor"):
+        if not meta.get("runtime_session_id"):
+            raise HTTPException(status_code=409, detail="会话绑定的引擎不可用；不会回退到其他引擎")
+        from app.runtime.chat import enqueue_chat, events_response
+        from app.runtime.manager import get_runtime
+        run = enqueue_chat(
+            admin_id, conv_id, uuid.uuid4().hex, message,
+            model=sess.get("model"), yolo=True, channel="voice",
+        )
+        return events_response(get_runtime(), admin_id, run["id"], legacy=True)
+    if runtime_kind != "deepagents":
+        raise HTTPException(status_code=409, detail="会话绑定的引擎不可用；不会回退到其他引擎")
+
+    from app.routes.chat import (
+        _create_user_agent_bounded, _stream_agent, _sse_response,
+    )
+    from app.services.conversations import save_message
+    from app.services.prompt import stamp_message
 
     model = sess.get("model")
     capabilities = sess.get("capabilities") or []

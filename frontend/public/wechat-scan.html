@@ -198,7 +198,7 @@
     <div class="qr-card" id="qr-card">
       <div class="placeholder loading" id="qr-placeholder">正在生成二维码...</div>
       <img id="qr-img" style="display:none" alt="WeChat QR" />
-      <p class="scan-hint" id="scan-hint">请使用微信扫描上方二维码</p>
+      <p class="scan-hint" id="scan-hint" role="status" aria-live="polite">请使用微信扫描上方二维码</p>
       <p class="countdown" id="countdown"></p>
       <div id="status-area"></div>
       <button class="retry-btn" id="retry-btn" onclick="loadQR()">重新生成</button>
@@ -230,7 +230,28 @@
   const retryBtn = document.getElementById("retry-btn");
   const scanHint = document.getElementById("scan-hint");
 
+  let qrGeneration = 0;
+  let pollBusy = false;
+
+  function stopWithError(detail) {
+    ++qrGeneration;
+    currentQrId = "";
+    clearInterval(pollTimer);
+    clearInterval(countdownTimer);
+    countdown.textContent = "";
+    scanHint.textContent = detail;
+    statusArea.innerHTML = '<span class="status-badge error">连接未完成</span>';
+    qrImg.style.display = "none";
+    placeholder.style.display = "flex";
+    placeholder.className = "placeholder";
+    placeholder.textContent = "请重新获取二维码";
+    retryBtn.style.display = "block";
+  }
+
   window.loadQR = async function loadQR() {
+    const generation = ++qrGeneration;
+    currentQrId = "";
+    pollBusy = false;
     placeholder.textContent = "正在生成二维码...";
     placeholder.className = "placeholder loading";
     placeholder.style.display = "flex";
@@ -251,6 +272,7 @@
       }
 
       const data = await res.json();
+      if (generation !== qrGeneration) return;
       currentQrId = data.qr_id;
 
       qrImg.src = "data:image/png;base64," + data.qr_image_b64;
@@ -261,6 +283,7 @@
       startCountdown();
       startPolling();
     } catch (e) {
+      if (generation !== qrGeneration) return;
       placeholder.textContent = e.message;
       placeholder.className = "placeholder";
       retryBtn.style.display = "block";
@@ -272,8 +295,7 @@
     countdownTimer = setInterval(() => {
       const remaining = Math.max(0, Math.floor((qrExpiresAt - Date.now()) / 1000));
       if (remaining <= 0) {
-        countdown.textContent = "";
-        clearInterval(countdownTimer);
+        stopWithError("二维码已过期，请重新获取");
         return;
       }
       const m = Math.floor(remaining / 60);
@@ -288,13 +310,25 @@
   }
 
   async function pollStatus() {
-    if (!currentQrId) return;
+    if (!currentQrId || pollBusy) return;
+    const generation = qrGeneration;
+    pollBusy = true;
     try {
       const res = await fetch(
-        `${API_BASE}/api/wc/${SERVICE_ID}/qrcode/status?qrcode=${currentQrId}`
+        `${API_BASE}/api/wc/${SERVICE_ID}/qrcode/status?qrcode=${encodeURIComponent(currentQrId)}`
       );
-      if (!res.ok) return;
+      if (generation !== qrGeneration) return;
+      if (!res.ok) {
+        if ([401, 403, 404, 409, 410].includes(res.status)) {
+          const error = await res.json().catch(() => ({}));
+          if (generation === qrGeneration) stopWithError(error.detail || "二维码已失效，请重新获取");
+        } else {
+          scanHint.textContent = "连接暂时中断，正在重试确认…";
+        }
+        return;
+      }
       const data = await res.json();
+      if (generation !== qrGeneration) return;
 
       if (data.status === "confirmed") {
         clearInterval(pollTimer);
@@ -309,16 +343,14 @@
         statusArea.innerHTML =
           '<span class="status-badge scanning">正在确认...</span>';
       } else if (data.status === "expired") {
-        clearInterval(pollTimer);
-        clearInterval(countdownTimer);
-        countdown.textContent = "";
-        scanHint.textContent = "二维码已过期";
-        statusArea.innerHTML =
-          '<span class="status-badge error">已过期</span>';
-        retryBtn.style.display = "block";
+        stopWithError("二维码已过期，请重新获取");
+      } else {
+        scanHint.textContent = "请使用微信扫描上方二维码";
       }
     } catch (e) {
-      // network error — keep polling
+      if (generation === qrGeneration) scanHint.textContent = "连接暂时中断，正在重试确认…";
+    } finally {
+      if (generation === qrGeneration) pollBusy = false;
     }
   }
 

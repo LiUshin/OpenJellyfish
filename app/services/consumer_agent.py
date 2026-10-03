@@ -718,6 +718,7 @@ def create_consumer_agent(
     model_override: Optional[str] = None,
     credentials_override: Optional[Dict[str, Any]] = None,
     service_key_id: Optional[str] = None,
+    preview_admin_conv_id: Optional[str] = None,
 ) -> Any:
     """Create (or return cached) agent for a consumer conversation.
 
@@ -733,14 +734,20 @@ def create_consumer_agent(
         - "wechat"    — 通过 iLink 反向投递到微信用户，需要 send_message。
         - "scheduler" — 定时任务推送，也需要 send_message。
     """
-    svc_config = get_service(admin_id, service_id)
+    from app.channels.wechat.policy import ensure_service_active
+    svc_config = (get_service(admin_id, service_id) if preview_admin_conv_id
+                  else ensure_service_active(admin_id, service_id))
+    if not svc_config:
+        from fastapi import HTTPException
+        raise HTTPException(404, 'Service 不存在')
     from app.runtime.consumer import external, RuntimeConsumerAgent
     if svc_config and external(svc_config):
         if credentials_override or model_override or extra_capabilities:
             from fastapi import HTTPException
             raise HTTPException(400, '套餐 Service 使用已发布的模型与能力，不接受调用方覆盖')
         return RuntimeConsumerAgent(admin_id, service_id, conv_id, channel=channel,
-                                    key_id=service_key_id, wechat_session_id=wechat_session_id)
+                                    key_id=service_key_id, wechat_session_id=wechat_session_id,
+                                    preview_admin_conv_id=preview_admin_conv_id)
     from langchain.chat_models import init_chat_model
     from deepagents import create_deep_agent
     from app.services.agent import _resolve_model, _checkpointer
@@ -757,6 +764,10 @@ def create_consumer_agent(
     extra_suffix = f"::+{','.join(sorted(extra_capabilities))}" if extra_capabilities else ""
     ws_suffix = f"::{wechat_session_id}" if wechat_session_id else ""
     ch_suffix = f"::ch={channel}" if channel and channel != "web" else ""
+    rev_suffix = ''
+    if preview_admin_conv_id:
+        from app.runtime.consumer import revision
+        rev_suffix = f"::preview={preview_admin_conv_id}:{revision(svc_config)}"
     mdl_suffix = f"::m={model_override}" if model_override else ""
     # 只放不可逆指纹：明文 api_key 绝不进缓存键，但不同调用方的凭据必须落在不同条目上。
     byok_suffix = ""
@@ -765,7 +776,7 @@ def create_consumer_agent(
         byok_suffix = f"::byok={credentials_fingerprint(model_id, credentials_override)}"
     cache_key = (
         f"consumer::{admin_id}::{service_id}::{conv_id}"
-        f"{ws_suffix}{extra_suffix}{ch_suffix}{mdl_suffix}{byok_suffix}"
+        f"{ws_suffix}{extra_suffix}{ch_suffix}{mdl_suffix}{byok_suffix}{rev_suffix}"
     )
     if cache_key in _consumer_agent_cache:
         _touch_consumer_agent_cache(cache_key)
@@ -777,6 +788,9 @@ def create_consumer_agent(
     backend = create_consumer_backend(admin_id, service_id, conv_id, gen_dir)
 
     system_prompt = _build_consumer_system_prompt(admin_id, svc_config)
+    if preview_admin_conv_id:
+        system_prompt += ('\n\n## 管理员测试模式\n当前是 Service 预览。contact_admin 只模拟提交，'
+                          '不会通知管理员或写入真实收件箱；不得声称已经实际通知。')
 
     capabilities = list(svc_config.get("capabilities", []))
     if extra_capabilities:
@@ -840,6 +854,7 @@ def create_consumer_agent(
     tools.append(create_contact_admin_tool(
         admin_id, service_id, conv_id,
         wechat_session_id=wechat_session_id,
+        preview=bool(preview_admin_conv_id),
     ))
     system_prompt += "\n" + _CP4["contact_admin"]
 

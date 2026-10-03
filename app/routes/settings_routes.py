@@ -238,11 +238,21 @@ async def api_update_soul_config(req: dict, user=Depends(get_current_user)):
     from app.services.agent import clear_agent_cache
     user_id = user["user_id"]
     current = get_soul_config(user_id)
-    allowed_keys = {"memory_enabled", "include_consumer_conversations",
-                    "max_recent_messages", "memory_subagent_enabled", "soul_edit_enabled"}
+    boolean_keys = {"memory_enabled", "include_consumer_conversations",
+                    "service_records_enabled", "memory_subagent_enabled", "soul_edit_enabled"}
     for k, v in req.items():
-        if k in allowed_keys:
+        if k in boolean_keys:
+            if type(v) is not bool:
+                raise HTTPException(status_code=422, detail=f"{k} must be boolean")
+            if k == "include_consumer_conversations" and v:
+                raise HTTPException(status_code=422, detail="旧版 Service 对话授权只保留存量配置，请使用 service_records_enabled")
             current[k] = v
+        elif k == "max_recent_messages":
+            if type(v) is not int:
+                raise HTTPException(status_code=422, detail=f"{k} must be integer")
+            current[k] = v
+    if "service_records_enabled" in req:
+        current["include_consumer_conversations"] = False
     save_soul_config(user_id, current)
     sync_soul_symlink(user_id)
     clear_agent_cache(user_id)

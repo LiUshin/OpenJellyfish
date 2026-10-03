@@ -288,6 +288,8 @@ tr.used td { opacity: 0.4; }
 .uz-aurora b:nth-child(2){ width:380px;height:380px;background:rgba(232,159,217,0.5);top:-200px;right:8%; }
 .uz-aurora b:nth-child(3){ width:320px;height:320px;background:rgba(139,127,217,0.45);top:-120px;left:42%; }
 .uz-wrap { position: relative; z-index: 1; }
+.uz-coverage { margin-bottom:16px; padding:12px 16px; border:1px solid var(--jf-warning);
+  border-radius:12px; color:var(--jf-text); background:var(--jf-bg-raised); font-size:12px; }
 
 .uz-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:18px; }
 .uz-stat {
@@ -669,20 +671,22 @@ tr.used td { opacity: 0.4; }
         </div>
         <div style="display:flex;align-items:center;gap:10px">
           <select id="usageMonths" class="usage-select" onchange="loadUsageStats()">
-            <option value="1">近 1 个月</option>
-            <option value="3" selected>近 3 个月</option>
-            <option value="6">近 6 个月</option>
-            <option value="12">近 12 个月</option>
+            <option value="1">本月</option>
+            <option value="3" selected>近 3 个自然月</option>
+            <option value="6">近 6 个自然月</option>
+            <option value="12">近 12 个自然月</option>
           </select>
           <button class="btn btn-secondary btn-sm" onclick="loadUsageStats()">刷新</button>
         </div>
       </div>
 
+      <div id="uzCoverage" class="uz-coverage" style="display:none"></div>
+
       <div class="uz-stats">
         <div class="uz-stat" style="--c:var(--jf-accent)"><div class="lbl">输入 Tokens</div><div class="val" id="uzInput">—</div><div class="sub" id="uzInputSub">—</div></div>
         <div class="uz-stat" style="--c:var(--jf-primary)"><div class="lbl">输出 Tokens</div><div class="val" id="uzOutput">—</div><div class="sub" id="uzOutputSub">—</div></div>
         <div class="uz-stat" style="--c:var(--jf-success)"><div class="lbl">总 Tokens</div><div class="val" id="uzTotal">—</div><div class="sub" id="uzTotalSub">—</div></div>
-        <div class="uz-stat" style="--c:var(--jf-warning)"><div class="lbl">调用次数</div><div class="val" id="uzCalls">—</div><div class="sub" id="uzCallsSub">—</div></div>
+        <div class="uz-stat" style="--c:var(--jf-warning)"><div class="lbl">有 Token 记录的调用</div><div class="val" id="uzCalls">—</div><div class="sub" id="uzCallsSub">—</div></div>
       </div>
 
       <div class="uz-main">
@@ -704,6 +708,10 @@ tr.used td { opacity: 0.4; }
       <div class="uz-card">
         <div class="uz-ctitle"><span class="dot" style="background:var(--jf-secondary);box-shadow:0 0 8px var(--jf-secondary)"></span>按用户</div>
         <div class="uz-cbody" id="uzUserBars"><div class="uz-empty">—</div></div>
+      </div>
+      <div class="uz-card" style="margin-top:16px">
+        <div class="uz-ctitle"><span class="dot"></span>按 Agent Core</div>
+        <div class="uz-cbody" id="uzCoreBars"><div class="uz-empty">—</div></div>
       </div>
     </div>
   </section>
@@ -1035,6 +1043,10 @@ function mockInvoke(cmd, args) {
         { name: 'scheduler', input_tokens: 700000, output_tokens: 280000, total_tokens: 980000, calls: 300 },
         { name: 'batch', input_tokens: 280000, output_tokens: 100000, total_tokens: 380000, calls: 100 }
       ],
+      by_core: [
+        { name: 'deepagents', input_tokens: 7480000, output_tokens: 2960000, total_tokens: 10440000, calls: 3120 }
+      ],
+      coverage: { unreported_runs: 0, unreported_by_core: {}, runtime_read_error: false },
       by_day: days
     });
   }
@@ -1585,7 +1597,7 @@ function uzArea(id, rows){
 async function loadUsageStats() {
   const sel = document.getElementById('usageMonths');
   const months = sel ? parseInt(sel.value, 10) : 3;
-  ['uzDonut','uzModelBars','uzAreaWrap','uzUserBars'].forEach(id => {
+  ['uzDonut','uzModelBars','uzAreaWrap','uzUserBars','uzCoreBars'].forEach(id => {
     const e = document.getElementById(id);
     if (e) e.innerHTML = '<div class="uz-empty"><span class="spinner"></span> 加载中...</div>';
   });
@@ -1601,13 +1613,26 @@ async function loadUsageStats() {
     document.getElementById('uzTotal').innerHTML = uzTokHtml(t.total_tokens);
     document.getElementById('uzTotalSub').textContent = '≈ ' + fmtNum(calls ? Math.round(totalTok/calls) : 0) + ' / 次';
     document.getElementById('uzCalls').innerHTML = fmtNum(calls);
-    document.getElementById('uzCallsSub').textContent = '近 ' + months + ' 个月';
+    document.getElementById('uzCallsSub').textContent = months === 1 ? '本月' : '近 ' + months + ' 个自然月';
+    const coverage = s.coverage || {};
+    const missing = Number(coverage.unreported_runs) || 0;
+    const notice = document.getElementById('uzCoverage');
+    if (missing || coverage.runtime_read_error) {
+      const byCore = Object.entries(coverage.unreported_by_core || {}).map(([core, count]) => core + ' ' + count).join('、');
+      notice.textContent = '部分 CLI Token 用量未完整上报：' + (missing ? missing + ' 个运行未完整上报 Token' + (byCore ? '（' + byCore + '）' : '') + '。' : '') +
+        (coverage.runtime_read_error ? 'CLI 运行记录暂时无法读取。' : '') + '下方总数只包含已上报的数值，可能低于实际用量。';
+      notice.style.display = 'block';
+    } else {
+      notice.style.display = 'none';
+    }
     uzDonut('uzDonut', s.by_channel, totalTok);
     uzBars('uzModelBars', s.by_model, 'def', 8);
     uzArea('uzAreaWrap', s.by_day);
     uzBars('uzUserBars', s.by_user, 'usr', 10);
+    uzBars('uzCoreBars', s.by_core, 'def', 8);
   } catch(e) {
-    ['uzDonut','uzModelBars','uzAreaWrap','uzUserBars'].forEach(id => {
+    document.getElementById('uzCoverage').style.display = 'none';
+    ['uzDonut','uzModelBars','uzAreaWrap','uzUserBars','uzCoreBars'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.innerHTML = '<div class="uz-empty" style="color:var(--jf-error)">加载失败: ' + esc(String(e)) + '</div>';
     });

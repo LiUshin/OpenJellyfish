@@ -141,6 +141,21 @@
   opacity: 1 !important;
 }
 
+.projectGroup { margin-bottom: 5px; }
+.projectGroupButton {
+  width: 100%; min-height: 36px; display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border: 0; border-radius: var(--jf-radius-md);
+  background: transparent; color: var(--jf-text-muted); text-align: left; cursor: pointer;
+}
+.projectGroupButton:hover, .projectGroupButton:focus-visible {
+  background: rgba(var(--jf-secondary-rgb), .08); color: var(--jf-text); outline: none;
+}
+.projectGroupActive { background: rgba(var(--jf-primary-rgb), .1); color: var(--jf-text); }
+.projectGroupButton > span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
+.projectGroupButton > small { flex-shrink: 0; color: var(--jf-text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.projectGroup .convItem { margin-left: 16px; }
+.projectEmpty { padding: 9px 15px 11px 27px; color: var(--jf-text-muted); font-size: 11px; }
+
 /* 会话运行状态指示器(进行中点阵涟漪 / 待审批竖点)已迁移到独立组件
    components/RunIndicator.tsx + RunIndicator.module.css。 */
 
@@ -180,6 +195,38 @@
   text-overflow: ellipsis;
 }
 
+.serviceTestButton { display:inline-flex; align-items:center; justify-content:center; gap:6px; flex-shrink:0;
+  min-height:30px; padding:0 9px; border:1px solid var(--jf-border); border-radius:8px;
+  background:transparent; color:var(--jf-text-muted); font:inherit; font-size:12px; cursor:pointer; }
+.serviceTestButton:hover, .serviceTestButtonActive { color:var(--jf-primary); border-color:var(--jf-primary); background:rgba(var(--jf-primary-rgb),.08); }
+.serviceTestButton:disabled { opacity:.5; cursor:not-allowed; }
+.serviceTestButton:focus-visible { outline:2px solid var(--jf-primary); outline-offset:2px; }
+.serviceTestPicker { width:min(300px, calc(100vw - 48px)); display:flex; flex-direction:column; gap:10px; }
+.serviceTestPicker strong { font-size:13px; color:var(--jf-text); }
+.serviceTestPicker p { margin:0; font-size:12px; line-height:1.5; color:var(--jf-text-muted); }
+.serviceTestPicker small { font-size:11px; line-height:1.5; color:var(--jf-text-dim); }
+.serviceTestPickerActions { display:flex; gap:8px; flex-wrap:wrap; }
+.serviceTestBanner { display:flex; align-items:center; gap:8px; min-width:0; padding:6px 16px;
+  border-bottom:1px solid rgba(var(--jf-primary-rgb),.18); background:rgba(var(--jf-primary-rgb),.08);
+  color:var(--jf-primary); font-size:12px; flex-shrink:0; }
+.serviceTestBanner > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.serviceTestBanner > button { margin-left:auto; flex-shrink:0; }
+.serviceTestModel { display:inline-flex; align-items:center; gap:5px; max-width:100%; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; color:var(--jf-primary); font-size:12px; }
+.serviceTestMessageLabel { display:block; margin:5px 0 3px; color:var(--jf-primary); font-size:11px; }
+.runtimePreviewRow { padding-bottom:12px; }
+.traceViewport { display:flex; flex:1; flex-direction:column; min-height:0; min-width:0; overflow:hidden;
+  padding:0; background:var(--jf-bg-deep); }
+.traceViewportExpanded { position:absolute; z-index:20; top:0; bottom:0; left:0; overflow:hidden;
+  background:var(--jf-bg-deep); }
+.chatAreaTracing > .messagesViewport,
+.chatAreaTracing > .inputArea { display:none; }
+@media (max-width: 600px) {
+  .serviceTestButton { width:30px; padding:0; }
+  .serviceTestButtonText { display:none; }
+  .serviceTestBanner { padding:6px 10px; }
+}
+
 .headerRight {
   margin-left: auto;
   display: flex;
@@ -190,6 +237,14 @@
 }
 
 /* ========== Messages ========== */
+
+.messagesViewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 
 .messagesContainer {
   flex: 1;
@@ -1197,11 +1252,11 @@
   display: flex;
   flex-direction: row;
   gap: 10px;
-  align-items: center;
+  align-items: flex-end;
   background: transparent;
   border: 0;
   border-radius: var(--jf-radius-lg);
-  min-height: 76px;
+  min-height: 108px;
   position: relative;
   padding: 12px;
   box-shadow: none;
@@ -2419,6 +2474,28 @@
   word-break: break-word;
 }
 
+/* The file body uses a dark translucent surface above. In light mode that
+   literal dark color makes write previews and edit diffs look like dark cards. */
+:global([data-color='light']) .streamFileBody,
+:global([data-color='light']) .streamFileBodyEmpty,
+:global([data-color='light']) .diffBody {
+  background: var(--jf-bg-code);
+}
+
+:global([data-color='light']) .streamFileBodyPlaceholder,
+:global([data-color='light']) .diffLoading {
+  background: var(--jf-bg-deep);
+}
+
+:global([data-color='light']) .diffHunk {
+  border-bottom-color: var(--jf-border);
+}
+
+:global([data-color='light']) .diffExpandBtn,
+:global([data-color='light']) .diffPanelActions {
+  background: var(--jf-bg-raised);
+}
+
 .streamCursor {
   display: inline-block;
   margin-left: 1px;
@@ -2884,7 +2961,7 @@
   font-size: 14px;
   line-height: 1.57; /* matches antd TextArea default */
   padding: 2px 0;
-  align-self: center;
+  align-self: stretch;
   caret-color: var(--jf-primary);
   /* Scrollbar same style as rest of app */
   scrollbar-width: thin;
@@ -3131,8 +3208,8 @@
 .composerTools { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; }
 .composerModel { margin-left: auto; min-width: 0; max-width: 100%; }
 .composerSend { display: flex; gap: 6px; align-self: flex-end; flex-shrink: 0; }
-.runtimeConnection { padding: 8px 24px; font-size: 12px; border-bottom: 1px solid rgba(var(--jf-border-rgb), .45); }
-.runMeta { margin: -8px 0 28px 44px; font-size: 11px; overflow-wrap: anywhere; }
+.runtimeRunRow { padding-bottom: 28px; }
+.runMeta { margin: -8px 0 0 44px; font-size: 11px; overflow-wrap: anywhere; }
 .runMeta :global(.ant-typography) { font-size: 11px; }
 .runMeta :global(.ant-tag) { font-size: 10px; line-height: 18px; margin-inline-end: 0; }
 .composerStatus { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 0 4px 10px; color: var(--jf-text-muted); font-size: 12px; overflow-wrap: anywhere; }
@@ -3144,7 +3221,6 @@
 }
 @media (max-width: 767px) {
   .composerHint { font-size: 10px; padding-top: 6px; }
-  .runtimeConnection { padding: 7px 14px; }
   .runMeta { margin-left: 38px; }
   .capBtn { min-width: 32px; }
 }

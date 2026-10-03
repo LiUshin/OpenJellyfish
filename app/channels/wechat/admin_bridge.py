@@ -6,15 +6,20 @@ this bridge uses the Admin's own agent with full capabilities.
 """
 
 import base64
+import asyncio
 import json
 import os
 import uuid
 import logging
+import hashlib
+import re
 
-from app.channels.wechat.client import ILinkClient, ITEM_TEXT, ITEM_IMAGE, ITEM_VOICE
+from app.channels.wechat.client import (
+    ILinkClient, ILinkAPIError, ITEM_TEXT, ITEM_IMAGE, ITEM_VOICE, ensure_ilink_success,
+)
 from app.channels.wechat.media import b64_to_key
 from app.services.conversations import (
-    save_message, get_conversation, create_conversation,
+    save_message,
     save_attachment, get_attachment_dir,
 )
 from app.core.security import get_user_filesystem_dir
@@ -50,15 +55,64 @@ async def handle_admin_wechat_message(session: dict, raw_msg: dict):
             pass
         return
 
+    # Explicit case commands are business operations with a frozen recipient,
+    # not free-form instructions to the administrator's full Agent.
+    if await _handle_case_reply(session, raw_msg):
+        return
+
+    # The engine belongs to this conversation, not the user's current default.
+    # QR-confirm binds new conversations; connections created before that change
+    # remain on their existing DeepAgents path.
+    from app.runtime.chat import conversation_binding
+    try:
+        conversation = conversation_binding(user_id, conv_id)
+    except Exception:
+        log.exception("Admin WeChat conversation unavailable (user=%s, conv=%s)", user_id, conv_id)
+        await client.send_text(from_user, "微信会话不可用，请重新扫码建立会话。", ctx_token)
+        return
+    raw_binding = conversation.get("runtime_binding")
+    bound = raw_binding or {}
+    engine = bound.get("runtime") if isinstance(bound, dict) else None
+    if raw_binding is not None and (not isinstance(raw_binding, dict) or engine not in ("deepagents", "codex", "cursor")):
+        log.error("Unsupported admin WeChat runtime binding (user=%s, conv=%s)", user_id, conv_id)
+        await client.send_text(from_user, "微信会话的引擎绑定无效，请重新扫码建立会话。", ctx_token)
+        return
+    runtime_bound = engine in ("codex", "cursor")
+    if runtime_bound != bool(conversation.get("runtime_session_id")):
+        log.error("Incomplete admin WeChat runtime binding (user=%s, conv=%s)", user_id, conv_id)
+        await client.send_text(from_user, "微信会话的引擎连接不完整，请重新扫码建立会话。", ctx_token)
+        return
+    request_id = None
+    if runtime_bound:
+        request_id = _admin_runtime_request_id(session, raw_msg)
+        if request_id is None:
+            await client.send_text(from_user, "这条微信缺少消息编号，无法安全提交任务，请重新发送。", ctx_token)
+            return
+        from app.runtime.manager import get_runtime
+        try:
+            prior = get_runtime().store.find("run", actor_id=user_id, request_id=request_id)
+        except Exception:
+            log.exception("Admin WeChat runtime unavailable (user=%s)", user_id)
+            await client.send_text(from_user, "当前引擎连接不可用，请稍后重试。", ctx_token)
+            return
+        if prior:
+            # Resume only parts known to be pending. An in-flight send may have
+            # succeeded remotely, so ambiguous parts are never blindly retried.
+            try:
+                await _run_admin_runtime_and_reply(
+                    session, from_user, ctx_token, "", [], request_id, existing_run=prior[0],
+                )
+            except Exception:
+                log.exception("Admin WeChat runtime replay failed (user=%s, run=%s)", user_id, prior[0]["id"])
+                await client.send_text(from_user, "恢复任务结果时出错，请到网页会话查看。", ctx_token)
+            return
+
     image_attachments = await _download_images(user_id, conv_id, client, items)
     voice_texts = await _transcribe_voices(user_id, client, items)
 
     user_text = _extract_user_text(items, voice_texts)
     if not user_text and not image_attachments:
         user_text = "[语音/非文字消息]"
-
-    image_full_paths = [a["full_path"] for a in image_attachments]
-    user_content = _build_multimodal_content(user_text, image_full_paths)
 
     log.info("Admin WeChat msg from %s: %s", user_id, (user_text or "")[:60])
 
@@ -72,16 +126,183 @@ async def handle_admin_wechat_message(session: dict, raw_msg: dict):
         save_text += "\n" + "、".join(f"[图片:{a['filename']}]" for a in image_attachments)
     att_list = [{"type": a["type"], "filename": a["filename"], "path": a["path"]}
                 for a in image_attachments] or None
-    save_message(user_id, conv_id, "user", save_text, attachments=att_list)
-
     try:
-        await _run_admin_agent_and_reply(session, from_user, ctx_token, user_content)
+        if runtime_bound:
+            await _run_admin_runtime_and_reply(
+                session, from_user, ctx_token, save_text, image_attachments, request_id,
+            )
+        else:
+            image_full_paths = [a["full_path"] for a in image_attachments]
+            user_content = _build_multimodal_content(user_text, image_full_paths)
+            save_message(user_id, conv_id, "user", save_text, attachments=att_list)
+            await _run_admin_agent_and_reply(session, from_user, ctx_token, user_content)
     except Exception:
         log.exception("Admin agent processing failed (user=%s)", user_id)
         try:
             await client.send_text(from_user, "处理消息时出错了，请稍后再试。", ctx_token)
         except Exception:
             pass
+
+
+def _admin_runtime_request_id(session: dict, raw_msg: dict) -> str | None:
+    msg_id = raw_msg.get("message_id")
+    if not isinstance(msg_id, (str, int)) or not str(msg_id):
+        return None
+    identity = json.dumps(
+        [session["user_id"], session["conversation_id"], str(msg_id)],
+        separators=(",", ":"),
+    )
+    return "wechat-admin:" + hashlib.sha256(identity.encode()).hexdigest()
+
+
+def _runtime_image_inputs(images: list[dict]) -> list[dict]:
+    """Use stable names so a transport retry has the same input fingerprint."""
+    mime_by_ext = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    }
+    inputs = []
+    for index, image in enumerate(images, 1):
+        ext = os.path.splitext(image["filename"])[1].lower()
+        mime = mime_by_ext.get(ext, "image/jpeg")
+        with open(image["full_path"], "rb") as stream:
+            encoded = base64.b64encode(stream.read()).decode()
+        inputs.append({"name": f"image-{index}{ext or '.jpg'}", "data_url": f"data:{mime};base64,{encoded}"})
+    return inputs
+
+
+async def _run_admin_runtime_and_reply(
+    session: dict, to_user: str, ctx_token: str, message: str,
+    images: list[dict], request_id: str, *, existing_run: dict | None = None,
+):
+    """Run one bound Codex/Cursor turn and deliver its archived outputs to iLink."""
+    from app.runtime.chat import enqueue_chat
+    from app.runtime.manager import get_runtime
+    from app.runtime.store import TERMINAL
+
+    user_id, conv_id = session["user_id"], session["conversation_id"]
+    runtime = get_runtime()
+    if existing_run is None:
+        attachments = _runtime_image_inputs(images)
+        run = enqueue_chat(user_id, conv_id, request_id, message, attachments=attachments,
+                           yolo=True, channel='wechat')
+    else:
+        run = existing_run
+    rid = run["id"]
+    delivery = runtime.store.get("wechat_admin_delivery", request_id)
+    if delivery is None:
+        delivery = {"id": request_id, "actor_id": user_id, "run_id": rid,
+                    "status": "pending", "parts": []}
+        runtime.store.put("wechat_admin_delivery", delivery)
+    elif delivery["actor_id"] != user_id or delivery["run_id"] != rid:
+        raise ValueError("微信投递记录与运行任务不匹配")
+    while True:
+        run = runtime.runs.own("run", rid, user_id)
+        if run["status"] in TERMINAL:
+            break
+        await asyncio.sleep(.05)
+
+    client: ILinkClient = session["client"]
+    if not delivery["parts"]:
+        from app.channels.wechat.delivery import extract_media_tags
+        if run["status"] == "completed":
+            cleaned_text, tagged_paths = extract_media_tags(run.get("output", ""))
+            artifacts = run.get("artifacts", [])
+            allowed = {item["path"] for item in artifacts}
+            media_paths = list(dict.fromkeys(
+                [path for path in tagged_paths if path in allowed]
+                + [item["path"] for item in artifacts if item.get("native_image")]
+            ))
+        else:
+            cleaned_text = run.get("error") or "任务未完成，请稍后重试。"
+            media_paths = []
+        if not cleaned_text and not media_paths:
+            cleaned_text = "任务已完成。"
+        delivery["parts"] = ([{"kind": "media", "value": path, "status": "pending"} for path in media_paths]
+                             + ([{"kind": "text", "value": cleaned_text, "status": "pending"}] if cleaned_text else []))
+        runtime.store.put("wechat_admin_delivery", delivery)
+
+    for part in delivery["parts"]:
+        if part["status"] == "sent":
+            continue
+        if part["status"] in ("sending", "unknown"):
+            part["status"] = "unknown"
+            delivery["status"] = "unknown"
+            runtime.store.put("wechat_admin_delivery", delivery)
+            log.warning("Admin WeChat delivery outcome unknown (run=%s)", rid)
+            return
+        part["status"] = "sending"
+        delivery["status"] = "pending"
+        runtime.store.put("wechat_admin_delivery", delivery)
+        try:
+            if part["kind"] == "media":
+                await _send_media(user_id, client, to_user, ctx_token, part["value"], require_ack=True)
+            else:
+                ensure_ilink_success(await client.send_text(to_user, part["value"], ctx_token), require_ack=True)
+        except ILinkAPIError as exc:
+            part["status"] = "pending" if exc.explicit_rejection else "unknown"
+            delivery["status"] = part["status"]
+            runtime.store.put("wechat_admin_delivery", delivery)
+            log.warning("Admin WeChat delivery rejected or unconfirmed (run=%s)", rid)
+            return
+        except FileNotFoundError:
+            part["status"] = "pending"
+            delivery["status"] = "pending"
+            runtime.store.put("wechat_admin_delivery", delivery)
+            log.exception("Admin WeChat archived media unavailable (run=%s)", rid)
+            return
+        except Exception:
+            part["status"] = "unknown"
+            delivery["status"] = "unknown"
+            runtime.store.put("wechat_admin_delivery", delivery)
+            log.exception("Admin WeChat delivery outcome unknown (run=%s)", rid)
+            return
+        part["status"] = "sent"
+        runtime.store.put("wechat_admin_delivery", delivery)
+    delivery["status"] = "sent"
+    runtime.store.put("wechat_admin_delivery", delivery)
+
+
+async def _handle_case_reply(session: dict, raw_msg: dict) -> bool:
+    """Handle a text-only, explicitly addressed reply without invoking a model."""
+    items = raw_msg.get('item_list', [])
+    text = '\n'.join(item.get('text_item', {}).get('text', '') for item in items if item.get('type') == ITEM_TEXT).strip()
+    if not re.match(r'^(?:回复|reply)\s+inbox_', text, re.IGNORECASE):
+        return False
+    to_user, ctx = raw_msg.get('from_user_id', ''), raw_msg.get('context_token', '')
+    # A QR session is bound to the admin's sender. Do not acknowledge or act on
+    # a different sender, even when the supplied case ID belongs to this admin.
+    if not to_user or session.get('from_user_id') != to_user:
+        log.warning('Rejected case reply from an unbound admin WeChat sender')
+        return True
+    match = re.fullmatch(r'(?:回复|reply)\s+(inbox_[A-Za-z0-9_-]+)\s*[:：]\s*(.+)', text, re.IGNORECASE | re.DOTALL)
+    reply = '格式：回复 inbox_反馈编号：回复正文。只支持文字；也可到网页收件箱回复。'
+    if match and all(item.get('type') == ITEM_TEXT for item in items):
+        msg_id = raw_msg.get('message_id')
+        if isinstance(msg_id, (str, int)) and str(msg_id):
+            from app.services.inbox import reply_to_inbox
+            from fastapi import HTTPException
+            identity = json.dumps([session['user_id'], session['conversation_id'], str(msg_id)], separators=(',', ':'))
+            request_key = 'wechat-case-reply:' + hashlib.sha256(identity.encode()).hexdigest()
+            try:
+                result = reply_to_inbox(session['user_id'], match.group(1), match.group(2).strip(), idempotency_key=request_key)
+                reply = f"对反馈 {result['case']['id']} 的回复已记录并排队投递。请在收件箱查看投递状态；尚不代表对方已收到。"
+            except (KeyError, PermissionError):
+                reply = '无法回复：反馈不存在、无权限，或原收件对象已不可用。请在网页收件箱检查。'
+            except (ValueError, HTTPException):
+                reply = '无法回复：内容无效、消息已用于其他回复，或 Service/渠道已停用。请在网页收件箱检查。'
+            except Exception:
+                log.exception('Unable to queue admin WeChat case reply')
+                reply = '回复暂未提交成功，请稍后重试或到网页收件箱检查。'
+        else:
+            # No fabricated idempotency key: protocol retries must not multiply
+            # consumer replies when the transport omits its message identity.
+            reply = '这条微信缺少消息编号，无法安全提交回复。请到网页收件箱回复。'
+    try:
+        await session['client'].send_text(to_user, reply, ctx)
+    except Exception:
+        log.exception('Failed to acknowledge admin WeChat case command')
+    return True
 
 
 def _detect_image_format(data: bytes) -> str:
@@ -370,6 +591,9 @@ async def _run_admin_agent_and_reply(
     from app.services.agent import create_user_agent
     from app.services.prompt import stamp_message
     from app.services.token_usage import build_usage_callbacks
+    from app.services.project_context import (
+        admin_conversation_scope, context_for_conversation,
+    )
     from langgraph.types import Command
 
     user_id = session["user_id"]
@@ -379,6 +603,7 @@ async def _run_admin_agent_and_reply(
     agent = create_user_agent(
         user_id,
         capabilities=["humanchat", "image", "speech"],
+        project_brief=context_for_conversation(user_id, conv_id),
     )
     thread_id = f"{user_id}-{conv_id}"
     config = {
@@ -401,7 +626,8 @@ async def _run_admin_agent_and_reply(
 
     _MAX_HITL_LOOPS = 10
 
-    async with scheduled_inject.thread_active(thread_id, agent=agent):
+    async with (scheduled_inject.thread_active(thread_id, agent=agent),
+                admin_conversation_scope(user_id, conv_id, channel="wechat")):
         for _loop_i in range(_MAX_HITL_LOOPS):
             async for event in agent.astream(
                 input_payload,
@@ -511,6 +737,7 @@ async def _send_media(
     to_user: str,
     ctx_token: str,
     media_path: str,
+    *, require_ack: bool = False,
 ):
     from app.storage import get_storage_service
     storage = get_storage_service()
@@ -522,6 +749,8 @@ async def _send_media(
 
     if not storage.is_file(user_id, rel_path):
         log.warning("Media file not found: %s", rel_path)
+        if require_ack:
+            raise FileNotFoundError(rel_path)
         return
 
     file_bytes = storage.read_bytes(user_id, rel_path)
@@ -531,17 +760,19 @@ async def _send_media(
     in_audio_dir = "/audio/" in clean
 
     if ext in _IMAGE_EXTS:
-        await client.send_image(to_user, file_bytes, ctx_token, filename)
+        result = await client.send_image(to_user, file_bytes, ctx_token, filename)
         log.info("Sent image to WeChat: %s (%d bytes)", filename, len(file_bytes))
     elif ext in _VIDEO_EXTS:
-        await client.send_video(to_user, file_bytes, ctx_token)
+        result = await client.send_video(to_user, file_bytes, ctx_token)
         log.info("Sent video to WeChat: %s (%d bytes)", filename, len(file_bytes))
     elif ext == ".silk":
-        await client.send_voice(to_user, file_bytes, ctx_token)
+        result = await client.send_voice(to_user, file_bytes, ctx_token)
         log.info("Sent voice to WeChat: %s (%d bytes)", filename, len(file_bytes))
     elif in_audio_dir and ext in _TTS_CONVERTIBLE:
-        await client.send_file(to_user, file_bytes, filename, ctx_token)
+        result = await client.send_file(to_user, file_bytes, filename, ctx_token)
         log.info("Sent audio as file to WeChat: %s (%d bytes)", filename, len(file_bytes))
     else:
-        await client.send_file(to_user, file_bytes, filename, ctx_token)
+        result = await client.send_file(to_user, file_bytes, filename, ctx_token)
         log.info("Sent file to WeChat: %s (%d bytes)", filename, len(file_bytes))
+    if require_ack:
+        ensure_ilink_success(result, require_ack=True)

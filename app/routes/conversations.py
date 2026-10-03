@@ -1,13 +1,14 @@
 import os
 import re
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Header, Query
 from fastapi.responses import FileResponse
 
-from app.schemas.requests import CreateConversationRequest
+from app.schemas.requests import CreateConversationRequest, MoveConversationProjectRequest, SetConversationTestModeRequest
 from app.services.conversations import (
     list_conversations, create_conversation, get_conversation, delete_conversation,
-    get_attachment_path,
+    get_attachment_path, get_conversation_meta,
 )
+from app.services.projects import assign_conversation_project, create_project_conversation
 from app.deps import get_current_user
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -36,9 +37,17 @@ async def api_create_conversation(req: CreateConversationRequest, user=Depends(g
     from app.runtime.chat import choice, bind_conversation
     actor = user['user_id']
     binding = choice(actor, req.runtime_choice.model_dump() if req.runtime_choice else None)
-    conv = create_conversation(actor, req.title)
     try:
-        return bind_conversation(actor, conv, binding, req.context_paths)
+        conv = (create_project_conversation(actor, req.title, req.project_id)
+                if req.project_id is not None else create_conversation(actor, req.title))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except FileNotFoundError:
+        raise HTTPException(404, "项目不存在")
+    try:
+        bound = bind_conversation(actor, conv, binding, req.context_paths)
+        # A concurrent delete may have ungrouped the conversation during bind.
+        return {**bound, "project_id": (get_conversation_meta(actor, conv['id']) or {}).get("project_id")}
     except (ValueError, FileNotFoundError) as exc:
         delete_conversation(actor, conv['id'])
         raise HTTPException(400, str(exc))
@@ -54,6 +63,29 @@ async def api_get_conversation(conv_id: str, user=Depends(get_current_user)):
     if not conv:
         raise HTTPException(status_code=404, detail="对话不存在")
     return conv
+
+
+@router.patch("/{conv_id}/project")
+async def api_move_conversation_project(conv_id: str, req: MoveConversationProjectRequest,
+                                        user=Depends(get_current_user)):
+    _validate_conv_id(conv_id)
+    try:
+        meta = assign_conversation_project(user["user_id"], conv_id, req.project_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except FileNotFoundError:
+        raise HTTPException(404, "项目不存在")
+    if meta is None:
+        raise HTTPException(404, "对话不存在")
+    return meta
+
+
+@router.patch("/{conv_id}/test-mode")
+async def api_set_conversation_test_mode(conv_id: str, req: SetConversationTestModeRequest,
+                                         user=Depends(get_current_user)):
+    _validate_conv_id(conv_id)
+    from app.services.service_test import set_test_mode
+    return set_test_mode(user["user_id"], conv_id, req.service_id)
 
 
 @router.delete("/{conv_id}")
@@ -75,6 +107,36 @@ async def api_delete_conversation(conv_id: str, user=Depends(get_current_user)):
     if delete_conversation(user["user_id"], conv_id):
         return {"success": True}
     raise HTTPException(status_code=404, detail="对话不存在")
+
+
+@router.get("/{conv_id}/test-files/{service_id}/{preview_id}/{file_path:path}")
+async def api_get_service_test_file(conv_id: str, service_id: str, preview_id: str,
+                                    file_path: str, token: str | None = Query(None),
+                                    authorization: str | None = Header(None),
+                                    download: bool = Query(False)):
+    """Serve only this admin's preview artifacts, including after mode closes."""
+    from app.core.security import verify_token
+    from app.services.published import get_consumer_conversation
+    from app.storage import get_storage_service
+    _validate_conv_id(conv_id)
+    credential = token or (authorization.removeprefix('Bearer ') if authorization else '')
+    user = verify_token(credential)
+    if not user:
+        raise HTTPException(401, '无效的管理员登录凭证')
+    uid = user['user_id']
+    if not get_conversation_meta(uid, conv_id):
+        raise HTTPException(404, '对话不存在')
+    try:
+        preview = get_consumer_conversation(uid, service_id, preview_id)
+    except HTTPException:
+        raise HTTPException(404, '测试文件不存在')
+    if not preview or preview.get('source') != 'admin_test' or preview.get('admin_conversation_id') != conv_id:
+        raise HTTPException(404, '测试文件不存在')
+    try:
+        return get_storage_service().consumer_file_response(
+            uid, service_id, preview_id, file_path, download=download)
+    except (ValueError, FileNotFoundError, PermissionError):
+        raise HTTPException(404, '测试文件不存在')
 
 
 @router.get("/{conv_id}/attachments/{file_path:path}")

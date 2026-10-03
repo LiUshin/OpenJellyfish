@@ -10,6 +10,7 @@ Plus conversation + file management.
 
 import json
 import os
+import re
 import time
 import uuid
 from typing import Optional
@@ -52,6 +53,22 @@ from app.services.usage_log import record_request
 from app.services.token_usage import build_usage_callbacks
 
 router = APIRouter(prefix="/api/v1", tags=["consumer"])
+
+
+def _save_consumer_response(admin_id, service_id, conv_id, role, content, **kwargs):
+    """A cancelled/deleted conversation must never be recreated by a late stream."""
+    try:
+        save_consumer_message(admin_id, service_id, conv_id, role, content, **kwargs)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _save_consumer_input(admin_id, service_id, conv_id, content):
+    try:
+        save_consumer_message(admin_id, service_id, conv_id, 'user', content)
+    except FileNotFoundError:
+        raise HTTPException(404, 'Conversation was deleted')
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -133,7 +150,8 @@ async def _record_stream(gen, *, admin_id: str, service_id: str, channel: str,
         )
 
 
-async def _stream_consumer(agent, agent_input, config, ctx, conv_id):
+async def _stream_consumer(agent, agent_input, config, ctx, conv_id,
+                           mirror_admin_conv_id: str | None = None):
     """Yield SSE events identical to the admin _stream_agent format."""
     admin_id = ctx["admin_id"]
     service_id = ctx["service_id"]
@@ -142,15 +160,54 @@ async def _stream_consumer(agent, agent_input, config, ctx, conv_id):
     # pending L2 injections wait until our stream finishes. Also sweep out any
     # legacy stranded summary SystemMessages from pre-fix deploys.
     from app.services import scheduled_inject
-    await scheduled_inject.repair_scheduled_state(agent, thread_id)
-    await scheduled_inject.mark_thread_active(thread_id)
+    await scheduled_inject.mark_thread_active(thread_id, agent=agent)
     full_response = ""
+    provider_response = ""  # Keep native /generated markers in the Service's own history.
     tool_records = []
     _cur_tool_name = None
     _cur_tool_args = ""
 
     blocks: list = []
     _saved = False
+    pending_file_text = ''
+
+    def _safe_chunks(raw: str, *, final: bool = False) -> list[str]:
+        """Rewrite preview generated-file markers even when split across deltas."""
+        nonlocal pending_file_text
+        if not mirror_admin_conv_id:
+            return [raw] if raw else []
+        pending_file_text += raw
+        ready: list[str] = []
+        while pending_file_text:
+            idx = pending_file_text.find('<<FILE:')
+            if idx < 0:
+                keep = 0 if final else min(7, len(pending_file_text))
+                out = pending_file_text[:len(pending_file_text) - keep]
+                pending_file_text = pending_file_text[len(pending_file_text) - keep:]
+                if out:
+                    ready.append(out)
+                break
+            if idx:
+                ready.append(pending_file_text[:idx])
+                pending_file_text = pending_file_text[idx:]
+            end = pending_file_text.find('>>')
+            if end < 0:
+                if final:
+                    ready.append(pending_file_text)
+                    pending_file_text = ''
+                break
+            marker = pending_file_text[:end + 2]
+            pending_file_text = pending_file_text[end + 2:]
+            match = re.fullmatch(r'<<FILE:/generated/([^>]+)>>', marker)
+            ready.append((f'<<FILE:/service-test/{mirror_admin_conv_id}/{service_id}/'
+                          f'{conv_id}/generated/{match.group(1)}>>') if match else marker)
+        return ready
+
+    def _mirror(content, *, tool_calls=None, blocks=None):
+        if mirror_admin_conv_id:
+            from app.services.conversations import save_message
+            save_message(admin_id, mirror_admin_conv_id, 'assistant', content,
+                         tool_calls=tool_calls, blocks=blocks, test_service_id=service_id)
 
     def _blk_last():
         return blocks[-1] if blocks else None
@@ -220,11 +277,13 @@ async def _stream_consumer(agent, agent_input, config, ctx, conv_id):
 
                 content = msg.content
                 if isinstance(content, str) and content:
-                    _blk_close_thinking()
-                    _blk_ensure_text()
-                    blocks[-1]["content"] += content
-                    full_response += content
-                    yield f"data: {json.dumps({'type': 'token', 'content': content}, ensure_ascii=False)}\n\n"
+                    provider_response += content
+                    for safe in _safe_chunks(content):
+                        _blk_close_thinking()
+                        _blk_ensure_text()
+                        blocks[-1]["content"] += safe
+                        full_response += safe
+                        yield f"data: {json.dumps({'type': 'token', 'content': safe}, ensure_ascii=False)}\n\n"
                 elif isinstance(content, list):
                     for block in content:
                         if not isinstance(block, dict):
@@ -238,11 +297,13 @@ async def _stream_consumer(agent, agent_input, config, ctx, conv_id):
                         elif btype == "text":
                             text = block.get("text", "")
                             if text:
-                                _blk_close_thinking()
-                                _blk_ensure_text()
-                                blocks[-1]["content"] += text
-                                full_response += text
-                                yield f"data: {json.dumps({'type': 'token', 'content': text}, ensure_ascii=False)}\n\n"
+                                provider_response += text
+                                for safe in _safe_chunks(text):
+                                    _blk_close_thinking()
+                                    _blk_ensure_text()
+                                    blocks[-1]["content"] += safe
+                                    full_response += safe
+                                    yield f"data: {json.dumps({'type': 'token', 'content': safe}, ensure_ascii=False)}\n\n"
 
                 additional = getattr(msg, "additional_kwargs", {}) or {}
                 reasoning = additional.get("reasoning_content") or additional.get("reasoning", "")
@@ -278,21 +339,31 @@ async def _stream_consumer(agent, agent_input, config, ctx, conv_id):
                 _cur_tool_name = None
                 _cur_tool_args = ""
 
+        for safe in _safe_chunks('', final=True):
+            _blk_ensure_text()
+            blocks[-1]['content'] += safe
+            full_response += safe
+            yield f"data: {json.dumps({'type': 'token', 'content': safe}, ensure_ascii=False)}\n\n"
         if full_response:
             _blk_sanitize()
-            save_consumer_message(admin_id, service_id, conv_id, "assistant", full_response,
+            _save_consumer_response(admin_id, service_id, conv_id, "assistant", provider_response,
                                   tool_calls=tool_records if tool_records else None,
                                   blocks=blocks if blocks else None)
+            _mirror(full_response, tool_calls=tool_records if tool_records else None,
+                    blocks=blocks if blocks else None)
         _saved = True
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     except Exception as e:
         if full_response:
             _blk_sanitize()
-            save_consumer_message(admin_id, service_id, conv_id, "assistant",
-                                  full_response + f"\n\n❌ 错误: {e}",
+            _save_consumer_response(admin_id, service_id, conv_id, "assistant",
+                                  provider_response + f"\n\n❌ 错误: {e}",
                                   tool_calls=tool_records if tool_records else None,
                                   blocks=blocks if blocks else None)
+            _mirror(full_response + f"\n\n❌ 错误: {e}",
+                    tool_calls=tool_records if tool_records else None,
+                    blocks=blocks if blocks else None)
         _saved = True
         yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
     finally:
@@ -304,10 +375,13 @@ async def _stream_consumer(agent, agent_input, config, ctx, conv_id):
         ) if blocks else False
         if not _saved and (full_response or _has_block_content):
             _blk_sanitize()
-            save_consumer_message(admin_id, service_id, conv_id, "assistant",
-                                  (full_response or "") + "\n\n⚠️ [连接中断 — 已保存已生成内容]",
+            _save_consumer_response(admin_id, service_id, conv_id, "assistant",
+                                  (provider_response or "") + "\n\n⚠️ [连接中断 — 已保存已生成内容]",
                                   tool_calls=tool_records if tool_records else None,
                                   blocks=blocks if blocks else None)
+            _mirror((full_response or "") + "\n\n⚠️ [连接中断 — 已保存已生成内容]",
+                    tool_calls=tool_records if tool_records else None,
+                    blocks=blocks if blocks else None)
         # Release scheduled-injection guard; drainer picks up any L2 pairs queued
         # during this stream once settle delay elapses.
         await scheduled_inject.mark_thread_inactive(thread_id)
@@ -319,8 +393,7 @@ async def _stream_openai_compat(agent, agent_input, config, ctx, conv_id, model_
     service_id = ctx["service_id"]
     thread_id = (config or {}).get("configurable", {}).get("thread_id", "")
     from app.services import scheduled_inject
-    await scheduled_inject.repair_scheduled_state(agent, thread_id)
-    await scheduled_inject.mark_thread_active(thread_id)
+    await scheduled_inject.mark_thread_active(thread_id, agent=agent)
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:12]
     created = int(time.time())
     full_response = ""
@@ -366,14 +439,14 @@ async def _stream_openai_compat(agent, agent_input, config, ctx, conv_id, model_
                                 yield _chunk({"content": text})
 
         if full_response:
-            save_consumer_message(admin_id, service_id, conv_id, "assistant", full_response)
+            _save_consumer_response(admin_id, service_id, conv_id, "assistant", full_response)
         _saved = True
         yield _chunk({}, finish_reason="stop")
         yield "data: [DONE]\n\n"
 
     except Exception as e:
         if full_response:
-            save_consumer_message(admin_id, service_id, conv_id, "assistant",
+            _save_consumer_response(admin_id, service_id, conv_id, "assistant",
                                   full_response + f"\n\n❌ 错误: {e}")
         _saved = True
         if hasattr(agent, 'runtime'):
@@ -384,7 +457,7 @@ async def _stream_openai_compat(agent, agent_input, config, ctx, conv_id, model_
         yield "data: [DONE]\n\n"
     finally:
         if not _saved and full_response:
-            save_consumer_message(admin_id, service_id, conv_id, "assistant",
+            _save_consumer_response(admin_id, service_id, conv_id, "assistant",
                                   full_response + "\n\n⚠️ [连接中断 — 已保存已生成内容]")
         await scheduled_inject.mark_thread_inactive(thread_id)
 
@@ -427,11 +500,11 @@ async def api_create_conversation(
 ):
     start = time.time()
     conv = create_consumer_conversation(
-        ctx["admin_id"], ctx["service_id"], req.title, source="api",
+        ctx["admin_id"], ctx["service_id"], req.title, source=req.source,
     )
     record_request(
         ctx["admin_id"], ctx["service_id"],
-        channel="api", key_id=ctx.get("key_id", ""),
+        channel=req.source, key_id=ctx.get("key_id", ""),
         conv_id=conv.get("id", ""),
         endpoint="POST /api/v1/conversations",
         status_code=200,
@@ -444,9 +517,31 @@ async def api_create_conversation(
 @router.get("/conversations/{conv_id}")
 async def api_get_conversation(conv_id: str, ctx=Depends(get_service_context)):
     conv = get_consumer_conversation(ctx["admin_id"], ctx["service_id"], conv_id)
-    if not conv:
+    if not conv or conv.get('source') == 'admin_test':
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conv
+
+
+@router.get("/conversations/{conv_id}/events")
+async def api_conversation_events(
+    conv_id: str,
+    after: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
+    ctx=Depends(get_service_context),
+):
+    """Durable admin replies/notices. Clients retain next_cursor and dedupe id.
+
+    Authorization remains the documented Service Key boundary; channel labels
+    never grant access to another service or establish an individual identity.
+    """
+    _assert_consumer_conv_exists(ctx['admin_id'], ctx['service_id'], conv_id)
+    from app.services.service_messaging import list_conversation_events
+    try:
+        return list_conversation_events(ctx['admin_id'], ctx['service_id'], conv_id, after=after, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
 
 
 @router.post("/chat")
@@ -458,12 +553,14 @@ async def api_consumer_chat(req: ConsumerChatRequest, ctx=Depends(get_service_co
     model_override, credentials_override = _resolve_billing(ctx, req)
 
     conv = get_consumer_conversation(admin_id, service_id, conv_id)
+    if conv and conv.get('source') == 'admin_test':
+        raise HTTPException(404, 'Conversation not found')
     if not conv:
         conv = create_consumer_conversation(admin_id, service_id, source="web")
         conv_id = conv["id"]
 
     save_text = _extract_text(req.message)
-    save_consumer_message(admin_id, service_id, conv_id, "user", save_text)
+    _save_consumer_input(admin_id, service_id, conv_id, save_text)
     agent = create_consumer_agent(
         admin_id, service_id, conv_id, channel="web",
         model_override=model_override, credentials_override=credentials_override,
@@ -529,7 +626,8 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
         )
         raise HTTPException(status_code=400, detail="No user message found")
 
-    save_consumer_message(admin_id, service_id, conv_id, "user", last_user_msg)
+    _assert_consumer_conv_exists(admin_id, service_id, conv_id)
+    _save_consumer_input(admin_id, service_id, conv_id, last_user_msg)
     agent = create_consumer_agent(
         admin_id, service_id, conv_id, channel="api",
         model_override=model_override, credentials_override=credentials_override,
@@ -561,8 +659,7 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
 
     # Non-streaming: collect full response
     from app.services import scheduled_inject
-    await scheduled_inject.repair_scheduled_state(agent, thread_id)
-    await scheduled_inject.mark_thread_active(thread_id)
+    await scheduled_inject.mark_thread_active(thread_id, agent=agent)
     full_response = ""
     _ns_start = time.time()
     _ns_ok = True
@@ -590,7 +687,7 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
                             full_response += block.get("text", "")
 
         if full_response:
-            save_consumer_message(admin_id, service_id, conv_id, "assistant", full_response)
+            _save_consumer_response(admin_id, service_id, conv_id, "assistant", full_response)
     except Exception:
         _ns_ok = False
         raise
@@ -623,7 +720,8 @@ async def api_consumer_completions(req: ConsumerCompletionsRequest, ctx=Depends(
 def _assert_consumer_conv_exists(admin_id: str, service_id: str, conv_id: str):
     """会话不存在 → 404，避免拿 service key 探测/访问任意 conv_id 的文件。"""
     from app.services.published import get_consumer_conversation
-    if not get_consumer_conversation(admin_id, service_id, conv_id):
+    conv = get_consumer_conversation(admin_id, service_id, conv_id)
+    if not conv or conv.get('source') == 'admin_test':
         raise HTTPException(status_code=404, detail="会话不存在")
 
 
@@ -699,6 +797,7 @@ async def api_get_consumer_attachment(conv_id: str, file_path: str,
     from app.services.published import get_consumer_attachment_dir
     from app.core.path_security import safe_join
 
+    _assert_consumer_conv_exists(ctx["admin_id"], ctx["service_id"], conv_id)
     att_dir = get_consumer_attachment_dir(ctx["admin_id"], ctx["service_id"], conv_id)
     try:
         full = safe_join(att_dir, file_path)

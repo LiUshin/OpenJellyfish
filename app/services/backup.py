@@ -7,7 +7,7 @@ their current state).
 
 Module map (relative paths inside `users/{user_id}/`):
     filesystem    → filesystem/  (docs, scripts, generated, soul content)
-    conversations → conversations/  (admin chat history + attachments)
+    conversations → conversations/, projects/ (admin chat history, groups + briefs)
     services      → services/  (published service config + per-service tasks/conversations)
     tasks         → tasks/  (admin scheduled tasks)
     settings      → preferences.json, subagents.json, capability_prompts.json,
@@ -48,7 +48,7 @@ from app.core.user_api_keys import _SECRET_FIELDS, _URL_FIELDS, ALL_FIELDS
 
 MODULE_PATHS: Dict[str, List[str]] = {
     "filesystem":    ["filesystem"],
-    "conversations": ["conversations"],
+    "conversations": ["conversations", "projects"],
     "services":      ["services"],
     "tasks":         ["tasks"],
     "settings": [

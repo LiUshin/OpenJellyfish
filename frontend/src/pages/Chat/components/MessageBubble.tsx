@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, type ReactNode } from 'react';
 import type { ToolCallInfo, ThinkingBlock as ThinkingBlockType, ToolBlock, SubagentBlock, StreamBlock } from '../types';
 import type { MessageAttachment, MessageBlock } from '../../../types';
 import { renderMarkdown } from '../markdown';
@@ -122,9 +122,10 @@ interface Props {
   attachments?: MessageAttachment[];
   conversationId?: string;
   blocks?: MessageBlock[];
+  attachmentContent?: ReactNode;
 }
 
-function MessageBubbleImpl({ role, content, toolCalls, attachments, conversationId, blocks }: Props) {
+function MessageBubbleImpl({ role, content, toolCalls, attachments, conversationId, blocks, attachmentContent }: Props) {
   const isUser = role === 'user';
 
   if (isUser) {
@@ -138,6 +139,7 @@ function MessageBubbleImpl({ role, content, toolCalls, attachments, conversation
           {attachments && attachments.length > 0 && (
             <AttachmentGallery attachments={attachments} convId={conversationId} />
           )}
+          {attachmentContent}
         </div>
         <div className={styles.messageAvatar} data-role="user">U</div>
       </div>

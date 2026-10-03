@@ -54,7 +54,7 @@ async def api_list_modules(_user=Depends(get_current_user)):
     """Return the list of available modules + a friendly label for each."""
     labels = {
         "filesystem":    "文件系统 (docs / scripts / generated / soul 内容)",
-        "conversations": "对话历史 (含附件)",
+        "conversations": "对话与项目 (含摘要和附件)",
         "services":      "已发布服务 (config + 服务侧对话/任务)",
         "tasks":         "定时任务",
         "settings":      "设置 (system prompt, profile, subagents, preferences, capability prompts, soul config)",

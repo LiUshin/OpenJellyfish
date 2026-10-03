@@ -1,18 +1,18 @@
 import { Suspense, useState, useCallback, useRef, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Layout, Button, Avatar, Tooltip, Drawer } from 'antd';
+import { Layout, Button, Tooltip, Drawer, Badge, Dropdown } from 'antd';
 import {
-  SignOut, GearSix, ArrowLeft, Sun, Moon, List as ListIcon, X,
+  GearSix, List as ListIcon, X, UserCircle, SignOut,
+  ChatCircleDots, Stack, Timer, Cpu,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../stores/authContext';
-import { useTheme } from '../stores/themeContext';
 import { useFileWorkspace } from '../stores/fileWorkspaceContext';
-import { useIsMobile } from '../hooks/useMediaQuery';
+import { useIsMobile, useMediaQuery } from '../hooks/useMediaQuery';
 import FilePanel from '../components/FilePanel';
 import FilePreview from '../components/FilePreview';
 import ApiKeyWarning from '../components/ApiKeyWarning';
-import LanguageSwitcher from '../components/LanguageSwitcher';
+import WorkspaceSidebarHeader from '../components/WorkspaceSidebarHeader';
 import * as api from '../services/api';
 import RoutePending from '../components/RoutePending';
 import workspace from './workspace.module.css';
@@ -22,7 +22,6 @@ const { Sider, Content } = Layout;
 
 export default function AppLayout() {
   const { user, logout } = useAuth();
-  const { isDark, toggleColor } = useTheme();
   const {
     editingFile,
     splitMode,
@@ -35,11 +34,30 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
+  const isCompact = useMediaQuery('(max-width: 1199px)');
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const [sidebarSlot, setSidebarSlot] = useState<HTMLDivElement | null>(null);
-  const isSettings = location.pathname.startsWith('/settings');
+  const [workspaceSplitRatio, setWorkspaceSplitRatio] = useState(0.65);
+  const [inboxUnread, setInboxUnread] = useState(0);
+  const path = location.pathname;
+  const inRoute = (base: string) => path === base || path.startsWith(`${base}/`);
+  const isChat = path === '/';
+  const isServiceManagement = inRoute('/settings/services');
+  const isService = isServiceManagement || inRoute('/settings/inbox');
+  const isScheduler = inRoute('/settings/scheduler');
+  const isEnvironment = inRoute('/settings/environment') || inRoute('/settings/packages');
+  const isSettings = inRoute('/settings') && !isService && !isScheduler && !isEnvironment;
+  const hideContextSidebar = isServiceManagement || isScheduler;
+  const environmentLabel = currentLang() === 'en' ? 'Environment' : '环境';
+  const username = user?.username || t('login.username');
+  const primaryNav = [
+    { key: 'chat', label: t('nav.chat'), to: '/', icon: <ChatCircleDots size={22} />, active: isChat },
+    { key: 'service', label: currentLang() === 'en' ? 'Services' : '服务', to: '/settings/services', icon: <Stack size={22} />, active: isService },
+    { key: 'scheduler', label: t('nav.scheduler'), to: '/settings/scheduler', icon: <Timer size={22} />, active: isScheduler },
+    { key: 'environment', label: environmentLabel, to: '/settings/environment', icon: <Cpu size={22} />, active: isEnvironment },
+  ];
 
   // Reconcile UI language with the user's stored preference once after sign-in.
   // The local UI may already be set (localStorage / navigator); if backend
@@ -66,10 +84,37 @@ export default function AppLayout() {
     return () => { cancelled = true; };
   }, [user]);
 
-  // On mobile the FilePreview is a full-screen Drawer, not an inline split.
-  const showPreview = !isSettings && !!editingFile && splitMode !== 'chat';
-  const showChat = isSettings || splitMode !== 'file' || !editingFile;
-  const mobilePreviewOpen = isMobile && showPreview;
+  useEffect(() => {
+    if (!user) return;
+    let stopped = false;
+    let busy = false;
+    const refresh = async () => {
+      if (busy || document.hidden) return;
+      busy = true;
+      try {
+        const result = await api.getInboxUnreadCount();
+        if (!stopped) setInboxUnread(result.count);
+      } catch { /* Keep the previous count during a transient outage. */ }
+      finally { busy = false; }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 10000);
+    window.addEventListener('focus', refresh);
+    window.addEventListener('inbox-changed', refresh);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('inbox-changed', refresh);
+    };
+  }, [user]);
+
+  // Preserve the chat split mode. Other sections always retain their main page.
+  const showPreview = !!editingFile && (!isChat || splitMode !== 'chat');
+  const showMain = !isChat || splitMode !== 'file' || !editingFile;
+  const activeSplitRatio = isChat ? splitRatio : workspaceSplitRatio;
+  const previewAsDrawer = isCompact || isMobile;
+  const drawerPreviewOpen = previewAsDrawer && showPreview;
 
   // Auto-close the nav drawer when switching route on mobile (tap menu item).
   useEffect(() => {
@@ -110,6 +155,10 @@ export default function AppLayout() {
 
   const dividerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const setActiveSplitRatio = useCallback((ratio: number) => {
+    if (isChat) setSplitRatio(ratio);
+    else setWorkspaceSplitRatio(Math.max(0.55, Math.min(0.8, ratio)));
+  }, [isChat, setSplitRatio]);
 
   const dividerCleanup = useRef<(() => void) | null>(null);
   useEffect(() => () => { dividerCleanup.current?.(); }, []);
@@ -131,11 +180,11 @@ export default function AppLayout() {
       const x = ev.clientX - rect.left;
       const ratio = x / rect.width;
       latestRatio = ratio;
-      if (!frame) frame = requestAnimationFrame(() => { frame = 0; if (latestRatio !== null) setSplitRatio(latestRatio); });
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; if (latestRatio !== null) setActiveSplitRatio(latestRatio); });
     };
     const onUp = () => {
       cancelAnimationFrame(frame);
-      if (latestRatio !== null) setSplitRatio(latestRatio);
+      if (latestRatio !== null) setActiveSplitRatio(latestRatio);
       document.body.style.cursor = previousCursor;
       document.body.style.userSelect = previousUserSelect;
       dividerCleanup.current = null;
@@ -145,131 +194,114 @@ export default function AppLayout() {
     dividerCleanup.current = onUp;
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
-  }, [setSplitRatio]);
+  }, [setActiveSplitRatio]);
+
+  const renderAccountControl = () => (
+    <Dropdown
+      trigger={['click']}
+      placement="topLeft"
+      menu={{ items: [
+        { key: 'username', label: username, disabled: true },
+        { type: 'divider' },
+        {
+          key: 'logout',
+          icon: <SignOut size={16} />,
+          label: t('common.logout'),
+          onClick: () => { setNavDrawerOpen(false); logout(); },
+        },
+      ] }}
+    >
+      <button
+        type="button"
+        aria-label={username}
+        aria-haspopup="menu"
+        style={{ width: 42, height: 42, display: 'grid', placeItems: 'center', border: 0, borderRadius: 9, cursor: 'pointer', background: 'transparent', color: 'var(--jf-text-muted)' }}
+      >
+        <UserCircle size={22} />
+      </button>
+    </Dropdown>
+  );
 
   // Common sidebar inner content — reused by both desktop Sider and mobile Drawer.
   // Kept DOM-identical so #sider-slot portal target works in both modes.
   const renderSidebarContents = (isCollapsed: boolean) => (
     <>
-      {/* Top: user row */}
-      <div
-        style={{
-          flexShrink: 0,
-          padding: isCollapsed ? '12px 0' : '7px 16px',
-          flexDirection: isCollapsed ? 'column' : 'row',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          height: isCollapsed ? 96 : 52,
-          boxSizing: 'border-box',
-        }}
-      >
-        <Avatar
-          size={32}
-          style={{ background: 'var(--jf-legacy)', fontWeight: 700, flexShrink: 0 }}
-        >
-          {user?.username?.charAt(0).toUpperCase() || 'U'}
-        </Avatar>
-        {!isCollapsed && (
-          <span
-            style={{
-              color: 'var(--jf-text)',
-              fontWeight: 500,
-              fontSize: 13,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              flex: 1,
-              minWidth: 0,
-            }}
-          >
-            {user?.username || t('login.username')}
-          </span>
-        )}
-        {/* Language switcher sits to the left of the Settings/Back button so
-            it's always visible from the chat sidebar (per UX requirement). */}
-        {!isCollapsed && <LanguageSwitcher variant="icon" placement="bottom" />}
-        {isSettings ? (
-          <Tooltip title={t('common.back')} placement="right">
-            <Button
-              type="text"
-              aria-label={t('common.back')}
-              icon={<ArrowLeft size={20} />}
-              style={{ color: 'var(--jf-text-muted)', flexShrink: 0 }}
-              onClick={() => navigate('/')}
-            />
-          </Tooltip>
-        ) : (
-          <Tooltip title={t('settings.title')} placement="right">
-            <Button
-              type="text"
-              aria-label={t('settings.title')}
-              icon={<GearSix size={20} />}
-              style={{ color: 'var(--jf-text-muted)', flexShrink: 0 }}
-              onClick={() => navigate('/settings')}
-            />
-          </Tooltip>
-        )}
-      </div>
+      <WorkspaceSidebarHeader collapsed={isCollapsed}
+        onToggleCollapse={isMobile ? undefined : () => setCollapsed(!collapsed)} />
 
-      <div id="sider-slot" ref={setSidebarSlot} style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', visibility: isCollapsed ? 'hidden' : undefined }} />
+      <div id="sider-slot" ref={setSidebarSlot} style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', visibility: isCollapsed || hideContextSidebar ? 'hidden' : undefined }} />
 
-      {/* Bottom: Brand + dark/light toggle */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: isCollapsed ? '12px 8px' : '16px 16px 12px',
-          flexDirection: isCollapsed ? 'column' : 'row',
-          flexShrink: 0,
-        }}
-      >
-        <button type="button" className={workspace.brandButton}
-          aria-label={isMobile ? 'OpenJellyfish' : t(isCollapsed ? 'header.expandSidebar' : 'header.collapseSidebar')}
-          title={isMobile ? undefined : t(isCollapsed ? 'header.expandSidebar' : 'header.collapseSidebar')}
-          onClick={() => { if (!isMobile) setCollapsed(!collapsed); }}>
-          <img src="/media_resources/jellyfishlogo.png" alt="" width={28} height={28} />
-          {!isCollapsed && <span>OpenJellyfish</span>}
-        </button>
-        <Tooltip title={isDark ? t('header.switchToLight') : t('header.switchToDark')} placement="top">
-          <Button
-            type="text"
-            size="small"
-            aria-label={isDark ? t('header.switchToLight') : t('header.switchToDark')}
-            icon={isDark ? <Sun size={16} /> : <Moon size={16} />}
-            style={{
-              color: 'var(--jf-text-muted)',
-              flexShrink: 0,
-              width: 28,
-              height: 28,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-            onClick={(e) => { e.stopPropagation(); toggleColor(); }}
-          />
-        </Tooltip>
-      </div>
-      <div style={{ flexShrink: 0, padding: isCollapsed ? '0 8px 12px' : '0 16px 12px' }}>
-        <Tooltip title={t('common.logout')} placement="right">
-          <Button
-            type="text"
-            aria-label={t('common.logout')}
-            icon={<SignOut size={18} />}
-            style={{ color: 'var(--jf-text-muted)', width: '100%', justifyContent: isCollapsed ? 'center' : 'flex-start' }}
-            onClick={logout}
-          >
-            {!isCollapsed && t('common.logout')}
-          </Button>
-        </Tooltip>
-      </div>
+      {isMobile && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderTop: '1px solid var(--jf-border)', flexShrink: 0 }}>
+          <Tooltip title={t('nav.settings')} placement="top">
+            <button
+              type="button" aria-label={t('nav.settings')}
+              aria-current={isSettings ? 'page' : undefined}
+              onClick={() => { setNavDrawerOpen(false); navigate('/settings/general'); }}
+              style={{ width: 42, height: 42, display: 'grid', placeItems: 'center', border: 0, borderRadius: 9, cursor: 'pointer', background: isSettings ? 'var(--jf-bg-raised)' : 'transparent', color: isSettings ? 'var(--jf-primary)' : 'var(--jf-text-muted)' }}
+            >
+              <GearSix size={22} />
+            </button>
+          </Tooltip>
+          {renderAccountControl()}
+        </div>
+      )}
     </>
   );
 
   return (
     <Layout style={{ height: '100dvh', background: 'var(--jf-bg-deep)' }}>
       <ApiKeyWarning />
+
+      {!isMobile && (
+        <nav
+          aria-label={currentLang() === 'en' ? 'Main navigation' : '全局功能'}
+          style={{
+            width: 56, minWidth: 56, height: '100%', display: 'flex',
+            flexDirection: 'column', alignItems: 'center', gap: 8,
+            padding: '12px 6px', boxSizing: 'border-box',
+            background: 'var(--jf-bg-panel)', borderRight: '1px solid var(--jf-border)',
+          }}
+        >
+          <img src="/media_resources/jellyfishlogo.png" alt="OpenJellyfish" width={34} height={34} style={{ objectFit: 'contain', marginBottom: 12 }} />
+          {primaryNav.map((item) => (
+            <Tooltip key={item.key} title={item.label} placement="right">
+              <button
+                type="button" aria-label={item.label}
+                aria-current={item.active ? 'page' : undefined}
+                onClick={() => navigate(item.to)}
+                style={{
+                  width: 42, height: 42, display: 'grid', placeItems: 'center',
+                  border: 0, borderRadius: 9, cursor: 'pointer',
+                  background: item.active ? 'var(--jf-bg-raised)' : 'transparent',
+                  color: item.active ? 'var(--jf-primary)' : 'var(--jf-text-muted)',
+                }}
+              >
+                {item.key === 'service' && inboxUnread > 0
+                  ? <Badge count={inboxUnread} size="small" offset={[5, 1]}>{item.icon}</Badge>
+                  : item.icon}
+              </button>
+            </Tooltip>
+          ))}
+          <div style={{ flex: 1 }} />
+          <Tooltip title={t('nav.settings')} placement="right">
+            <button
+              type="button" aria-label={t('nav.settings')}
+              aria-current={isSettings ? 'page' : undefined}
+              onClick={() => navigate('/settings/general')}
+              style={{
+                width: 42, height: 42, display: 'grid', placeItems: 'center',
+                border: 0, borderRadius: 9, cursor: 'pointer',
+                background: isSettings ? 'var(--jf-bg-raised)' : 'transparent',
+                color: isSettings ? 'var(--jf-primary)' : 'var(--jf-text-muted)',
+              }}
+            >
+              <GearSix size={22} />
+            </button>
+          </Tooltip>
+          {renderAccountControl()}
+        </nav>
+      )}
 
       {isMobile ? (
         // ── Mobile: Sider rendered as a Drawer; #sider-slot portal target
@@ -294,6 +326,28 @@ export default function AppLayout() {
           }}
           rootStyle={{ zIndex: 1050 }}
         >
+          <nav
+            aria-label={currentLang() === 'en' ? 'Main navigation' : '全局功能'}
+            style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6, padding: '12px 12px 8px', borderBottom: '1px solid var(--jf-border)', flexShrink: 0 }}
+          >
+            {primaryNav.map((item) => (
+              <button
+                key={item.key} type="button" aria-label={item.label}
+                aria-current={item.active ? 'page' : undefined}
+                onClick={() => { setNavDrawerOpen(false); navigate(item.to); }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, minWidth: 0,
+                  minHeight: 40, padding: '7px 9px', border: 0, borderRadius: 8,
+                  background: item.active ? 'var(--jf-bg-raised)' : 'transparent',
+                  color: item.active ? 'var(--jf-primary)' : 'var(--jf-text)',
+                  cursor: 'pointer', fontSize: 13, textAlign: 'left',
+                }}
+              >
+                {item.icon}<span>{item.label}</span>
+                {item.key === 'service' && inboxUnread > 0 && <Badge count={inboxUnread} size="small" style={{ marginLeft: 'auto' }} />}
+              </button>
+            ))}
+          </nav>
           {renderSidebarContents(false)}
         </Drawer>
       ) : (
@@ -305,10 +359,10 @@ export default function AppLayout() {
           collapsedWidth={64}
           theme="dark"
           style={{
+            display: hideContextSidebar ? 'none' : 'flex',
             background: 'var(--jf-bg-panel)',
             borderRight: '1px solid var(--jf-border)',
             transition: 'width 0.18s ease-out',
-            display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
           }}
@@ -354,7 +408,7 @@ export default function AppLayout() {
           />
         )}
 
-        {/* Main content area: chat + file preview */}
+        {/* Main content area: current route + shared file preview */}
         <div
           ref={contentRef}
           style={{
@@ -366,31 +420,31 @@ export default function AppLayout() {
             overflow: 'hidden',
           }}
         >
-          {/* Chat/Settings area — always mounted so the sidebar portal stays alive */}
+          {/* Keep the route mounted whenever a non-chat section opens a file. */}
           <div style={{
-            flex: isSettings ? 1 : (showChat ? (showPreview && !isMobile ? splitRatio : 1) : 0),
+            flex: showMain ? (showPreview && !previewAsDrawer ? activeSplitRatio : 1) : 0,
             minWidth: 0,
             minHeight: 0,
-            display: (isSettings || showChat || isMobile) ? 'flex' : 'none',
+            display: (showMain || isMobile) ? 'flex' : 'none',
             flexDirection: 'column',
             overflow: 'hidden',
           }}>
-            <Suspense fallback={<RoutePending />}><Outlet context={{ sidebarSlot, closeNavigation: () => setNavDrawerOpen(false) }} /></Suspense>
+            <Suspense fallback={<RoutePending />}><Outlet context={{ sidebarSlot, closeNavigation: () => setNavDrawerOpen(false), inboxUnread }} /></Suspense>
           </div>
 
-          {/* Resizable divider — desktop only, hidden on mobile (preview becomes Drawer) */}
-          {!isMobile && showChat && showPreview && (
+          {/* Resizable divider — wide desktop only; compact previews use a Drawer. */}
+          {!previewAsDrawer && showMain && showPreview && (
             <div
               ref={dividerRef}
               className={workspace.divider}
               role="separator" aria-orientation="vertical" tabIndex={0}
               aria-label={t('header.resizePanels')} title={t('header.resizePanelsHint')}
-              aria-valuemin={15} aria-valuemax={85} aria-valuenow={Math.round(splitRatio * 100)}
-              onDoubleClick={() => setSplitRatio(0.5)}
+              aria-valuemin={isChat ? 15 : 55} aria-valuemax={isChat ? 85 : 80} aria-valuenow={Math.round(activeSplitRatio * 100)}
+              onDoubleClick={() => setActiveSplitRatio(isChat ? 0.5 : 0.65)}
               onKeyDown={event => {
-                const next = event.key === 'ArrowLeft' ? splitRatio - 0.025 : event.key === 'ArrowRight' ? splitRatio + 0.025
-                  : event.key === 'Home' ? 0.15 : event.key === 'End' ? 0.85 : event.key === 'Enter' ? 0.5 : null;
-                if (next !== null) { event.preventDefault(); setSplitRatio(next); }
+                const next = event.key === 'ArrowLeft' ? activeSplitRatio - 0.025 : event.key === 'ArrowRight' ? activeSplitRatio + 0.025
+                  : event.key === 'Home' ? (isChat ? 0.15 : 0.55) : event.key === 'End' ? (isChat ? 0.85 : 0.8) : event.key === 'Enter' ? (isChat ? 0.5 : 0.65) : null;
+                if (next !== null) { event.preventDefault(); setActiveSplitRatio(next); }
               }}
               onMouseDown={onDividerDown}
               style={{
@@ -412,30 +466,30 @@ export default function AppLayout() {
             </div>
           )}
 
-          {/* File preview area — inline on desktop, fullscreen Drawer on mobile */}
-          {!isMobile && showPreview && (
+          {/* File preview is inline on wide desktop. */}
+          {!previewAsDrawer && showPreview && (
             <div style={{
-              flex: showChat ? (1 - splitRatio) : 1,
+              flex: showMain ? (1 - activeSplitRatio) : 1,
               minWidth: 0,
               minHeight: 0,
               overflow: 'hidden',
-              borderLeft: showChat ? undefined : `1px solid var(--jf-border)`,
+              borderLeft: showMain ? undefined : `1px solid var(--jf-border)`,
             }}>
               <FilePreview />
             </div>
           )}
         </div>
 
-        {/* Mobile-only: FilePreview as fullscreen Drawer over chat.
+        {/* Compact FilePreview Drawer over the current route.
             onClose 触发时（ESC / 遮罩点击 / swipe）同步清空 editingFile —— 否则
             抽屉关了但状态仍认为文件在编辑，下一次 openFile 打开时会看到旧文件闪
             一下。FilePreview 自身的 X 按钮仍能关闭（调同一个 closeFile）。 */}
-        {isMobile && (
+        {previewAsDrawer && (
           <Drawer
             placement="right"
-            open={mobilePreviewOpen}
+            open={drawerPreviewOpen}
             onClose={() => closeFile()}
-            width="100vw"
+            width={isMobile ? '100vw' : 'min(82vw, 680px)'}
             closeIcon={<X size={20} />}
             title={null}
             styles={{
@@ -452,9 +506,11 @@ export default function AppLayout() {
           </Drawer>
         )}
 
-        {/* File browser panel — hidden in settings but stays mounted. FilePanel decides
-            itself whether to render inline (desktop) or as a Drawer (mobile). */}
-        <div style={{ display: isSettings ? 'none' : 'contents' }}>
+        {/* On compact desktop the browser overlays the page instead of
+            shrinking its content; on mobile FilePanel uses its own Drawer. */}
+        <div style={isCompact && !isMobile
+          ? { position: 'absolute', top: 0, right: 0, bottom: 0, display: 'flex', zIndex: 30 }
+          : { display: 'contents' }}>
           <FilePanel />
         </div>
       </Content>

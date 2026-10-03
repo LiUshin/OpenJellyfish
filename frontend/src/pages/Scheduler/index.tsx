@@ -1,5 +1,7 @@
 import SettingsLoadError from '../../components/SettingsLoadError';
-import { useState, useEffect, useMemo } from 'react';
+import WorkspaceSidebarHeader from '../../components/WorkspaceSidebarHeader';
+import SplitWorkspaceHeading from '../../components/SplitWorkspaceHeading';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   App, Tabs, Button, Tag, Modal, Form, Input, Select, Checkbox,
   Space, Typography, Empty, Spin, Popconfirm, Pagination, Segmented,
@@ -11,13 +13,16 @@ import {
   ArrowLeft, TreeStructure, ChartLine,
 } from '@phosphor-icons/react';
 import {
-  listSchedulerTasks, getSchedulerTask, createSchedulerTask,
-  updateSchedulerTask, deleteSchedulerTask, runSchedulerTaskNow,
+  listSchedulerTasks, getSchedulerTask, getSchedulerRuns, createSchedulerTask,
+  updateSchedulerTask, deleteSchedulerTask,
   listServices, getToken, getModels,
 } from '../../services/api';
 import type { ModelInfo } from '../../types';
 import { fmtUserTime, getTzOffset } from '../../utils/timezone';
 import { useIsMobile } from '../../hooks/useMediaQuery';
+import RuntimeChoiceFields from '../../components/RuntimeChoiceFields';
+import { profiles as getRuntimeProfiles } from '../../services/runtime';
+import type { RuntimeChoice, RuntimeProfile } from '../../services/runtime';
 import GraphView from './GraphView';
 import TimelineView from './TimelineView';
 import type { TaskData, RunData, StepData } from './types';
@@ -58,12 +63,14 @@ const STEP_ICONS: Record<string, string> = {
   start: '🚀', ai_message: '🤖', tool_call: '🔧', tool_result: '📦',
   auto_approve: '✅', error: '❌', stdout: '📄', stderr: '⚠️',
   exit: '🏁', finish: '🎉', loop: '🔄', docs_loaded: '📚', reply: '📬',
+  cli_started: '🤖', cli_failed: '❌', permission_denied: '🔒',
 };
 
 const STEP_LABELS: Record<string, string> = {
   start: '启动', ai_message: 'AI 输出', tool_call: '工具调用', tool_result: '工具返回',
   auto_approve: '自动审批', error: '错误', stdout: '标准输出', stderr: '标准错误',
   exit: '退出', finish: '完成', loop: '执行循环', docs_loaded: '文档加载', reply: '消息推送',
+  cli_started: 'CLI 执行', cli_failed: 'CLI 失败', permission_denied: '授权拒绝',
 };
 
 const STEP_STYLES: Record<string, { bg: string; fg: string }> = {
@@ -80,6 +87,9 @@ const STEP_STYLES: Record<string, { bg: string; fg: string }> = {
   loop:         { bg: 'rgba(148,148,168,0.1)',  fg: C.textMuted },
   docs_loaded:  { bg: 'rgba(var(--jf-accent-rgb), 0.15)',  fg: C.info },
   reply:        { bg: 'rgba(var(--jf-secondary-rgb), 0.15)',  fg: C.accent },
+  cli_started:  { bg: 'rgba(var(--jf-accent-rgb), 0.2)', fg: C.info },
+  cli_failed:   { bg: 'rgba(var(--jf-error-rgb), 0.2)', fg: C.danger },
+  permission_denied: { bg: 'rgba(var(--jf-warning-rgb), 0.2)', fg: C.warning },
 };
 
 const SCHEDULE_LABELS: Record<string, string> = {
@@ -106,8 +116,9 @@ function calcDuration(start?: string, end?: string): string {
   } catch { return ''; }
 }
 
-async function svcRequest<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+async function svcRequest<T = unknown>(method: string, path: string, body?: unknown, requestId?: string): Promise<T> {
   const headers: Record<string, string> = { Authorization: `Bearer ${getToken()}` };
+  if (requestId) headers['Idempotency-Key'] = requestId;
   const init: RequestInit = { method, headers };
   if (body) {
     headers['Content-Type'] = 'application/json';
@@ -261,12 +272,23 @@ function StepView({ step }: { step: StepData }) {
   );
 }
 
-function RunCard({ run }: { run: RunData }) {
+function RunCard({ run, onAction, onRecovery, recoveryRequired }: {
+  run: RunData;
+  recoveryRequired: boolean;
+  onAction: (path: string) => Promise<void>;
+  onRecovery: (id: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const statusMap: Record<string, { text: string; color: string; icon: React.ReactNode }> = {
     success: { text: '成功', color: C.success, icon: <CheckCircle size={18} weight="fill" color={C.success} /> },
     timeout: { text: '超时', color: C.warning, icon: <Clock size={18} weight="fill" color={C.warning} /> },
     error:   { text: '失败', color: C.danger, icon: <XCircle size={18} weight="fill" color={C.danger} /> },
+    cancelled: { text: '已取消', color: C.textMuted, icon: null },
+    queued: { text: '排队中', color: C.info, icon: null },
+    cancel_requested: { text: '正在取消', color: C.warning, icon: null },
+    interrupted: { text: '执行中断，需核查', color: C.danger, icon: null },
+    blocked: { text: '权限或执行器未就绪', color: C.warning, icon: null },
+    deferred: { text: '等待工作区', color: C.warning, icon: null },
     running: { text: '运行中', color: C.info, icon: <ArrowsClockwise size={18} weight="fill" color={C.info} /> },
   };
   const st = statusMap[run.status] || { text: run.status, color: C.textMuted, icon: null };
@@ -314,35 +336,25 @@ function RunCard({ run }: { run: RunData }) {
         </div>
         {open && (
           <div style={{ borderTop: `1px solid ${C.border}`, padding: 12 }}>
-            {run.steps?.map((s, i) => {
-              const tp = s.type || 'start';
-              const icon = STEP_ICONS[tp] || '•';
-              const label = STEP_LABELS[tp] || tp;
-              const sc = STEP_STYLES[tp] || { bg: 'rgba(148,148,168,0.1)', fg: C.textMuted };
-              const ts = fmtUserTime(s.ts, 'time');
-              return (
-                <div key={i} style={{
-                  display: 'flex', alignItems: 'flex-start', gap: 8, padding: '4px 0',
-                  fontSize: 12, color: C.textSecondary,
-                }}>
-                  <span style={{
-                    width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 10, background: sc.bg, color: sc.fg,
-                  }}>{icon}</span>
-                  <span style={{ fontWeight: 500, color: C.textPrimary, minWidth: 60 }}>{label}</span>
-                  {ts && <span style={{ color: C.textMuted, fontSize: 10 }}>{ts}</span>}
-                  {s.content && tp === 'error' && (
-                    <code style={{
-                      flex: 1, fontFamily: C.mono, fontSize: 11, color: C.danger,
-                      background: 'rgba(var(--jf-error-rgb), 0.08)', padding: '2px 6px', borderRadius: 'var(--jf-radius-sm)',
-                      wordBreak: 'break-all',
-                    }}>{s.content.slice(0, 200)}</code>
-                  )}
-                  {s.tool && <span style={{ color: C.textMuted }}>{s.tool}</span>}
-                </div>
-              );
+            {run.run_id && <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 8 }}>运行：{run.run_id}</div>}
+            {run.run_id && ['queued', 'running'].includes(run.status) && (
+              <Button size="small" onClick={() => void onAction(`/scheduler/runs/${run.run_id}/cancel`)}>取消本次运行</Button>
+            )}
+            {run.run_id && recoveryRequired && run.status === 'interrupted' && (
+              <Button size="small" onClick={() => onRecovery(run.run_id!)}>核查并解除恢复锁定</Button>
+            )}
+            {run.deliveries?.map(delivery => {
+              const labels: Record<string, string> = { pending: '待投递', delivering: '投递中', retry_wait: '等待重试', delivered: '已送达', failed: '投递失败', unknown: '是否送达未知', cancelled: '已撤销投递' };
+              const channels: Record<string, string> = { web: '对话记录', memory: '对话记忆', wechat: '微信' };
+              return <div key={delivery.id} style={{ margin: '10px 0', fontSize: 12 }}>
+                <span>{channels[delivery.channel] || delivery.channel}：{labels[delivery.status] || delivery.status}</span>
+                {['failed', 'retry_wait'].includes(delivery.status) && <Button size="small" type="link"
+                  onClick={() => void onAction(`/scheduler/deliveries/${delivery.id}/retry`)}>重试投递</Button>}
+                {delivery.status === 'unknown' && <div style={{ color: C.warning }}>需要先核实接收端，系统不会自动重发。</div>}
+                {delivery.error && <div style={{ color: C.textMuted }}>{delivery.error}</div>}
+              </div>;
             })}
+            {run.steps?.map((step, i) => <StepView key={i} step={step} />)}
             {run.output && (
               <pre style={{
                 fontFamily: C.mono, fontSize: 11, color: C.textSecondary,
@@ -368,16 +380,26 @@ export default function SchedulerPage() {
   const [tasks, setTasks] = useState<TaskData[]>([]);
   const [serviceTasks, setServiceTasks] = useState<TaskData[]>([]);
   const [currentTask, setCurrentTask] = useState<TaskData | null>(null);
+  const [selectedTaskKey, setSelectedTaskKey] = useState<string | null>(null);
+  const [pendingTaskName, setPendingTaskName] = useState('');
+  const taskSelectionRequest = useRef(0);
+  const confirmedTask = useRef<TaskData | null>(null);
   const [activeTab, setActiveTab] = useState('admin');
   const [taskErrors, setTaskErrors] = useState({ admin: false, service: false });
   const [serviceLoading, setServiceLoading] = useState(true);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [recoveryRun, setRecoveryRun] = useState<string | null>(null);
+  const [recoveryNote, setRecoveryNote] = useState('');
+  const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
+  const [runSubmitting, setRunSubmitting] = useState(false);
+  const runRequests = useRef<Record<string, string>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [availableServices, setAvailableServices] = useState<{ id: string; name: string }[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [runtimeProfiles, setRuntimeProfiles] = useState<RuntimeProfile[]>([]);
   const [defaultModel, setDefaultModel] = useState('');
   const [taskSearch, setTaskSearch] = useState('');
   const [svcPage, setSvcPage] = useState(1);
@@ -399,12 +421,17 @@ export default function SchedulerPage() {
     getModels()
       .then((res) => { setModels(res.models || []); setDefaultModel(res.default || ''); })
       .catch(() => {});
+    getRuntimeProfiles().then(setRuntimeProfiles).catch(() => {});
   }, []);
 
   const watchedTaskType = Form.useWatch('task_type', form);
   const watchedSchedType = Form.useWatch('schedule_type', form);
+  const watchedRuntimeChoice = Form.useWatch('runtime_choice', form) as RuntimeChoice | undefined;
+  const watchedCapabilities = (Form.useWatch('capabilities', form) || []) as string[];
   const taskType = watchedTaskType ?? 'script';
   const scheduleType = watchedSchedType ?? 'once';
+  const cliTask = activeTab === 'admin' && watchedRuntimeChoice?.runtime !== undefined
+    && watchedRuntimeChoice.runtime !== 'deepagents';
 
   const schedCfg = useMemo(() => {
     switch (scheduleType) {
@@ -454,36 +481,73 @@ export default function SchedulerPage() {
     if (!hasFamily) setViewMode('detail');
   };
 
-  const selectTask = async (id: string) => {
+  const taskKey = (id: string, serviceId?: string) => serviceId ? `service:${serviceId}:${id}` : `admin:${id}`;
+  const confirmedTaskKey = (task: TaskData | null) => task
+    ? taskKey(task.id, task._scope === 'service' ? task.service_id : undefined) : null;
+
+  const startTaskSelection = (key: string, name: string) => {
+    const request = ++taskSelectionRequest.current;
+    setSelectedTaskKey(key);
+    setPendingTaskName(name);
+    setCurrentTask(previous => confirmedTaskKey(previous) === key ? previous : null);
     setDetailLoading(true);
+    return request;
+  };
+
+  const restoreConfirmedTask = () => {
+    setCurrentTask(confirmedTask.current);
+    setSelectedTaskKey(confirmedTaskKey(confirmedTask.current));
+  };
+
+  const selectTask = async (id: string) => {
+    const request = startTaskSelection(taskKey(id), tasks.find(task => task.id === id)?.name || '任务');
     try {
-      const t = await getSchedulerTask(id) as TaskData;
+      const [t, runs] = await Promise.all([getSchedulerTask(id), getSchedulerRuns(id)]) as [TaskData, RunData[]];
+      if (request !== taskSelectionRequest.current) return;
+      t.runs = runs;
       t._scope = 'admin';
+      confirmedTask.current = t;
       setCurrentTask(t);
       _resetViewIfFlat(t);
-    } catch (e: unknown) { msg.error((e as Error).message); }
-    finally { setDetailLoading(false); }
+    } catch (e: unknown) {
+      if (request !== taskSelectionRequest.current) return;
+      restoreConfirmedTask();
+      msg.error((e as Error).message);
+    } finally { if (request === taskSelectionRequest.current) setDetailLoading(false); }
   };
 
   const selectServiceTask = async (svcId: string, taskId: string) => {
-    setDetailLoading(true);
+    const request = startTaskSelection(taskKey(taskId, svcId), serviceTasks.find(task => task.id === taskId && task.service_id === svcId)?.name || '任务');
     try {
-      const t = await svcRequest<TaskData>('GET', `/scheduler/services/${svcId}/${taskId}`);
+      const [t, runs] = await Promise.all([
+        svcRequest<TaskData>('GET', `/scheduler/services/${svcId}/${taskId}`),
+        svcRequest<RunData[]>('GET', `/scheduler/services/${svcId}/${taskId}/runs`),
+      ]);
+      if (request !== taskSelectionRequest.current) return;
+      t.runs = runs;
       t._scope = 'service';
+      confirmedTask.current = t;
       setCurrentTask(t);
       _resetViewIfFlat(t);
-    } catch (e: unknown) { msg.error((e as Error).message); }
-    finally { setDetailLoading(false); }
+    } catch (e: unknown) {
+      if (request !== taskSelectionRequest.current) return;
+      restoreConfirmedTask();
+      msg.error((e as Error).message);
+    } finally { if (request === taskSelectionRequest.current) setDetailLoading(false); }
   };
 
   /* ── CRUD handlers ── */
 
+  const editValues = useRef<Record<string, unknown>>({});
+
   const openCreateModal = () => {
+    if (activeTab === 'admin') getRuntimeProfiles().then(setRuntimeProfiles).catch(() => {});
     form.resetFields();
     if (activeTab === 'service') {
       form.setFieldsValue({ task_type: 'agent', schedule_type: 'once', enabled: true, target_service: undefined });
     } else {
-      form.setFieldsValue({ task_type: 'script', schedule_type: 'once', enabled: true });
+      form.setFieldsValue({ task_type: 'script', schedule_type: 'once', enabled: true,
+        runtime_choice: { runtime: 'deepagents' } });
     }
     setEditingId(null);
     setModalOpen(true);
@@ -491,6 +555,7 @@ export default function SchedulerPage() {
 
   const openEditModal = () => {
     if (!currentTask) return;
+    if (currentTask._scope === 'admin') getRuntimeProfiles().then(setRuntimeProfiles).catch(() => {});
     const t = currentTask;
     const cfg = t.task_config || {};
     const perms = cfg.permissions || {};
@@ -506,12 +571,14 @@ export default function SchedulerPage() {
       script_args: (cfg.script_args || []).join(','),
       agent_prompt: cfg.prompt,
       model: cfg.model || undefined,
+      runtime_choice: cfg.runtime_choice || { runtime: 'deepagents', model: cfg.model || undefined },
       doc_paths: Array.isArray(dp) ? dp.join(',') : (dp || ''),
       capabilities: cfg.capabilities || [],
       read_dirs: perms.read_dirs || [],
       write_dirs: perms.write_dirs || [],
       enabled: t.enabled !== false,
     });
+    editValues.current = form.getFieldsValue(true);
     setEditingId(t.id);
     setModalOpen(true);
   };
@@ -524,41 +591,54 @@ export default function SchedulerPage() {
 
     setSaving(true);
     try {
-      const tc: Record<string, unknown> = {};
+      const editing = Boolean(editingId);
+      const changed = (key: string) => !editing || JSON.stringify(values[key]) !== JSON.stringify(editValues.current[key]);
+      const tc: Record<string, unknown> = { ...(editing ? currentTask?.task_config : {}) };
+      const csv = (value: unknown) => ((value as string) || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (activeTab === 'admin' && values.task_type === 'agent') {
+        const selected = (values.runtime_choice as RuntimeChoice | undefined)?.runtime || 'deepagents';
+        const unsupported = ((values.capabilities as string[] | undefined) || []).filter(c =>
+          selected === 'deepagents' ? ['web', 'image', 'speech', 'video'].includes(c)
+            : ['speech', 'video'].includes(c));
+        if (unsupported.length) {
+          msg.error(`${selected} 定时任务暂不支持：${unsupported.join('、')}`);
+          return;
+        }
+      }
       if (values.task_type === 'script') {
-        tc.script_path = values.script_path;
-        const a = ((values.script_args as string) || '')
-          .split(',').map(s => s.trim()).filter(Boolean);
-        if (a.length) tc.script_args = a;
+        delete tc.runtime_choice;
+        delete tc.runtime_binding;
+        if (changed('script_path')) tc.script_path = values.script_path;
+        if (changed('script_args')) tc.script_args = csv(values.script_args);
       } else {
-        tc.prompt = values.agent_prompt;
-        const docs = ((values.doc_paths as string) || '')
-          .split(',').map(s => s.trim()).filter(Boolean);
-        if (docs.length) tc.doc_path = docs;
-        if ((values.capabilities as string[])?.length)
-          tc.capabilities = values.capabilities;
-        if (values.model) tc.model = values.model;
+        if (changed('agent_prompt')) tc.prompt = values.agent_prompt || '';
+        if (changed('doc_paths')) tc.doc_path = csv(values.doc_paths);
+        if (changed('capabilities')) tc.capabilities = values.capabilities || [];
+        if (activeTab === 'admin') {
+          const selected = (values.runtime_choice || { runtime: 'deepagents' }) as RuntimeChoice;
+          if (changed('runtime_choice')) tc.runtime_choice = selected;
+          if (selected.runtime === 'deepagents') {
+            tc.model = selected.model || '';
+            tc.capabilities = (values.capabilities as string[] | undefined) || [];
+          } else tc.model = '';
+        } else if (changed('model')) tc.model = values.model || '';
       }
-      const rd = values.read_dirs as string[] | undefined;
-      const wd = values.write_dirs as string[] | undefined;
-      if (rd?.length || wd?.length) {
-        const p: Record<string, string[]> = {};
-        if (rd?.length) p.read_dirs = rd;
-        if (wd?.length) p.write_dirs = wd;
-        tc.permissions = p;
+      const permissions = { ...(currentTask?.task_config?.permissions || {}) };
+      let permissionsChanged = false;
+      for (const key of ['read_dirs', 'write_dirs'] as const) {
+        if (changed(key) && (editing || (values[key] as string[] | undefined)?.length)) {
+          permissions[key] = (values[key] as string[]) || [];
+          permissionsChanged = true;
+        }
       }
-
-      const body = {
-        name: values.name,
-        description: (values.description as string) || '',
-        task_type: values.task_type,
-        schedule_type: values.schedule_type,
-        schedule: values.schedule,
-        task_config: tc,
-        enabled: values.enabled ?? true,
-        // Cron/once 的「本地时间」与设置页时区一致；须显式写入，避免旧任务缺字段时被当成 UTC
-        tz_offset_hours: getTzOffset(),
-      };
+      if (permissionsChanged) tc.permissions = permissions;
+      const body: Record<string, unknown> = {};
+      for (const key of ['name', 'description', 'task_type', 'schedule_type', 'schedule', 'enabled']) {
+        if (changed(key)) body[key] = values[key] ?? (key === 'enabled' ? true : '');
+      }
+      if (!editing || JSON.stringify(tc) !== JSON.stringify(currentTask?.task_config || {})) body.task_config = tc;
+      // Editing preserves the task's timezone. New tasks use the current preference.
+      if (!editing) body.tz_offset_hours = getTzOffset();
 
       let savedId = editingId;
       if (editingId) {
@@ -591,14 +671,24 @@ export default function SchedulerPage() {
 
   const handleDelete = async () => {
     if (!currentTask) return;
+    const deletingTask = currentTask;
+    const request = taskSelectionRequest.current;
     try {
-      if (currentTask._scope === 'service' && currentTask.service_id) {
-        await svcRequest('DELETE', taskApiPath(currentTask));
+      if (deletingTask._scope === 'service' && deletingTask.service_id) {
+        await svcRequest('DELETE', taskApiPath(deletingTask));
       } else {
-        await deleteSchedulerTask(currentTask.id);
+        await deleteSchedulerTask(deletingTask.id);
       }
       msg.success('已删除');
-      setCurrentTask(null);
+      if (confirmedTaskKey(confirmedTask.current) === confirmedTaskKey(deletingTask)) {
+        confirmedTask.current = null;
+      }
+      if (request === taskSelectionRequest.current) {
+        ++taskSelectionRequest.current;
+        setSelectedTaskKey(null);
+        setCurrentTask(null);
+        setDetailLoading(false);
+      }
       if (activeTab === 'service') await loadServiceTasks();
       else await loadTasks();
       setTreeRefreshNonce(n => n + 1);
@@ -607,31 +697,65 @@ export default function SchedulerPage() {
 
   const handleRunNow = async () => {
     if (!currentTask) return;
+    const path = taskApiPath(currentTask);
+    setRunSubmitting(true);
+    const requestId = runRequests.current[path] ||= crypto.randomUUID();
     try {
-      if (currentTask._scope === 'service' && currentTask.service_id) {
-        await svcRequest('POST', `${taskApiPath(currentTask)}/run-now`);
-      } else {
-        await runSchedulerTaskNow(currentTask.id);
-      }
-      msg.success('任务已触发，稍后可在运行记录中查看结果');
+      await svcRequest('POST', `${path}/run-now`, undefined, requestId);
+      delete runRequests.current[path];
+      msg.success('运行请求已保存');
+      await handleRefreshRuns();
       setTreeRefreshNonce(n => n + 1);
     } catch (e: unknown) { msg.error((e as Error).message); }
+    finally { setRunSubmitting(false); }
   };
 
   const handleRefreshRuns = async () => {
     if (!currentTask) return;
+    const task = currentTask;
+    const request = taskSelectionRequest.current;
     setDetailLoading(true);
     try {
       let fresh: TaskData;
-      if (currentTask._scope === 'service' && currentTask.service_id) {
-        fresh = await svcRequest('GET', taskApiPath(currentTask));
+      if (task._scope === 'service' && task.service_id) {
+        const [detail, runs] = await Promise.all([
+          svcRequest<TaskData>('GET', taskApiPath(task)),
+          svcRequest<RunData[]>('GET', `${taskApiPath(task)}/runs`),
+        ]);
+        fresh = { ...detail, runs };
       } else {
-        fresh = await getSchedulerTask(currentTask.id) as TaskData;
+        const [detail, runs] = await Promise.all([getSchedulerTask(task.id), getSchedulerRuns(task.id)]);
+        fresh = { ...(detail as TaskData), runs: runs as RunData[] };
       }
-      fresh._scope = currentTask._scope;
+      if (request !== taskSelectionRequest.current) return;
+      fresh._scope = task._scope;
+      confirmedTask.current = fresh;
       setCurrentTask(fresh);
-    } catch (e: unknown) { msg.error((e as Error).message); }
-    finally { setDetailLoading(false); }
+      const merge = (items: TaskData[]) => items.map(item => item.id === fresh.id ? { ...item, ...fresh } : item);
+      if (fresh._scope === 'service') setServiceTasks(merge);
+      else setTasks(merge);
+    } catch (e: unknown) {
+      if (request === taskSelectionRequest.current) msg.error((e as Error).message);
+    } finally { if (request === taskSelectionRequest.current) setDetailLoading(false); }
+  };
+
+  const handleRunAction = async (path: string) => {
+    try {
+      await svcRequest('POST', path);
+      await handleRefreshRuns();
+    } catch (error: unknown) { msg.error((error as Error).message); }
+  };
+
+  const handleRecovery = async () => {
+    if (!recoveryRun || !recoveryConfirmed || !recoveryNote.trim()) return;
+    try {
+      await svcRequest('POST', `/scheduler/runs/${recoveryRun}/resolve-recovery`, {
+        confirmed_stopped_and_effects_reviewed: true, note: recoveryNote.trim(),
+      });
+      setRecoveryRun(null);
+      await handleRefreshRuns();
+      msg.success('已解除锁定，任务保持暂停；确认配置后可重新启用');
+    } catch (error: unknown) { msg.error((error as Error).message); }
   };
 
   /* ── Sidebar list ── */
@@ -668,7 +792,7 @@ export default function SchedulerPage() {
       );
     }
     return visibleTasks.map(t => {
-      const active = currentTask?.id === t.id;
+      const active = selectedTaskKey === taskKey(t.id, activeTab === 'service' ? t.service_id : undefined);
       // v2: depth-aware indent (root = 0, child = 1, …) so the spawn lineage
       // is visually obvious in the flat list.  Cap visual indent at 4 levels
       // so deep chains don't push the title off-screen.
@@ -708,7 +832,7 @@ export default function SchedulerPage() {
               color={t.enabled !== false ? 'success' : 'default'}
               style={{ margin: 0, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}
             >
-              {t.enabled !== false ? '启用' : '停用'}
+              {t.recovery_required ? '待核查' : t.enabled !== false ? '启用' : '停用'}
             </Tag>
             {isChild && (
               <span style={{
@@ -815,7 +939,7 @@ export default function SchedulerPage() {
               size={isMobile ? 'small' : 'middle'}
               icon={<PlayCircle size={16} weight="fill" />}
               style={{ background: C.success, borderColor: C.success, color: '#000' }}
-              onClick={handleRunNow}
+              onClick={handleRunNow} loading={runSubmitting} disabled={currentTask?.recovery_required}
             >
               {isMobile ? '运行' : '立即运行'}
             </Button>
@@ -836,6 +960,8 @@ export default function SchedulerPage() {
         <div style={{ flex: 1, overflowY: 'auto', padding: isMobile ? 14 : 24 }}>
           <Spin spinning={detailLoading}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            {t.recovery_required && <div role="alert" style={{ color: C.warning }}>上次执行中断，自动运行已锁定。请先核查运行记录和外部结果。</div>}
+            {t.task_type === 'script' && <div role="alert" style={{ color: C.warning }}>脚本定时执行需要操作系统隔离适配器。当前执行器会拒绝运行并记录原因。</div>}
             {/* 基本信息 */}
             <div style={{
               background: C.bgSecondary, border: `1px solid ${C.border}`,
@@ -858,7 +984,7 @@ export default function SchedulerPage() {
               {infoRow('描述', t.description || '—')}
               {infoRow('状态', (
                 <Tag color={t.enabled !== false ? 'success' : 'default'}>
-                  {t.enabled !== false ? '启用' : '停用'}
+                  {t.recovery_required ? '待核查' : t.enabled !== false ? '启用' : '停用'}
                 </Tag>
               ))}
               {infoRow('创建时间', fmtTime(t.created_at))}
@@ -919,8 +1045,9 @@ export default function SchedulerPage() {
               {t.task_type === 'agent' && (
                 <>
                   {infoRow('指令', cfg.prompt || '—')}
-                  {infoRow('模型', cfg.model
-                    ? codeSpan(cfg.model)
+                  {t._scope === 'admin' && infoRow('执行引擎', cfg.runtime_choice?.runtime || 'deepagents')}
+                  {infoRow('模型', (cfg.runtime_binding?.model || cfg.runtime_choice?.model || cfg.model)
+                    ? codeSpan(cfg.runtime_binding?.model || cfg.runtime_choice?.model || cfg.model || '')
                     : <span style={{ color: C.textMuted }}>默认模型</span>)}
                   {docPaths.length > 0 && docPaths[0] &&
                     infoRow('参考文档', docPaths.map((p, i) => (
@@ -940,7 +1067,7 @@ export default function SchedulerPage() {
               {!perms.read_dirs?.length && !perms.write_dirs?.length &&
                 infoRow('📂 权限', (
                   <span style={{ color: C.textMuted }}>
-                    默认 (docs, scripts, generated, tasks)
+                    默认读取 docs、scripts、generated；默认写入 generated
                   </span>
                 ))}
               </div>
@@ -973,7 +1100,9 @@ export default function SchedulerPage() {
                     position: 'absolute', left: 19, top: 0, bottom: 0,
                     width: 2, background: C.border, zIndex: 0,
                   }} />
-                  {runs.map((r, i) => <RunCard key={i} run={r} />)}
+                  {runs.map((r, i) => <RunCard key={r.run_id || i} run={r} recoveryRequired={!!t.recovery_required && i === 0} onAction={handleRunAction} onRecovery={id => {
+                    setRecoveryRun(id); setRecoveryNote(''); setRecoveryConfirmed(false);
+                  }} />)}
                 </div>
               )}
               </div>
@@ -987,20 +1116,24 @@ export default function SchedulerPage() {
 
   /* ── Render ── */
 
-  const showListOnMobile = isMobile && !currentTask;
-  const showDetailOnMobile = isMobile && !!currentTask;
+  const hasTaskSelection = !!currentTask || (detailLoading && !!selectedTaskKey);
+  const showListOnMobile = isMobile && !hasTaskSelection;
+  const showDetailOnMobile = isMobile && hasTaskSelection;
 
   return (
     <div className="settings-master-detail" style={{ display: 'flex', flex: 1, minHeight: 0, height: '100%' }}>
       {/* ── Sidebar ── */}
       <div style={{
-        width: isMobile ? (showListOnMobile ? '100%' : 0) : 320,
-        minWidth: isMobile ? 0 : 260,
+        width: isMobile ? (showListOnMobile ? '100%' : 0) : 'clamp(220px, 24vw, 280px)',
+        minWidth: isMobile ? 0 : 220,
+        flexShrink: 0,
         background: C.bgSecondary,
         borderRight: isMobile ? 'none' : `1px solid ${C.border}`,
         display: isMobile && !showListOnMobile ? 'none' : 'flex',
         flexDirection: 'column', overflow: 'hidden',
       }}>
+        {!isMobile && <WorkspaceSidebarHeader />}
+        {isMobile && <SplitWorkspaceHeading page="scheduler" />}
         <div style={{
           padding: '7px 16px',
           height: 47, boxSizing: 'border-box',
@@ -1017,7 +1150,16 @@ export default function SchedulerPage() {
 
         <Tabs
           activeKey={activeTab}
-          onChange={tab => { setActiveTab(tab); setCurrentTask(null); setTaskSearch(''); setSvcPage(1); }}
+          onChange={tab => {
+            ++taskSelectionRequest.current;
+            confirmedTask.current = null;
+            setActiveTab(tab);
+            setCurrentTask(null);
+            setSelectedTaskKey(null);
+            setDetailLoading(false);
+            setTaskSearch('');
+            setSvcPage(1);
+          }}
           centered
           items={[
             { key: 'admin', label: '管理员任务' },
@@ -1080,6 +1222,7 @@ export default function SchedulerPage() {
         flexDirection: 'column',
         overflow: 'hidden',
       }}>
+        <SplitWorkspaceHeading page="scheduler" />
         {currentTask ? (
           <>
             {isMobile && (
@@ -1093,7 +1236,13 @@ export default function SchedulerPage() {
                   size="small"
                   type="text"
                   icon={<ArrowLeft size={18} />}
-                  onClick={() => setCurrentTask(null)}
+                  onClick={() => {
+                    ++taskSelectionRequest.current;
+                    confirmedTask.current = null;
+                    setCurrentTask(null);
+                    setSelectedTaskKey(null);
+                    setDetailLoading(false);
+                  }}
                   style={{ color: C.textPrimary, padding: '4px 8px' }}
                 >
                   返回
@@ -1190,6 +1339,19 @@ export default function SchedulerPage() {
               );
             })()}
           </>
+        ) : detailLoading && selectedTaskKey ? (
+          <div className="settings-detail-welcome" role="status" aria-live="polite">
+            {isMobile && <Button type="text" icon={<ArrowLeft size={18} />} onClick={() => {
+              ++taskSelectionRequest.current;
+              confirmedTask.current = null;
+              setCurrentTask(null);
+              setSelectedTaskKey(null);
+              setDetailLoading(false);
+            }}>返回</Button>}
+            <Spin />
+            <h2>正在加载任务…</h2>
+            <p>{pendingTaskName}</p>
+          </div>
         ) : (
           <div className="settings-detail-welcome">
             <span className="settings-guide-icon"><Clock size={28} /></span>
@@ -1201,6 +1363,13 @@ export default function SchedulerPage() {
       </div>
 
       {/* ── Create / Edit Modal ── */}
+      <Modal title="核查中断运行" open={!!recoveryRun} onCancel={() => setRecoveryRun(null)}
+        onOk={() => void handleRecovery()} okText="解除锁定并保持暂停"
+        okButtonProps={{ disabled: !recoveryConfirmed || !recoveryNote.trim() }}>
+        <p>解除锁定不会续跑旧 Run。请先确认旧执行进程已停止，并核实文件、派生任务及外部发送的实际结果。</p>
+        <Checkbox checked={recoveryConfirmed} onChange={e => setRecoveryConfirmed(e.target.checked)}>已确认执行进程停止，并核实副作用</Checkbox>
+        <TextArea value={recoveryNote} onChange={e => setRecoveryNote(e.target.value)} placeholder="记录核查结果" rows={3} style={{ marginTop: 12 }} />
+      </Modal>
       <Modal
         title={editingId ? '编辑任务' : '创建任务'}
         open={modalOpen}
@@ -1303,19 +1472,37 @@ export default function SchedulerPage() {
               >
                 <TextArea placeholder="搜索最新 AI 新闻并生成语音摘要" rows={3} />
               </Form.Item>
-              <Form.Item
-                name="model"
-                label="执行模型"
-                extra={defaultModel ? `留空使用默认模型（${defaultModel}）` : '留空使用默认模型'}
-              >
-                <Select
-                  allowClear
-                  showSearch
-                  placeholder="默认模型"
-                  optionFilterProp="label"
-                  options={models.map((m) => ({ value: m.id, label: m.name || m.id }))}
-                />
-              </Form.Item>
+              {activeTab === 'admin' ? (
+                <Form.Item name="runtime_choice" label="执行引擎"
+                  extra="创建时固定连接和模型；后续授权变更会在执行时重新检查。"
+                  rules={[{ validator: async (_, value: RuntimeChoice | undefined) => {
+                    if (!value?.runtime) throw new Error('请选择执行引擎');
+                    if (value.runtime !== 'deepagents') {
+                      const profile = runtimeProfiles.find(p => p.id === value.profile_id && p.runtime === value.runtime);
+                      if (!profile || profile.status !== 'ready' || profile.recovery_required
+                          || !profile.models.some(m => m.id === value.model))
+                        throw new Error('请选择当前已授权的 CLI 连接和模型');
+                    }
+                  } }]}>
+                  <RuntimeChoiceFields profiles={runtimeProfiles}
+                    scheduledMode
+                    deepModels={models.map(m => ({ id: m.id, name: m.name || m.id }))} />
+                </Form.Item>
+              ) : (
+                <Form.Item
+                  name="model"
+                  label="执行模型"
+                  extra={defaultModel ? `留空使用默认模型（${defaultModel}）` : '留空使用默认模型'}
+                >
+                  <Select
+                    allowClear
+                    showSearch
+                    placeholder="默认模型"
+                    optionFilterProp="label"
+                    options={models.map((m) => ({ value: m.id, label: m.name || m.id }))}
+                  />
+                </Form.Item>
+              )}
               <Form.Item
                 name="doc_paths"
                 label="参考文档（docs/ 下路径）"
@@ -1326,13 +1513,18 @@ export default function SchedulerPage() {
               <Form.Item
                 name="capabilities"
                 label="Agent 能力"
-                extra="Agent 默认拥有联网搜索和脚本执行能力"
+                extra={activeTab === 'admin' ? (cliTask
+                  ? 'CLI 定时任务仅开放勾选的联网、图片能力和授权文件，不开放原生终端。'
+                  : '当前 DeepAgents 定时执行器仅开放授权文件和结果投递；联网、图片、语音、视频暂不支持。')
+                  : 'Agent 默认拥有联网搜索和脚本执行能力'}
               >
                 <Checkbox.Group>
                   <Space>
-                    <Checkbox value="image">🎨 图片</Checkbox>
-                    <Checkbox value="speech">🔊 语音</Checkbox>
-                    <Checkbox value="video">🎬 视频</Checkbox>
+                    {activeTab === 'admin' && <Checkbox value="web"
+                      disabled={!cliTask && !watchedCapabilities.includes('web')}>🌐 联网搜索</Checkbox>}
+                    <Checkbox value="image" disabled={activeTab === 'admin' && !cliTask && !watchedCapabilities.includes('image')}>🎨 图片</Checkbox>
+                    <Checkbox value="speech" disabled={activeTab === 'admin' && !watchedCapabilities.includes('speech')}>🔊 语音</Checkbox>
+                    <Checkbox value="video" disabled={activeTab === 'admin' && !watchedCapabilities.includes('video')}>🎬 视频</Checkbox>
                   </Space>
                 </Checkbox.Group>
               </Form.Item>
@@ -1352,7 +1544,11 @@ export default function SchedulerPage() {
           <Form.Item
             name="read_dirs"
             label="可读目录"
-            extra="默认: docs, scripts, generated, tasks。输入 * 表示全部"
+            extra={taskType === 'agent'
+              ? activeTab === 'service'
+                ? '未配置时仅可读取已发布的 docs 与本会话 generated；编辑时清空已设目录表示无可读目录，* 也不会扩大 Service 发布范围。'
+                : '新任务留空时默认可读 docs、scripts、generated；编辑时清空已设目录表示无可读目录，* 表示整个用户文件区。'
+              : '默认：docs、scripts、generated、tasks；输入 * 表示整个用户文件区。'}
           >
             <Select
               mode="tags"
@@ -1364,7 +1560,11 @@ export default function SchedulerPage() {
           <Form.Item
             name="write_dirs"
             label="可写目录"
-            extra="默认: docs, scripts, generated, tasks。输入 * 表示全部"
+            extra={taskType === 'agent'
+              ? activeTab === 'service'
+                ? '未配置时仅可写本会话 generated；编辑时清空已设目录表示无可写目录，* 也不会扩大 Service 写入范围。'
+                : '新任务留空时默认只可写 generated；编辑时清空已设目录表示无可写目录，* 表示整个用户文件区。'
+              : '默认：docs、scripts、generated、tasks；输入 * 表示整个用户文件区。'}
           >
             <Select
               mode="tags"

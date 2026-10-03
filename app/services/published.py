@@ -25,6 +25,7 @@ import uuid
 import hashlib
 import secrets
 from datetime import datetime
+from contextlib import contextmanager
 from typing import Optional, Dict, Any, List
 
 from app.core.security import get_user_dir, get_user_filesystem_dir
@@ -69,6 +70,31 @@ def _conv_dir(admin_id: str, service_id: str, conv_id: str) -> str:
 def consumer_conversation_exists(admin_id: str, service_id: str, conv_id: str) -> bool:
     root = _conv_dir(admin_id, service_id, conv_id)
     return os.path.isfile(os.path.join(root, 'meta.json')) or os.path.isfile(os.path.join(root, 'messages.json'))
+
+
+def _consumer_lock_path(admin_id: str, service_id: str, conv_id: str = "") -> str:
+    from app.core.security import USERS_DIR
+    # Validate identifiers before constructing a durable, non-deletable lock key.
+    _conv_dir(admin_id, service_id, conv_id) if conv_id else _service_dir(admin_id, service_id)
+    identity = json.dumps([admin_id, service_id, conv_id], separators=(",", ":"))
+    return os.path.join(USERS_DIR, ".consumer-locks", hashlib.sha256(identity.encode()).hexdigest())
+
+
+@contextmanager
+def _consumer_guard(admin_id: str, service_id: str, conv_id: str = ""):
+    """Lock order: Service lifecycle, then conversation; outside deleted trees.
+
+    Short synchronous file operations share the Service lifecycle lock so an
+    entire Service deletion cannot race with a conversation save or migration.
+    Never call another guarded helper while holding this non-reentrant lock.
+    """
+    from app.core.jsonl_store import _writer_lock
+    with _writer_lock(_consumer_lock_path(admin_id, service_id)):
+        if conv_id:
+            with _writer_lock(_consumer_lock_path(admin_id, service_id, conv_id)):
+                yield
+        else:
+            yield
 
 
 # ── Service CRUD ─────────────────────────────────────────────────────
@@ -116,22 +142,24 @@ def get_service(admin_id: str, service_id: str) -> Optional[Dict[str, Any]]:
 
 
 def update_service(admin_id: str, service_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    config = get_service(admin_id, service_id)
-    if not config:
-        return None
-    config.update({k: v for k, v in updates.items() if v is not None})
-    config["updated_at"] = datetime.now().isoformat()
-    atomic_json_save(_config_path(admin_id, service_id), config, ensure_ascii=False, indent=2)
-    return config
+    with _consumer_guard(admin_id, service_id):
+        config = get_service(admin_id, service_id)
+        if not config:
+            return None
+        config.update({k: v for k, v in updates.items() if v is not None})
+        config["updated_at"] = datetime.now().isoformat()
+        atomic_json_save(_config_path(admin_id, service_id), config, ensure_ascii=False, indent=2)
+        return config
 
 
 def delete_service(admin_id: str, service_id: str) -> bool:
-    import shutil
-    svc_dir = _service_dir(admin_id, service_id)
-    if not os.path.isdir(svc_dir):
-        return False
-    shutil.rmtree(svc_dir)
-    return True
+    with _consumer_guard(admin_id, service_id):
+        import shutil
+        svc_dir = _service_dir(admin_id, service_id)
+        if not os.path.isdir(svc_dir):
+            return False
+        shutil.rmtree(svc_dir)
+        return True
 
 
 # ── API Key management ───────────────────────────────────────────────
@@ -273,6 +301,11 @@ def _conv_legacy_backup_path(admin_id: str, service_id: str, conv_id: str) -> st
 
 
 def _migrate_consumer_conv(admin_id: str, service_id: str, conv_id: str) -> None:
+    with _consumer_guard(admin_id, service_id, conv_id):
+        _migrate_consumer_conv_locked(admin_id, service_id, conv_id)
+
+
+def _migrate_consumer_conv_locked(admin_id: str, service_id: str, conv_id: str) -> None:
     """Lazy migration: split old messages.json into meta.json + .jsonl."""
     legacy = _conv_legacy_path(admin_id, service_id, conv_id)
     if not os.path.isfile(legacy):
@@ -307,31 +340,37 @@ def _migrate_consumer_conv(admin_id: str, service_id: str, conv_id: str) -> None
 
 
 def create_consumer_conversation(admin_id: str, service_id: str, title: str = "",
-                                 source: str = "") -> Dict[str, Any]:
+                                 source: str = "", admin_conversation_id: str | None = None) -> Dict[str, Any]:
     """Create a new consumer conversation.
 
     ``source`` 标识来源 —— "web" / "api" / "wechat"。空字符串保留给
     迁移自老格式（无来源信息）的会话，admin UI 可识别为 "unknown"。
     """
-    conv_id = uuid.uuid4().hex[:10]
-    conv_path = _conv_dir(admin_id, service_id, conv_id)
-    os.makedirs(os.path.join(conv_path, "generated", "images"), exist_ok=True)
-    os.makedirs(os.path.join(conv_path, "generated", "audio"), exist_ok=True)
-    os.makedirs(os.path.join(conv_path, "generated", "videos"), exist_ok=True)
+    with _consumer_guard(admin_id, service_id):
+        if not get_service(admin_id, service_id):
+            raise FileNotFoundError("Service 已删除，无法创建会话")
+        conv_id = uuid.uuid4().hex[:10]
+        conv_path = _conv_dir(admin_id, service_id, conv_id)
+        os.makedirs(os.path.join(conv_path, "generated", "images"), exist_ok=True)
+        os.makedirs(os.path.join(conv_path, "generated", "audio"), exist_ok=True)
+        os.makedirs(os.path.join(conv_path, "generated", "videos"), exist_ok=True)
 
-    now = datetime.now().isoformat()
-    meta = {
-        "id": conv_id,
-        "title": title,
-        "source": source,
-        "created_at": now,
-        "updated_at": now,
-        "message_count": 0,
-    }
-    atomic_json_save(_conv_meta_path(admin_id, service_id, conv_id), meta,
-                     ensure_ascii=False, indent=2)
-    open(_conv_msgs_path(admin_id, service_id, conv_id), "ab").close()
-    return {**meta, "messages": []}
+        now = datetime.now().isoformat()
+        if source == 'admin_test' and not admin_conversation_id:
+            raise ValueError('测试会话必须绑定管理员对话')
+        meta = {
+            "id": conv_id,
+            "title": title,
+            "source": source,
+            **({'admin_conversation_id': admin_conversation_id} if source == 'admin_test' else {}),
+            "created_at": now,
+            "updated_at": now,
+            "message_count": 0,
+        }
+        atomic_json_save(_conv_meta_path(admin_id, service_id, conv_id), meta,
+                         ensure_ascii=False, indent=2)
+        open(_conv_msgs_path(admin_id, service_id, conv_id), "ab").close()
+        return {**meta, "messages": []}
 
 
 def list_consumer_conversations(admin_id: str, service_id: str) -> List[Dict[str, Any]]:
@@ -351,7 +390,7 @@ def list_consumer_conversations(admin_id: str, service_id: str) -> List[Dict[str
             continue
         _migrate_consumer_conv(admin_id, service_id, conv_id)
         meta = safe_load_json(_conv_meta_path(admin_id, service_id, conv_id))
-        if not meta:
+        if not meta or meta.get('source') == 'admin_test':
             continue
         out.append({
             "id": meta.get("id", conv_id),
@@ -367,69 +406,81 @@ def list_consumer_conversations(admin_id: str, service_id: str) -> List[Dict[str
 
 def delete_consumer_conversation(admin_id: str, service_id: str, conv_id: str) -> bool:
     """Hard-delete the entire conv directory (meta + jsonl + generated/*)."""
-    import shutil
-    conv_path = _conv_dir(admin_id, service_id, conv_id)
-    if not os.path.isdir(conv_path):
-        return False
-    try:
-        shutil.rmtree(conv_path)
-        return True
-    except OSError:
-        return False
+    with _consumer_guard(admin_id, service_id, conv_id):
+        import shutil
+        conv_path = _conv_dir(admin_id, service_id, conv_id)
+        if not os.path.isdir(conv_path):
+            return False
+        try:
+            shutil.rmtree(conv_path)
+            return True
+        except OSError:
+            return False
 
 
 def get_consumer_conversation(admin_id: str, service_id: str, conv_id: str) -> Optional[Dict[str, Any]]:
-    _migrate_consumer_conv(admin_id, service_id, conv_id)
-    meta = safe_load_json(_conv_meta_path(admin_id, service_id, conv_id))
-    if not meta:
-        return None
-    messages = read_jsonl(_conv_msgs_path(admin_id, service_id, conv_id))
-    out = dict(meta)
-    out["messages"] = messages
-    return out
+    with _consumer_guard(admin_id, service_id, conv_id):
+        _migrate_consumer_conv_locked(admin_id, service_id, conv_id)
+        meta = safe_load_json(_conv_meta_path(admin_id, service_id, conv_id))
+        if not meta:
+            return None
+        messages = read_jsonl(_conv_msgs_path(admin_id, service_id, conv_id))
+        out = dict(meta)
+        out["messages"] = messages
+        return out
 
 
 def get_consumer_recent_messages(admin_id: str, service_id: str, conv_id: str,
                                  last_n: int) -> List[Dict[str, Any]]:
     """Tail-read for short-term-memory injection."""
-    _migrate_consumer_conv(admin_id, service_id, conv_id)
-    return read_jsonl_tail(_conv_msgs_path(admin_id, service_id, conv_id), last_n)
+    with _consumer_guard(admin_id, service_id, conv_id):
+        _migrate_consumer_conv_locked(admin_id, service_id, conv_id)
+        return read_jsonl_tail(_conv_msgs_path(admin_id, service_id, conv_id), last_n)
 
 
 def save_consumer_message(admin_id: str, service_id: str, conv_id: str,
                           role: str, content: str, tool_calls: list = None,
-                          attachments: list = None, blocks: list = None):
-    _migrate_consumer_conv(admin_id, service_id, conv_id)
-    conv_path = _conv_dir(admin_id, service_id, conv_id)
-    os.makedirs(conv_path, exist_ok=True)
+                          attachments: list = None, blocks: list = None, event_id: str = None,
+                          metadata: dict = None):
+    with _consumer_guard(admin_id, service_id, conv_id):
+        _migrate_consumer_conv_locked(admin_id, service_id, conv_id)
+        meta = safe_load_json(_conv_meta_path(admin_id, service_id, conv_id))
+        if not meta:
+            raise FileNotFoundError("Service 会话已删除，不能保存迟到的消息")
 
-    now = datetime.now().isoformat()
-    msg: Dict[str, Any] = {
-        "role": role,
-        "content": content,
-        "timestamp": now,
-    }
-    if tool_calls:
-        msg["tool_calls"] = tool_calls
-    if attachments:
-        msg["attachments"] = attachments
-    if blocks:
-        msg["blocks"] = blocks
-    append_jsonl(_conv_msgs_path(admin_id, service_id, conv_id), msg)
+        now = datetime.now().isoformat()
+        msg: Dict[str, Any] = {
+            "role": role,
+            "content": content,
+            "timestamp": now,
+        }
+        # Only message provenance is accepted; metadata cannot replace identity,
+        # content, or the idempotent event ID.
+        for key in ('author_type', 'message_id', 'case_id', 'broadcast_id'):
+            if metadata and isinstance(metadata.get(key), str):
+                msg[key] = metadata[key]
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+        if attachments:
+            msg["attachments"] = attachments
+        if blocks:
+            msg["blocks"] = blocks
+        if event_id:
+            from app.core.jsonl_store import append_jsonl_once
+            append_jsonl_once(_conv_msgs_path(admin_id, service_id, conv_id), msg, event_id)
+        else:
+            append_jsonl(_conv_msgs_path(admin_id, service_id, conv_id), msg)
 
-    meta = safe_load_json(_conv_meta_path(admin_id, service_id, conv_id)) or {
-        "id": conv_id,
-        "title": "",
-        "created_at": now,
-        "updated_at": now,
-        "message_count": 0,
-    }
-    meta["message_count"] = int(meta.get("message_count", 0)) + 1
-    meta["updated_at"] = now
-    if not meta.get("title") and role == "user":
-        meta["title"] = content[:30] + ("..." if len(content) > 30 else "")
-    atomic_json_save(_conv_meta_path(admin_id, service_id, conv_id), meta,
-                     ensure_ascii=False, indent=2)
+        if event_id:
+            from app.core.jsonl_store import read_jsonl
+            meta['message_count'] = len(read_jsonl(_conv_msgs_path(admin_id, service_id, conv_id)))
+        else:
+            meta["message_count"] = int(meta.get("message_count", 0)) + 1
+        meta["updated_at"] = now
+        if not meta.get("title") and role == "user":
+            meta["title"] = content[:30] + ("..." if len(content) > 30 else "")
+        atomic_json_save(_conv_meta_path(admin_id, service_id, conv_id), meta,
+                         ensure_ascii=False, indent=2)
 
 
 def get_consumer_attachment_dir(admin_id: str, service_id: str, conv_id: str) -> str:

@@ -9,7 +9,6 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import datetime
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -23,8 +22,9 @@ def external(config):
 
 
 def revision(config):
-    keys = ('runtime_choice', 'runtime_binding', 'allowed_docs', 'allowed_scripts',
-            'capabilities', 'research_tools', 'system_prompt_version_id', 'user_profile_version_id')
+    keys = ('runtime_choice', 'runtime_binding', 'model', 'allowed_docs', 'allowed_scripts',
+            'capabilities', 'research_tools', 'system_prompt_version_id',
+            'user_profile_version_id', 'published', 'updated_at')
     return hashlib.sha256(json.dumps({k: config.get(k) for k in keys}, sort_keys=True).encode()).hexdigest()
 
 
@@ -57,25 +57,35 @@ def authorize_service(actor_id, binding):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', scope.get(field, '')):
             raise HTTPException(400, 'Service 会话标识无效')
     svc = get_service(actor_id, scope['service_id'])
-    if not svc or not svc.get('published', True) or not external(svc):
+    preview = scope.get('channel') == 'admin_test'
+    if not svc or (not preview and not svc.get('published', True)) or not external(svc):
         raise HTTPException(403, 'Service 已下线或已更换引擎')
     if revision(svc) != scope['revision'] or svc.get('runtime_binding') != {k: v for k, v in binding.items() if k != 'service_scope'}:
         raise HTTPException(409, 'Service 配置已变更，请重新发送消息')
     if not consumer_conversation_exists(actor_id, scope['service_id'], scope['conversation_id']):
         raise HTTPException(404, 'Service 会话已删除')
-    if scope['channel'] in ('web', 'api'):
+    if preview:
+        from app.services.conversations import get_conversation_meta
+        from app.services.published import get_consumer_conversation
+        admin_conv_id = scope.get('admin_conversation_id')
+        if not isinstance(admin_conv_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,36}', admin_conv_id):
+            raise HTTPException(403, '测试会话归属无效')
+        meta = get_conversation_meta(actor_id, admin_conv_id) if admin_conv_id else None
+        preview_conv = get_consumer_conversation(actor_id, scope['service_id'], scope['conversation_id'])
+        if (not meta or meta.get('test_service_id') != scope['service_id'] or
+                meta.get('test_consumer_conversation_id') != scope['conversation_id'] or
+                meta.get('test_service_revision') != scope['revision'] or
+                not preview_conv or preview_conv.get('source') != 'admin_test' or
+                preview_conv.get('admin_conversation_id') != admin_conv_id):
+            raise HTTPException(403, '测试模式已关闭或会话不匹配')
+    elif scope['channel'] in ('web', 'api'):
         keys = list_service_keys(actor_id, scope['service_id'])
         if not any(k['id'] == scope.get('key_id') and k.get('billing', 'hosted') == 'hosted' for k in keys):
             raise HTTPException(403, 'Service Key 已失效或不是托管 Key')
     elif scope['channel'] == 'wechat':
-        from app.channels.wechat.session_manager import get_session_manager
-        wc = svc.get('wechat_channel', {})
-        expiry = wc.get('expires_at')
-        if not wc.get('enabled') or (expiry and datetime.fromisoformat(expiry).replace(tzinfo=None) < datetime.now()):
-            raise HTTPException(403, '微信渠道已停用或过期')
-        current = get_session_manager().get_session(scope.get('wechat_session_id'))
-        if not current or (current.admin_id, current.service_id, current.conversation_id) != (actor_id, scope['service_id'], scope['conversation_id']):
-            raise HTTPException(403, '微信会话已失效')
+        from app.channels.wechat.policy import ensure_wechat_session
+        ensure_wechat_session(actor_id, scope['service_id'], scope.get('wechat_session_id'),
+                             conversation_id=scope['conversation_id'])
     else:
         raise HTTPException(400, '套餐 Service 尚不支持此执行渠道')
 
@@ -84,13 +94,49 @@ def service_authorizer(profiles):
     def authorize(actor_id, binding):
         result = profiles.authorize(actor_id, binding)
         authorize_service(actor_id, binding)
+        authorize_scheduler(actor_id, binding)
         return result
     return authorize
 
 
+def authorize_scheduler(actor_id, binding):
+    """Continuously intersect a CLI run with its durable scheduled grant."""
+    scope = binding.get('scheduler_scope')
+    if scope is None:
+        return
+    if binding.get('service_scope') or not isinstance(scope, dict):
+        raise HTTPException(403, '定时任务运行作用域无效')
+    from app.execution.context import ExecutionContext, get_store
+    from app.execution.grants import Grant
+    from app.services import scheduler_tree as tree
+    store = get_store()
+    row = store.get(scope.get('run_id'), actor_id)
+    if not row or row.get('token') is None:
+        raise HTTPException(403, '定时任务授权已失效')
+    grant = Grant(ExecutionContext(store, row))
+    if grant.scope != 'admin' or grant.uid != actor_id or grant.tid != scope.get('task_id'):
+        raise HTTPException(403, '定时任务运行身份不匹配')
+    grant.policies()
+    task = tree.load_task_or_migrate('admin', actor_id, grant.tid)
+    if not task or task.get('revision') != scope.get('revision') or task.get('revision') != grant.snapshot.get('revision'):
+        raise HTTPException(409, '定时任务已修改，请等待下次运行')
+    saved = grant.snapshot.get('task_config') or {}
+    base = {k: v for k, v in binding.items() if k != 'scheduler_scope'}
+    if saved.get('runtime_binding') != base or task.get('task_config', {}).get('runtime_binding') != base:
+        raise HTTPException(409, '定时任务引擎绑定已更改')
+    for capability in ('web', 'image'):
+        allowed = capability in grant.saved['capabilities']
+        if bool(scope.get(capability)) != allowed:
+            raise HTTPException(403, '定时任务能力超出授权')
+        if allowed:
+            grant.capability(capability)
+    return grant
+
+
 class RuntimeConsumerAgent:
     """LangChain message stream facade; the native client owns its own harness."""
-    def __init__(self, admin_id, service_id, conv_id, *, channel='web', key_id=None, wechat_session_id=None):
+    def __init__(self, admin_id, service_id, conv_id, *, channel='web', key_id=None,
+                 wechat_session_id=None, preview_admin_conv_id=None):
         from app.runtime.manager import get_runtime
         from app.services.published import get_service
         from app.services.consumer_agent import _build_consumer_system_prompt
@@ -105,6 +151,8 @@ class RuntimeConsumerAgent:
                  'key_id': key_id, 'wechat_session_id': wechat_session_id, 'revision': revision(svc),
                  'web': bool(svc.get('research_tools') or 'web' in svc.get('capabilities', [])),
                  'image': 'image' in svc.get('capabilities', [])}
+        if preview_admin_conv_id:
+            scope['admin_conversation_id'] = preview_admin_conv_id
         binding = {**svc.get('runtime_binding', {}), 'service_scope': scope}
         if 'profile_id' not in binding:
             raise HTTPException(409, '请由 admin 重新保存 Service 的引擎连接')
@@ -113,7 +161,9 @@ class RuntimeConsumerAgent:
         # The shared Service Key is the existing authorization boundary for web
         # and API. A WeChat conversation retains its dedicated caller identity.
         sessions = self.runtime.store.find('session', actor_id=admin_id, conversation_id=conv_id)
-        session = next((s for s in sessions if s['binding'] == binding), None)
+        # New tool contracts require a fresh supplier session, otherwise an
+        # already-open native thread may keep its old dynamic tool registry.
+        session = next((s for s in sessions if s['binding'] == binding and s.get('service_tools_version') == 4), None)
         if session is None:
             prompt = _build_consumer_system_prompt(admin_id, svc) + """
 
@@ -121,15 +171,20 @@ class RuntimeConsumerAgent:
 你通过套餐客户端提供本 Service 的回答。只能调用注册的 jellyfish_service_* 工具。
 文档白名单、脚本白名单与本对话产物由服务端检查；不得访问宿主、其他对话、账号配置或 admin 长期记忆。
 用 read_my_conversation 查询本对话历史；不需要在简单问候前扫描文档或记忆。
+用户需要人工帮助或向管理员反馈时，调用 jellyfish_service_contact_admin；只能提交当前对话的反馈，不能承诺管理员已经阅读或回复。
 原生网页搜索与生图仅在本 Service 启用相应能力时使用；不得调用其他付费模型或生成供应商。
 文件只能通过业务工具读写。原生终端与文件修改审批会被拒绝。
 原生生图结果自动归档并显示，无需复制文件或返回本机路径。
 输出直接流式发送给用户。文件引用使用 <<FILE:/generated/相对路径>>。
 """
+            if preview_admin_conv_id:
+                prompt += ('\n\n## 管理员测试模式\n当前是 Service 预览。contact_admin 只模拟提交，'
+                           '不会通知管理员或写入真实收件箱；不得声称已经实际通知。')
             specs = ServiceTools(self.runtime.runs.storage, self.runtime.store, self.runtime.runs.authorize).specifications(binding, admin_id)
             session = self.runtime.runs.create_session(admin_id, binding, conversation_id=conv_id,
                                                        instructions=prompt, dynamic_tools=specs)
             session['instructions_version'] = 3
+            session['service_tools_version'] = 4
             self.runtime.store.put('session', session)
         self.session = session
 
@@ -157,7 +212,9 @@ class RuntimeConsumerAgent:
                 else:
                     raise HTTPException(400, '套餐 Service 消息仅接受文本和 Base64 图片')
             content = '\n'.join(parts)
-        run = self.runtime.runs.enqueue(self.admin_id, self.session['id'], uuid.uuid4().hex, content, attachments=attachments)
+        run = self.runtime.runs.enqueue(self.admin_id, self.session['id'],
+                                        agent_input.get('request_id') or uuid.uuid4().hex,
+                                        content, attachments=attachments)
         rid, cursor = run['id'], 0
         finished = False
         try:
@@ -198,5 +255,7 @@ class RuntimeConsumerAgent:
                               'total_tokens': usage.get('totalTokens', usage['inputTokens'] + usage['outputTokens'])}
                 from app.services.token_usage import record_llm_usage
                 record_llm_usage(self.admin_id, final['binding']['runtime'] + ':' + final['binding']['model'],
-                    usage['inputTokens'], usage['outputTokens'], service_id=self.scope['service_id'],
-                    conv_id=self.scope['conversation_id'], channel=self.scope['channel'], key_id=self.scope.get('key_id') or '')
+                    usage['inputTokens'], usage['outputTokens'], service_id=(None if self.scope['channel'] == 'admin_test' else self.scope['service_id']),
+                    conv_id=(self.scope.get('admin_conversation_id') or self.scope['conversation_id']),
+                    channel=self.scope['channel'], key_id=self.scope.get('key_id') or '',
+                    runtime=final['binding']['runtime'])

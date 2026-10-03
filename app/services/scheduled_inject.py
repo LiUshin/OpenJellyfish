@@ -82,16 +82,27 @@ _drainer_tasks: Dict[str, asyncio.Task] = {}
 
 # Lock guarding _pending / _active_refcount / _drainer_tasks mutations.
 _lock = asyncio.Lock()
+_gate = asyncio.Condition(_lock)
+_injecting: set[str] = set()
+_MAX_PENDING = 100
+_MAX_SUMMARY_LINES = 20
 
 
 # ── Active-stream tracking (called by streaming entry points) ───────────
 
-async def mark_thread_active(thread_id: str) -> None:
+async def mark_thread_active(thread_id: str, *, agent: Optional[Any] = None) -> None:
     """Mark a thread as actively streaming. Pair with mark_thread_inactive in finally."""
     if not thread_id:
         return
-    async with _lock:
+    async with _gate:
+        await _gate.wait_for(lambda: thread_id not in _injecting)
         _active_refcount[thread_id] = _active_refcount.get(thread_id, 0) + 1
+    try:
+        if agent is not None:
+            await repair_scheduled_state(agent, thread_id)
+    except BaseException:
+        await mark_thread_inactive(thread_id)
+        raise
 
 
 async def mark_thread_inactive(thread_id: str) -> None:
@@ -124,14 +135,7 @@ async def thread_active(thread_id: str, *, agent: Optional[Any] = None):
     that would otherwise make the next ``astream`` fail with
     ``multiple non-consecutive system messages``.
     """
-    if agent is not None:
-        try:
-            await repair_scheduled_state(agent, thread_id)
-        except Exception:
-            log.exception("repair_scheduled_state failed on thread=%s — "
-                          "continuing anyway; agent.astream may still error",
-                          thread_id)
-    await mark_thread_active(thread_id)
+    await mark_thread_active(thread_id, agent=agent)
     try:
         yield
     finally:
@@ -231,9 +235,12 @@ async def _enqueue(thread_id: str, item: dict) -> None:
     async with _lock:
         q = _pending.get(thread_id)
         if q is None:
-            q = asyncio.Queue()
+            q = asyncio.Queue(maxsize=_MAX_PENDING)
             _pending[thread_id] = q
-        await q.put(item)
+        if q.full():
+            q.get_nowait()
+            log.warning("L2 queue full on %s; dropping oldest projection (L1 retained)", thread_id)
+        q.put_nowait(item)
         active = _active_refcount.get(thread_id, 0)
         qsize = q.qsize()
     log.info("Queued scheduled-task L2 injection for thread=%s "
@@ -246,49 +253,38 @@ async def _enqueue(thread_id: str, item: dict) -> None:
 # ── Drainer loop (one per thread, lifecycle = while queue non-empty) ────
 
 async def _drainer_loop(thread_id: str) -> None:
-    """Drain pending injections for a single thread.
-
-    Waits while the thread is active; processes a batch when it idles.
-    Items older than _QUEUE_MAX_WAIT_S are dropped (L1 still persisted).
-    Loop exits when queue is empty.
-    """
     try:
         while True:
-            async with _lock:
-                q = _pending.get(thread_id)
-                if q is None or q.empty():
-                    return
-                active = _active_refcount.get(thread_id, 0)
-            if active > 0:
-                # Wait briefly and re-check; mark_thread_inactive will also
-                # explicitly wake us via _wake_drainer.
-                await asyncio.sleep(2.0)
-                continue
-
-            # Drain everything currently queued in one batch (cheaper than
-            # one aupdate_state per item; each call would re-scan state).
-            items: List[dict] = []
-            now = time.time()
-            while not q.empty():
-                it = await q.get()
-                if now - it["enqueued_at"] > _QUEUE_MAX_WAIT_S:
-                    log.warning("Dropping scheduled-task L2 injection (thread=%s, "
-                                "task=%s) — queued >%ds, L1 still persisted in messages.json",
-                                thread_id, it["task_meta"].get("task_id"),
-                                _QUEUE_MAX_WAIT_S)
-                    continue
-                items.append(it)
-            if not items:
-                continue
-
-            # Small settle delay to let any just-finished stream's checkpoint
-            # write fully commit before we read+update state.
             await asyncio.sleep(_DRAIN_SETTLE_S)
+            items = []
+            async with _gate:
+                q = _pending.get(thread_id)
+                if q is None:
+                    return
+                # TTL is enforced even while a conversation remains active.
+                fresh = []
+                while not q.empty():
+                    item = q.get_nowait()
+                    if time.time() - item["enqueued_at"] <= _QUEUE_MAX_WAIT_S:
+                        fresh.append(item)
+                    else:
+                        log.warning("L2 projection expired on %s; L1 retained", thread_id)
+                if not fresh:
+                    return
+                if _active_refcount.get(thread_id, 0):
+                    for item in fresh:
+                        q.put_nowait(item)
+                    continue
+                _injecting.add(thread_id)
+                items = fresh
             try:
                 await _inject_batch(thread_id, items)
             except Exception:
-                log.exception("Drainer failed to inject batch on thread=%s "
-                              "(items=%d)", thread_id, len(items))
+                log.exception("L2 injection failed on %s", thread_id)
+            finally:
+                async with _gate:
+                    _injecting.discard(thread_id)
+                    _gate.notify_all()
     finally:
         async with _lock:
             _drainer_tasks.pop(thread_id, None)
@@ -299,13 +295,15 @@ async def _drainer_loop(thread_id: str) -> None:
 
 # ── Injection logic ──────────────────────────────────────────────────────
 
-async def _inject_batch(thread_id: str, items: List[dict]) -> None:
+async def _inject_batch(thread_id: str, items: List[dict], *, strict=False) -> None:
     """Inject N synthetic pairs into thread state, then truncate to MAX_LIVE_PAIRS."""
     # All items in a batch share the same agent factory (same thread = same scope).
     agent_factory = items[0]["agent_factory"]
     try:
         agent = await agent_factory()
     except Exception:
+        if strict:
+            raise
         log.exception("Agent factory failed for thread=%s — skipping injection",
                       thread_id)
         return
@@ -315,6 +313,8 @@ async def _inject_batch(thread_id: str, items: List[dict]) -> None:
     try:
         state = await agent.aget_state(config)
     except Exception as e:
+        if strict:
+            raise
         log.warning("aget_state failed for thread=%s (%s) — skipping injection. "
                     "L1 already persisted; agent will lack direct memory of these tasks.",
                     thread_id, e)
@@ -322,6 +322,10 @@ async def _inject_batch(thread_id: str, items: List[dict]) -> None:
 
     existing_messages = list((getattr(state, "values", None) or {}).get("messages") or [])
 
+    watermark = max((_msg_kwargs(m).get('_sched_projection_seq', 0) for m in existing_messages), default=0)
+    seen = {_msg_kwargs(m).get('_sched_pair_id') for m in existing_messages}
+    items = [it for it in items if it['run_marker'] not in seen and
+             (not it['task_meta'].get('projection_seq') or it['task_meta']['projection_seq'] > watermark)]
     from langchain_core.messages import AIMessage, ToolMessage
 
     new_pairs: List[Dict[str, Any]] = []
@@ -337,13 +341,13 @@ async def _inject_batch(thread_id: str, items: List[dict]) -> None:
                 "name": "scheduled_task",
                 "args": {"task_meta": meta, "status": meta.get("status", "success")},
             }],
-            additional_kwargs={"_sched_pair_id": run_marker, "_scheduled_task": True},
+            additional_kwargs={"_sched_pair_id": run_marker, "_scheduled_task": True, "_sched_projection_seq": meta.get("projection_seq", 0)},
         )
         tm = ToolMessage(
             id=f"sched_inj_tool_{run_marker}",
             tool_call_id=tool_call_id,
             content=_truncate_for_state(it["output"]),
-            additional_kwargs={"_sched_pair_id": run_marker, "_scheduled_task": True},
+            additional_kwargs={"_sched_pair_id": run_marker, "_scheduled_task": True, "_sched_projection_seq": meta.get("projection_seq", 0)},
         )
         new_pairs.append({"ai": ai, "tool": tm, "meta": meta})
 
@@ -370,6 +374,8 @@ async def _inject_batch(thread_id: str, items: List[dict]) -> None:
         from langchain_core.messages import RemoveMessage
 
         evicted = existing_pairs[:evict_count]
+        dropped_new = new_pairs[:max(0, evict_count - len(existing_pairs))]
+        new_pairs = new_pairs[max(0, evict_count - len(existing_pairs)):]
 
         # Combine old summary's lines (if any) with newly-evicted lines into a
         # single fresh summary pair, preserving all previously-evicted runs'
@@ -377,7 +383,8 @@ async def _inject_batch(thread_id: str, items: List[dict]) -> None:
         prior_summary_lines = _extract_prior_summary_lines(
             existing_messages, existing_summary_ids)
         evicted_lines = [_summarize_pair(p) for p in evicted]
-        all_lines = prior_summary_lines + evicted_lines
+        evicted_lines += [_summarize_pair({"meta": p["meta"], "output": p["tool"].content}) for p in dropped_new]
+        all_lines = (prior_summary_lines + evicted_lines)[-_MAX_SUMMARY_LINES:]
 
         # Remove old summary pair (if any) so we can rebuild it.
         for mid in existing_summary_ids:
@@ -389,7 +396,7 @@ async def _inject_batch(thread_id: str, items: List[dict]) -> None:
         if all_lines:
             summary_text = (
                 _SUMMARY_PREFIX
-                + "\n".join(f"- {ln}" for ln in all_lines)
+                + "\n".join(f"- {ln}" for ln in all_lines)[-_TOOL_CONTENT_MAX_CHARS:]
             )
             update_messages.extend(_build_summary_pair(summary_text, len(all_lines)))
 
@@ -405,6 +412,10 @@ async def _inject_batch(thread_id: str, items: List[dict]) -> None:
 
     if not update_messages:
         return
+    watermark = max([watermark] + [it['task_meta'].get('projection_seq', 0) for it in items])
+    for message in update_messages:
+        if _msg_kwargs(message).get('_sched_summary'):
+            message.additional_kwargs['_sched_projection_seq'] = watermark
 
     try:
         await agent.aupdate_state(config, {"messages": update_messages})
@@ -413,6 +424,8 @@ async def _inject_batch(thread_id: str, items: List[dict]) -> None:
         log.info("Injected %d scheduled-task pair(s) into thread=%s "
                  "(removed=%d msgs)", len(new_pairs), thread_id, removed_n)
     except Exception:
+        if strict:
+            raise
         log.exception("aupdate_state failed for thread=%s — L1 still persisted",
                       thread_id)
 
@@ -428,12 +441,12 @@ def _build_item(task_meta: Dict[str, Any], output: str, success: bool,
         meta["error"] = error[:200]
     return {
         "task_meta": meta,
-        "output": output or "",
+        "output": _truncate_for_state(output or ""),
         "agent_factory": agent_factory,
         # run_marker links the AI/Tool sides of one pair. Prefer task_id but
         # always append a short random suffix so multiple runs of the same
         # task (e.g. cron) get distinct pairs.
-        "run_marker": f"{meta.get('task_id', 'unk')}_{uuid.uuid4().hex[:6]}",
+        "run_marker": meta.get("run_id") or f"{meta.get('task_id', 'unk')}_{uuid.uuid4().hex[:6]}",
         "enqueued_at": time.time(),
     }
 
@@ -661,3 +674,22 @@ def _consumer_agent_factory(admin_id: str, service_id: str, conv_id: str
         from app.services.consumer_agent import create_consumer_agent
         return create_consumer_agent(admin_id, service_id, conv_id)
     return _make
+
+
+async def project_delivery(target, payload, sequence):
+    """Ack only after a checkpoint commit; the outbox owns retries and ordering."""
+    uid, sid, conv = target['admin_id'], target.get('service_id'), target['conversation_id']
+    thread_id = f'svc-{sid}-{conv}' if sid else f'{uid}-{conv}'
+    factory = _consumer_agent_factory(uid, sid, conv) if sid else _admin_agent_factory(uid)
+    item = _build_item({**payload['task_meta'], 'projection_seq': sequence}, payload['text'],
+                       payload['success'], None, factory)
+    async with _gate:
+        if _active_refcount.get(thread_id, 0) or thread_id in _injecting:
+            raise BlockingIOError('Conversation is active')
+        _injecting.add(thread_id)
+    try:
+        await _inject_batch(thread_id, [item], strict=True)
+    finally:
+        async with _gate:
+            _injecting.discard(thread_id)
+            _gate.notify_all()

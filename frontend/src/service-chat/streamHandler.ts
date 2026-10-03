@@ -12,7 +12,7 @@
  * 若只 setBlocks([...sameRefs])，流式过程中 UI 不更新，结束才整段出现。
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { StreamBlock } from '../pages/Chat/types';
 import { buildFingerprintedBlocks } from '../pages/Chat/streamFlush';
 import { openChatStream, AuthError, type ServiceChatRequest } from './serviceApi';
@@ -46,6 +46,24 @@ export function useServiceStream(opts: CallbackOpts = {}): UseServiceStreamRetur
   const rafRef = useRef<number>(0);
   const pendingRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  const generationRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  const invalidate = useCallback(() => {
+    generationRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    cancelAnimationFrame(rafRef.current);
+    pendingRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      invalidate();
+    };
+  }, [invalidate]);
 
   const clearEmittedCache = useCallback(() => {
     emittedBlocksRef.current = [];
@@ -65,8 +83,10 @@ export function useServiceStream(opts: CallbackOpts = {}): UseServiceStreamRetur
 
   const scheduleFlush = useCallback(() => {
     if (pendingRef.current) return;
+    const generation = generationRef.current;
     pendingRef.current = true;
     rafRef.current = requestAnimationFrame(() => {
+      if (!mountedRef.current || generationRef.current !== generation) return;
       pendingRef.current = false;
       flushBlocksToReact();
     });
@@ -79,37 +99,52 @@ export function useServiceStream(opts: CallbackOpts = {}): UseServiceStreamRetur
   }, [flushBlocksToReact]);
 
   const reset = useCallback(() => {
+    invalidate();
+    if (!mountedRef.current) return;
     blocksRef.current = [];
     clearEmittedCache();
     flushNow();
-  }, [clearEmittedCache, flushNow]);
+    setIsStreaming(false);
+  }, [invalidate, clearEmittedCache, flushNow]);
 
   const abort = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setIsStreaming(false);
-  }, []);
+    invalidate();
+    if (mountedRef.current) setIsStreaming(false);
+  }, [invalidate]);
 
   const send = useCallback(
     async (apiKey: string, req: ServiceChatRequest) => {
+      if (!mountedRef.current) return;
+      invalidate();
+      const generation = generationRef.current;
+      // Bind completion/error handlers to this request's conversation. A later
+      // render may install callbacks for a different conversation.
+      const callbacks = optsRef.current;
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const isCurrent = () => mountedRef.current && generationRef.current === generation
+        && abortRef.current === controller && !controller.signal.aborted;
       blocksRef.current = [];
       clearEmittedCache();
       flushNow();
       setIsStreaming(true);
 
-      const controller = new AbortController();
-      abortRef.current = controller;
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
       try {
         const res = await openChatStream(apiKey, req, controller.signal);
+        if (!isCurrent()) {
+          void res.body?.cancel().catch(() => {});
+          return;
+        }
         if (!res.ok) {
-          optsRef.current.onError?.(`HTTP ${res.status}`);
           blocksRef.current.push({ type: 'text', content: `❌ Error: ${res.status}` });
           flushNow();
+          callbacks.onError?.(`HTTP ${res.status}`);
           return;
         }
 
-        const reader = res.body!.getReader();
+        reader = res.body!.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
 
@@ -135,6 +170,7 @@ export function useServiceStream(opts: CallbackOpts = {}): UseServiceStreamRetur
 
         while (true) {
           const { done, value } = await reader.read();
+          if (!isCurrent()) return;
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
 
@@ -228,10 +264,11 @@ export function useServiceStream(opts: CallbackOpts = {}): UseServiceStreamRetur
         flushNow();
         // 关键：把 finalBlocks 作为参数显式传出，让消费者不需要闭包到 hook 的 state；
         // 浅拷贝一份，避免 reset() 之后调用方拿到被清空的引用。
-        optsRef.current.onDone?.([...blocksRef.current]);
+        callbacks.onDone?.([...blocksRef.current]);
       } catch (err) {
+        if (!isCurrent()) return;
         if (err instanceof AuthError) {
-          optsRef.current.onAuthError?.();
+          callbacks.onAuthError?.();
         } else if ((err as Error).name === 'AbortError') {
           // 用户主动取消（切换/新建会话）—— 调用方会 reset，不提交、不报错
         } else {
@@ -249,15 +286,18 @@ export function useServiceStream(opts: CallbackOpts = {}): UseServiceStreamRetur
           }
           flushNow();
           // 提交已生成内容到消息列表（与正常结束同路径），避免视图里内容消失
-          optsRef.current.onDone?.([...blocksRef.current]);
-          optsRef.current.onError?.(msg);
+          callbacks.onDone?.([...blocksRef.current]);
+          if (isCurrent()) callbacks.onError?.(msg);
         }
       } finally {
-        abortRef.current = null;
-        setIsStreaming(false);
+        reader?.releaseLock();
+        if (isCurrent()) {
+          abortRef.current = null;
+          setIsStreaming(false);
+        }
       }
     },
-    [clearEmittedCache, flushNow, scheduleFlush],
+    [invalidate, clearEmittedCache, flushNow, scheduleFlush],
   );
 
   return { blocks, isStreaming, reset, send, abort };

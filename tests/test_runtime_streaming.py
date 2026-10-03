@@ -181,6 +181,45 @@ class AdapterModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m for m, _ in adapter.rpc.calls].count('thread/start'), 1)
         self.assertNotIn('thread/resume', [m for m, _ in adapter.rpc.calls])
 
+    async def test_codex_usage_sums_each_run_and_ignores_duplicate_or_reset_counters(self):
+        class RPC:
+            def __init__(self):
+                self.turn = 0
+                self.events = []
+
+            async def request(self, method, params):
+                if method == 'turn/start':
+                    self.turn += 1
+                    turn_id = f'turn-{self.turn}'
+                    snapshots = (
+                        [(100, 20, 10, 2), (110, 23, 10, 3),
+                         (110, 23, 10, 3), (5, 1, 5, 1)]
+                        if self.turn == 1 else
+                        [(120, 30, 8, 2), (130, 34, 10, 4)]
+                    )
+                    self.events = [
+                        {'method': 'thread/tokenUsage/updated', 'params': {
+                            'threadId': 'thread', 'turnId': turn_id,
+                            'tokenUsage': {'total': {'inputTokens': total_in, 'outputTokens': total_out},
+                                           'last': {'inputTokens': last_in, 'outputTokens': last_out}}}}
+                        for total_in, total_out, last_in, last_out in snapshots
+                    ] + [{'method': 'turn/completed', 'params': {
+                        'threadId': 'thread', 'turnId': turn_id, 'turn': {'status': 'completed'}}}]
+                    return {'turn': {'id': turn_id}}
+                return {}
+
+            async def next_event(self):
+                return self.events.pop(0)
+
+        adapter = CodexAdapter('unused', Path('/tmp/home'), Path('/tmp/work'), 'model')
+        adapter.rpc = RPC()
+        first = [event async for event in adapter.stream_turn('thread', 'one')]
+        second = [event async for event in adapter.stream_turn('thread', 'two')]
+        self.assertEqual([event.payload['usage']['totalTokens'] for event in first if event.type == 'usage'],
+                         [12, 25, 31])
+        self.assertEqual([event.payload['usage']['totalTokens'] for event in second if event.type == 'usage'],
+                         [10, 24])
+
 
 class StreamBlockTests(unittest.TestCase):
     def test_text_tool_order_updates_and_terminal_survive_snapshot(self):

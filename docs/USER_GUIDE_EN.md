@@ -21,7 +21,7 @@
    - [6.2 Subagent Management](#62-subagent-management)
    - [6.3 Python Environment (per-user venv)](#63-python-environment-per-user-venv)
    - [6.4 Inbox](#64-inbox)
-   - [6.5 General (API Key + Timezone + Theme + Batch Run + Advanced Switches)](#65-general)
+   - [6.5 Environment & General Settings (API Key + Timezone + Theme + Advanced Switches)](#65-environment--general-settings)
    - [6.6 Service Management](#66-service-management)
    - [6.7 Scheduled Tasks](#67-scheduled-tasks)
    - [6.8 WeChat Integration (Admin Self-onboarding)](#68-wechat-integration-admin-self-onboarding)
@@ -190,40 +190,9 @@ The login page uses a split-panel brand design: left 40% is the jellyfish Logo b
 
 ### 3.1 Main Interface Layout
 
-```
-┌──────────┬──────────────────────────────────────┐
-│ Sidebar   │                                      │
-│ (240px)   │       Content Area                   │
-│           │                                      │
-│ ┌──────┐  │                                      │
-│ │User  │  │                                      │
-│ │row + │  │                                      │
-│ │gear  │  │                                      │
-│ ├──────┤  │                                      │
-│ │      │  │                                      │
-│ │Conv  │  │                                      │
-│ │list /│  │                                      │
-│ │Settings│ │                                      │
-│ │menu  │  │                                      │
-│ ├──────┤  │                                      │
-│ │Logo  │  │                                      │
-│ │+theme│  │                                      │
-│ │+file │  │                                      │
-│ │+...  │  │                                      │
-│ │+exit │  │                                      │
-│ └──────┘  │                                      │
-└──────────┴──────────────────────────────────────┘
-```
+The 56px desktop icon rail contains Chat, Services, Scheduled Tasks, and Environment. Hover to see names; Settings and User appear at the bottom. The User menu contains Logout. The next column shows the current area's conversation list or menu, followed by its main content. Services includes My Services and Inbox; Environment includes model/CLI connections and Python packages; Settings includes General settings. The contextual sidebar places the OpenJellyfish name, light/dark switch, and language control at the top.
 
-**Sidebar elements** (top to bottom):
-
-- **User row**: avatar + username + settings gear button (enters Settings Center)
-- **Content area**: conversation page shows conversation list; settings page shows settings nav menu
-- **Brand area**: OpenJellyfish Logo + name (click to collapse sidebar from 240px → 64px)
-- **Bottom quick actions**: System Prompt / Subagent / User Profile / File Panel (all with tooltips) + **Theme toggle** (Sun/Moon/Terminal three-state cycle)
-- **Bottom user area**: Avatar + username + logout button
-
-**Top right**: File panel button (visible only on chat page).
+The file browser stays on the right and is available beside every area and Settings. Open files appear next to the current content. Narrow desktop uses a right overlay or drawer, while mobile uses full-screen drawers and a top-left navigation menu.
 
 ### 3.2 Page Navigation
 
@@ -232,19 +201,20 @@ The login page uses a split-panel brand design: left 40% is the jellyfish Logo b
 | `/` | Chat | Default home |
 | `/settings/prompt` | Operation Rules (System Prompt + Memory & Soul + Capability Prompts) | Settings → Prompt |
 | `/settings/subagents` | Subagent Management | Settings → Subagent Management |
-| `/settings/packages` | Python Environment | Settings → Python Environment |
-| `/settings/inbox` | Inbox | Settings → Inbox (with unread badge) |
-| `/settings/general` | General (API Key + Timezone + Theme + Batch Run + Advanced) | Settings → General |
+| `/settings/packages` | Python Packages | Environment → Python Packages |
+| `/settings/inbox` | Inbox | Services → Inbox (with unread badge) |
+| `/settings/environment` | Models and API/CLI Connections | Environment → Models & Connections |
+| `/settings/general` | Appearance, Time, and Advanced Options | Settings → General settings |
 | `/settings/backup` | Data Backup | Settings → Data Backup |
 | `/settings/usage` | Usage Statistics | Settings → Usage |
-| `/settings/voice` | Voice (LiveKit) | Settings → Voice |
-| `/settings/services` | Service Management | Settings → Service Management |
-| `/settings/scheduler` | Scheduled Tasks | Settings → Scheduled Tasks |
+| `/settings/voice` | Voice (LiveKit) | Navigation entry temporarily hidden |
+| `/settings/services` | Service Management | Services → My Services |
+| `/settings/scheduler` | Scheduled Tasks | Left rail → Scheduled Tasks |
 | `/settings/wechat` | WeChat Integration | Settings → WeChat |
 
 ### 3.3 Multi-Theme Switching
 
-The sidebar bottom Sun/Moon/Terminal icon cycles through themes, or choose in **Settings → General → Theme**.
+The sun/moon control at the top of the contextual sidebar switches light and dark mode. Other theme options are in **Environment → Models & Connections → Theme**.
 
 | Theme | Style |
 |-------|-------|
@@ -262,11 +232,17 @@ The chat page is OpenJellyfish's core interface for streaming conversations with
 
 ### 4.1 Conversation List
 
-- Located in the sidebar, shows all historical conversations
+- Located in the sidebar, groups historical conversations by project and ungrouped
 - Click **+** button to create a new conversation
 - Click a conversation entry to switch to it
 - Hover shows delete button
 - Switching back to a conversation still streaming in background auto-restores display
+
+### 4.1.1 Projects
+
+Projects group admin conversations about one topic. In the Chat sidebar, create a project, move an existing conversation into it, or start a new conversation within it. A project view shows its related conversations, one editable Markdown brief, and search limited to that project's conversations. Deleting a project returns its conversations to Ungrouped without deleting their history.
+
+The current project's brief is supplied to the Agent on each turn, with an injected budget of at most 5,000 tokens. An edit also applies to the next turn of an existing conversation. If the brief is longer, its saved document stays intact while the context copy is truncated. Projects organize conversations; they do not replace `/docs` or automatically become context for Service consumers.
 
 ### 4.2 Message Input
 
@@ -278,7 +254,7 @@ Bottom input area contains:
   - 🎨 **Image**: enable AI image generation
   - 🔊 **Voice**: enable TTS voice generation
   - 🎬 **Video**: enable AI video generation
-- **Plan Mode**: enable planning mode, Agent plans first then executes (requires approval)
+- **Plan Mode (DeepAgents)**: plan before execution with approval. Native Codex / Cursor Plan modes are not yet unified; subscription-plan support does not imply planning-mode support
 - **Model selector**: dropdown to select AI model for current conversation
 - **Image attachments**: three ways to add images
   - 📎 Click attachment button to select file
@@ -364,7 +340,7 @@ AI replies display in streaming mode, containing the following block types:
 
 ### 4.8 YOLO Mode (Auto-approve)
 
-Enable **YOLO mode** in **Settings → General** to **auto-approve** HITL prompts (`write_file` / `edit_file` / `propose_plan`, etc.) in Admin chat.
+Enable **YOLO mode** in **Environment → Models & Connections** to **auto-approve** HITL prompts (`write_file` / `edit_file` / `propose_plan`, etc.) in Admin chat.
 
 - **Admin only**; Service consumer pages have no HITL flow
 - State stored in browser `localStorage` per device
@@ -402,6 +378,18 @@ The default engine is DeepAgents. Once the deployment operator enables the runti
 Codex / Cursor runs support streamed text and tools, per-request approval, cancellation, attachments, and generated-file previews/downloads. Closing the browser does not cancel a run; reopen the chat to restore output and pending approvals. Connections share supplier quota and execute one turn at a time. A failed or revoked connection does not silently fall back to another account or API provider.
 
 Since v1.3.1, this path supports admin web chat and internal Services over web, API and Service WeChat using authorized Codex / Cursor plans. Admin personal WeChat keeps its existing path; plan-backed Services do not support scheduled tasks, voice or video. In Service settings, admins fix the connection, model and resource scope, then create a key using the authorized plan. Plan-backed keys do not support BYOK. This mode is for trusted internal members and does not provide OS isolation between hostile tenants. See [internal Service distribution](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-service-distribution.md). Codex native image generation has local API evidence; Cursor image generation and final image UI verification remain incomplete.
+
+### 4.13 Test a Service inside admin chat (v1.4.0)
+
+Select one of your Services in the conversation bar and enable test mode. The next message runs with that Service's saved configuration; both drafts and published Services can be tested. Disable the mode to return to the admin Agent, keeping test questions and responses in the same conversation for review and revision.
+
+The test uses the Service's model / CLI core, prompt, allowed documents and capabilities with separate context, without earlier admin chat or the project brief. Test records stay out of real consumer records. External `contact_admin` notifications are disabled; other authorized tools can still perform real actions. This does not replace web, API or WeChat channel acceptance testing.
+
+### 4.14 Tracing: inspect and replay work (v1.4.0)
+
+Switch admin chat to Tracing to inspect questions, responses and recorded tool activity. The workspace canvas connects files and actions, with input, output, diff and file-position details. Replay actions in sequence, pan, zoom or fit the canvas.
+
+Tracing visualizes recorded evidence, not hidden model reasoning or a complete system audit. File positions may be approximate or unrecorded; missing coverage does not prove a file was not read. Evidence completeness varies across old conversations, engines and tools.
 
 ## 5. File Panel
 
@@ -456,7 +444,7 @@ Toggle types (Markdown/HTML/CSV/JSON) get a **Preview/Source** switcher in the t
 
 ## 6. Settings Center
 
-Click the ⚙️ gear button on the right of the sidebar user row to enter Settings Center. The settings center sidebar shows the settings navigation menu; click the ← back button in the top left to return to the chat page.
+Click the ⚙️ gear near the bottom of the left icon rail to enter Settings. The User icon below opens a menu with Logout. Click the Chat icon to return to chat.
 
 ### 6.1 Operation Rules
 
@@ -527,7 +515,7 @@ Configure subagents that the main Agent can call, enabling collaboration on comp
 
 ### 6.3 Python Environment (per-user venv)
 
-**Path**: Settings → Python Environment
+**Path**: Environment → Python Packages
 
 Each Admin has an independent Python virtual environment (`users/{your-username}/venv/`) for script execution.
 
@@ -544,7 +532,7 @@ Each Admin has an independent Python virtual environment (`users/{your-username}
 
 ### 6.4 Inbox
 
-**Path**: Settings → Inbox (sidebar menu shows unread message count badge)
+**Path**: Services → Inbox (sidebar menu shows unread message count badge)
 
 Receives messages from Service Agents: when a Service Consumer triggers the `contact_admin` tool in conversation, or certain Service tasks require admin decisions, messages appear here.
 
@@ -569,9 +557,9 @@ If you've connected Admin's WeChat via [§6.8 WeChat Integration](#68-wechat-int
 | Service scheduled task | `contact_admin` triggered by `[System Instruction - From Admin]` |
 | Inbox Agent self-evaluation | `[System Instruction - Service Inbox Notification]` |
 
-### 6.5 General
+### 6.5 Environment & General Settings
 
-**Path**: Settings → General
+**Paths**: Environment → Models & Connections (agent engines, models, and API/CLI credentials); Settings → General settings (appearance, time, and advanced options).
 
 #### 6.5.1 API Keys (Strongly Recommended)
 
@@ -629,15 +617,17 @@ See §4.8. Enable on the General page to auto-approve Admin HITL.
 
 **Path**: Settings → Usage
 
-View LLM token usage for your account (by model / provider / Service / API Key / channel / day). Data from `users/{uid}/llm_usage/` monthly JSONL.
+View LLM token usage for your account by Agent Core, model, provider, Service, API Key, channel, and day. DeepAgents and Service usage comes from monthly JSONL files in `users/{uid}/llm_usage/`; admin Codex / Cursor runs are added from durable Runtime records. Month filters use calendar months. CLI runs with incomplete token reporting are flagged separately; totals include recorded usage only and may be below actual consumption. A DeepAgents call is one model call; a CLI call is one run.
 
 #### 6.5.8 Voice Frontend (LiveKit)
 
-**Path**: Settings → Voice
+**Path**: `/settings/voice` (navigation entry temporarily hidden)
 
 Configure the realtime voice copilot (greeting, routing, fillers, STT/TTS/LLM providers). See §10.2. Requires deployer-provided LiveKit + voice worker.
 
 #### 6.5.9 Batch Run (Embedded BatchRunner)
+
+The entry is temporarily hidden. The following describes the retained capability.
 
 Batch execute Agent tasks through Excel files — suitable for data processing, batch analysis, etc.
 
@@ -662,7 +652,7 @@ Batch execute Agent tasks through Excel files — suitable for data processing, 
 
 ### 6.6 Service Management
 
-**Path**: Settings → Service Management
+**Path**: Services → My Services
 
 Publish a configured Agent as a Service for external consumers (Consumers) to use via API or WeChat QR code.
 
@@ -744,7 +734,7 @@ Standalone page `/s/{service_id}` (React):
 
 ### 6.7 Scheduled Tasks
 
-**Path**: Settings → Scheduled Tasks
+**Path**: left rail → Scheduled Tasks
 
 Manage scheduled automation in **Admin Tasks** and **Service Tasks** tabs. v2 uses **heap-driven scheduling** (~1s precision) and **file-tree storage** (`tasks/{root_id}/{child_id}/_meta.json`).
 
@@ -865,7 +855,7 @@ Connect your **main Admin Agent** via WeChat iLink protocol, enabling direct WeC
 
 ### 7.1 Enable Flow
 
-1. In **Settings → Service Management**, select (or create) a Service
+1. In **Services → My Services**, select (or create) a Service
 2. Switch to the **WeChat Channel** tab
 3. Configure:
    - Enable Switch
@@ -1121,7 +1111,7 @@ After enabling Soul filesystem:
 
 ### 10.2 Realtime Voice Call (LiveKit)
 
-**Path**: Settings → Voice
+**Path**: `/settings/voice` (navigation entry temporarily hidden)
 
 **LiveKit WebRTC** copilot for realtime conversation; complex tasks are delegated to the OpenJellyfish main Agent (same `thread_id` and conversation history as text chat).
 
@@ -1144,7 +1134,7 @@ Use **Test call** in Voice settings to try a session.
 
 ## 11. Environment Variable Configuration
 
-> Tip: From v2.x, all API Keys can be configured per-user in **Settings → General → API Keys** (AES-256-GCM encrypted storage), taking priority over environment variables. Environment variables are mainly for initial deployment or fallback.
+> Tip: From v2.x, all API Keys can be configured per-user in **Environment → Models & Connections → API Keys** (AES-256-GCM encrypted storage), taking priority over environment variables. Environment variables are mainly for initial deployment or fallback.
 
 ### 11.1 Required (at least one)
 
@@ -1267,7 +1257,7 @@ A: Need to configure at least one valid API Key:
 - `ANTHROPIC_API_KEY`: enables Claude series models
 - `OPENAI_API_KEY`: enables GPT series models + multimedia capabilities
 
-Or configure your own Key in **Settings → General → API Keys** (recommended).
+Or configure your own Key in **Environment → Models & Connections → API Keys** (recommended).
 
 ### Q: Web search unavailable?
 
@@ -1275,7 +1265,7 @@ A: Admin Agent enables web tools by default, but requires search API configurati
 - `CLOUDSWAY_SEARCH_KEY` (recommended, used first)
 - `TAVILY_API_KEY` (fallback)
 
-Can configure in **Settings → General → API Keys**.
+Can configure in **Environment → Models & Connections → API Keys**.
 
 ### Q: Image/voice/video generation fails?
 
@@ -1311,7 +1301,7 @@ A: Scripts execute in a sandbox with the following restrictions:
 
 A:
 1. Check `next_run_at` (detail / graph node state)
-2. Confirm timezone: **Settings → General → Timezone**; tasks store `tz_offset_hours`
+2. Confirm timezone: **Environment → Models & Connections → Timezone**; tasks store `tz_offset_hours`
 3. Cron uses your timezone; `once` should include timezone suffix (e.g. `2026-12-31T09:00:00+08:00`)
 4. v2 heap scheduling (~1s); sidebar lists roots — children in graph view
 5. On OOM, set `DISABLE_SCHEDULER=1` or lower `SCHEDULER_MAX_CONCURRENT` (see Developer Guide)
@@ -1411,4 +1401,3 @@ A: Check in this order:
 5. **Streaming output arrives in chunks instead of token-by-token**: The bundled nginx already disables `proxy_buffering` for `/api/chat`. If there is another reverse proxy (custom nginx / Caddy / Traefik) in front of the server, that layer must also disable buffering and enable WebSocket Upgrade, otherwise SSE will be buffered.
 
 ---
-

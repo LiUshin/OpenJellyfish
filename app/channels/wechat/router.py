@@ -4,24 +4,39 @@ WeChat channel API routes.
 QR code generation, scan status polling, session management.
 """
 
+import asyncio
 import base64
+import time
 import logging
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.deps import get_current_user
 from app.channels.wechat.client import generate_qrcode, poll_qrcode_status
 from app.channels.wechat.session_manager import get_session_manager
 from app.services.published import get_service, update_service
+from app.channels.wechat.policy import ensure_wechat_active, ensure_wechat_session
 
 log = logging.getLogger("wechat.router")
 
 router = APIRouter(prefix="/api/wc", tags=["wechat"])
 
-_confirmed_qrcodes: dict[str, dict] = {}
+# Issued QR challenges are bound to a Service before returning them to a browser.
+# A restart expires pending QR codes safely; a fresh scan is required.
+_qr_challenges: dict[str, dict] = {}
+_QR_TTL_SECONDS = 600
+_QR_MAX_PENDING = 2000
+
+
+def _prune_qr_challenges():
+    now = time.monotonic()
+    for qr_id, entry in list(_qr_challenges.items()):
+        if entry["expires_at"] <= now and not entry["lock"].locked():
+            _qr_challenges.pop(qr_id, None)
+
 
 
 # ── schemas ─────────────────────────────────────────────────────────
@@ -30,7 +45,7 @@ _confirmed_qrcodes: dict[str, dict] = {}
 class EnableWeChatRequest(BaseModel):
     enabled: bool = True
     expires_at: Optional[str] = None
-    max_sessions: int = 100
+    max_sessions: int = Field(default=100, ge=1, le=10000)
 
 
 # ── public endpoints (no auth — used by QR scan visitors) ───────────
@@ -52,7 +67,17 @@ async def api_generate_qrcode(service_id: str):
     if not qr_ok:
         raise HTTPException(status_code=429, detail=qr_reason)
 
+    _prune_qr_challenges()
+    if len(_qr_challenges) >= _QR_MAX_PENDING:
+        raise HTTPException(429, "扫码请求过多，请稍后重试")
     qr_data = await generate_qrcode()
+    # Configuration can change while the provider request is pending.
+    ensure_wechat_active(admin_id, service_id)
+    _qr_challenges[qr_data["qr_id"]] = {
+        "admin_id": admin_id, "service_id": service_id,
+        "expires_at": time.monotonic() + _QR_TTL_SECONDS,
+        "lock": asyncio.Lock(), "result": None,
+    }
 
     return {
         "qr_id": qr_data["qr_id"],
@@ -68,44 +93,44 @@ async def api_qrcode_status(service_id: str, qrcode: str):
     if not admin_id:
         raise HTTPException(status_code=404, detail="Service not found")
 
-    if qrcode in _confirmed_qrcodes:
-        return _confirmed_qrcodes[qrcode]
+    challenge = _qr_challenges.get(qrcode)
+    if not challenge or (challenge["admin_id"], challenge["service_id"]) != (admin_id, service_id):
+        raise HTTPException(404, "二维码不存在，请重新获取")
+    async with challenge["lock"]:
+        if challenge["expires_at"] <= time.monotonic():
+            _qr_challenges.pop(qrcode, None)
+            raise HTTPException(410, "二维码已过期，请重新获取")
+        ensure_wechat_active(admin_id, service_id)
+        if challenge["result"] is not None:
+            result = challenge["result"]
+            ensure_wechat_session(admin_id, service_id, result["session_id"],
+                                  conversation_id=result["conversation_id"])
+            return result
 
-    info = await poll_qrcode_status(qrcode)
-    status = info.get("status", "waiting")
-
-    if status == "confirmed":
-        bot_token = info.get("bot_token", "")
-        ilink_user_id = info.get("ilink_user_id", "")
-        ilink_bot_id = info.get("ilink_bot_id", "")
-        base_url = info.get("baseurl", "https://ilinkai.weixin.qq.com")
-
-        manager = get_session_manager()
-        session = await manager.create_session(
-            admin_id=admin_id,
-            service_id=service_id,
-            bot_token=bot_token,
-            ilink_user_id=ilink_user_id,
-            ilink_bot_id=ilink_bot_id,
-            base_url=base_url,
-        )
-        manager.start_polling(session.session_id)
-
-        result = {
-            "status": "confirmed",
-            "session_id": session.session_id,
-            "conversation_id": session.conversation_id,
-        }
-        _confirmed_qrcodes[qrcode] = result
-
-        if len(_confirmed_qrcodes) > 500:
-            oldest = list(_confirmed_qrcodes.keys())[:250]
-            for k in oldest:
-                _confirmed_qrcodes.pop(k, None)
-
-        return result
-
-    return {"status": status}
+        info = await poll_qrcode_status(qrcode)
+        # Recheck after the network wait, before attaching any credentials.
+        ensure_wechat_active(admin_id, service_id)
+        if challenge["expires_at"] <= time.monotonic():
+            raise HTTPException(410, "二维码已过期，请重新获取")
+        status = info.get("status", "waiting")
+        if status == "confirmed":
+            if not all(info.get(key) for key in ("bot_token", "ilink_user_id", "ilink_bot_id")):
+                raise HTTPException(502, "微信确认信息不完整，请重新扫码")
+            manager = get_session_manager()
+            session = await manager.create_session(
+                admin_id=admin_id, service_id=service_id,
+                bot_token=info["bot_token"], ilink_user_id=info["ilink_user_id"],
+                ilink_bot_id=info["ilink_bot_id"],
+                base_url=info.get("baseurl", "https://ilinkai.weixin.qq.com"),
+            )
+            manager.start_polling(session.session_id)
+            result = {"status": "confirmed", "session_id": session.session_id,
+                      "conversation_id": session.conversation_id}
+            challenge["result"] = result
+            return result
+        if status == "expired":
+            _qr_challenges.pop(qrcode, None)
+        return {"status": status}
 
 
 # ── admin endpoints (require auth) ──────────────────────────────────
@@ -143,6 +168,13 @@ async def api_configure_wechat(
     from app.services.consumer_agent import clear_consumer_cache
     clear_consumer_cache(admin_id=user["user_id"], service_id=service_id)
 
+    manager = get_session_manager()
+    try:
+        ensure_wechat_active(user["user_id"], service_id)
+    except HTTPException:
+        await manager.stop_service_polling(user["user_id"], service_id)
+    else:
+        manager.resume_service_polling(user["user_id"], service_id)
     return {"success": True, "wechat_channel": wc_config}
 
 
@@ -227,24 +259,8 @@ def _find_service_admin(service_id: str) -> Optional[str]:
 
 
 def _check_wechat_enabled(admin_id: str, service_id: str) -> tuple[bool, str]:
-    svc = get_service(admin_id, service_id)
-    if not svc:
-        return False, "Service not found"
-    if not svc.get("published", True):
-        return False, "Service not published"
-    wc = svc.get("wechat_channel", {})
-    if not wc.get("enabled"):
-        return False, "WeChat channel not enabled"
-    expires_at = wc.get("expires_at")
-    if expires_at:
-        try:
-            if datetime.fromisoformat(expires_at).replace(tzinfo=None) < datetime.now():
-                return False, "WeChat channel expired"
-        except ValueError:
-            pass
-    max_sessions = wc.get("max_sessions", 100)
-    manager = get_session_manager()
-    current = len(manager.list_sessions(service_id))
-    if current >= max_sessions:
-        return False, f"已达最大会话数 ({max_sessions})"
+    try:
+        svc = ensure_wechat_active(admin_id, service_id)
+    except HTTPException as exc:
+        return False, str(exc.detail)
     return True, "ok"

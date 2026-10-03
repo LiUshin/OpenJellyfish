@@ -21,6 +21,7 @@ from app.services.published import (
 from app.services.consumer_agent import create_consumer_agent
 from app.services.token_usage import build_usage_callbacks
 from app.services.usage_log import record_request
+from app.channels.wechat.policy import ensure_wechat_session
 
 log = logging.getLogger("wechat.bridge")
 
@@ -30,6 +31,8 @@ async def handle_wechat_message(session: WeChatSession, raw_msg: dict):
     Entry point called by SessionManager when a message arrives.
     Routes to the consumer agent and sends replies via iLink.
     """
+    ensure_wechat_session(session.admin_id, session.service_id, session.session_id,
+                          conversation_id=session.conversation_id)
     manager = get_session_manager()
     client = manager.get_client(session.session_id)
     if not client:
@@ -37,6 +40,8 @@ async def handle_wechat_message(session: WeChatSession, raw_msg: dict):
         return
 
     from_user = raw_msg.get("from_user_id", "")
+    if not from_user or (session.from_user_id and session.from_user_id != from_user):
+        raise ValueError("微信入站用户与会话不匹配")
     ctx_token = raw_msg.get("context_token", "")
     items = raw_msg.get("item_list", [])
 
@@ -430,6 +435,8 @@ async def _run_agent_and_reply(
     from app.services.prompt import stamp_message
     from langgraph.types import Command
 
+    ensure_wechat_session(session.admin_id, session.service_id, session.session_id,
+                          conversation_id=session.conversation_id)
     agent = create_consumer_agent(
         session.admin_id, session.service_id, session.conversation_id,
         wechat_session_id=session.session_id,
@@ -450,6 +457,7 @@ async def _run_agent_and_reply(
 
     full_response = ""
     sent_via_tool = False
+    delivery_failure = None
     tool_records = []
     cur_tool_name = None
     delivered_texts: list = []  # send_message 投递的文案，用于持久化助手回复
@@ -468,6 +476,8 @@ async def _run_agent_and_reply(
                     stream_mode="messages",
                     subgraphs=True,
                 ):
+                    ensure_wechat_session(session.admin_id, session.service_id, session.session_id,
+                                          conversation_id=session.conversation_id)
                     if not isinstance(event, tuple) or len(event) != 2:
                         continue
                     ns, chunk = event
@@ -506,12 +516,19 @@ async def _run_agent_and_reply(
 
                         if tool_name == "send_message":
                             from app.channels.wechat.delivery import (
-                                deliver_tool_message, extract_media_tags,
+                                deliver_tool_message, extract_media_tags, WeChatDeliveryError,
                             )
                             try:
                                 if await deliver_tool_message(content, session, client):
                                     sent_via_tool = True
-                            except Exception:
+                            except WeChatDeliveryError as exc:
+                                # Some parts may already have reached the user. Do not
+                                # resend the entire reply on an ambiguous partial failure.
+                                sent_via_tool = sent_via_tool or exc.sent_count > 0
+                                delivery_failure = exc
+                                log.warning("Incomplete WeChat tool delivery: %s", exc)
+                            except Exception as exc:
+                                delivery_failure = exc
                                 log.exception("Failed to send tool message via iLink")
                             # 把投递文案累积进助手消息内容——微信走 send_message 工具投递时
                             # full_response 往往为空，不存这个 admin 端就看不到回复(只剩用户消息)。
@@ -554,7 +571,11 @@ async def _run_agent_and_reply(
                          len(decisions), _loop_i + 1)
                 input_payload = Command(resume={"decisions": decisions})
 
+            if delivery_failure is not None:
+                raise delivery_failure
             if not sent_via_tool and full_response.strip():
+                ensure_wechat_session(session.admin_id, session.service_id, session.session_id,
+                                      conversation_id=session.conversation_id)
                 from app.channels.wechat.delivery import deliver_tool_message, extract_media_tags
                 _, media = extract_media_tags(full_response)
                 if media:
@@ -569,11 +590,17 @@ async def _run_agent_and_reply(
             _assistant_content = full_response.strip()
             if not _assistant_content and delivered_texts:
                 _assistant_content = "\n\n".join(delivered_texts).strip()
-            if _assistant_content or tool_records:
-                save_consumer_message(
-                    session.admin_id, session.service_id,
-                    session.conversation_id, "assistant", _assistant_content,
-                    tool_calls=tool_records if tool_records else None,
-                )
-
-
+            from app.services.published import consumer_conversation_exists
+            if (_assistant_content or tool_records) and consumer_conversation_exists(
+                session.admin_id, session.service_id, session.conversation_id,
+            ):
+                try:
+                    save_consumer_message(
+                        session.admin_id, session.service_id,
+                        session.conversation_id, "assistant", _assistant_content,
+                        tool_calls=tool_records if tool_records else None,
+                    )
+                except FileNotFoundError:
+                    # The writer's lifecycle lock handles deletion after the
+                    # cheap existence check above. Never recreate deleted data.
+                    log.info("Discarded late WeChat output for deleted conversation")

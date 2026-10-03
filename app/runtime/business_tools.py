@@ -19,20 +19,54 @@ class Directory(Empty):
     path: str = Field(default='/docs', max_length=500)
 
 
+class AreaDirectory(Directory):
+    offset: int = Field(default=0, ge=0, le=1000000)
+    limit: int = Field(default=20, ge=1, le=20)
+
+
+class AreaDocument(Document):
+    offset: int = Field(default=0, ge=0, le=1000000)
+    limit: int = Field(default=20, ge=1, le=20)
+    content_offset: int = Field(default=0, ge=0, le=2 * 1024 * 1024)
+    message_ref: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
+
+
 class MemoryWrite(Empty):
     content: str = Field(max_length=8000)
     previous_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
+class ProjectBriefWrite(Empty):
+    content: str = Field(max_length=65536)
 
 
 class ServiceDocument(Document):
     service_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,64}$')
 
 
+class ScheduledWrite(Document):
+    content: str = Field(max_length=65536)
+
+
+SCHEDULED_TOOLS = {
+    'jellyfish_scheduled_list_files': (Directory, '列出本次定时任务授权目录中的文件，最多 200 项。'),
+    'jellyfish_scheduled_read_file': (Document, '读取本次定时任务授权路径的 UTF-8 文件，最多 256KB。'),
+    'jellyfish_scheduled_write_file': (ScheduledWrite, '写入本次定时任务授权路径的 UTF-8 文件，最多 64KB。'),
+}
+
+
+def scheduler_specifications():
+    return [{'type': 'function', 'name': name, 'description': desc,
+             'inputSchema': schema.model_json_schema(), 'deferLoading': False}
+            for name, (schema, desc) in SCHEDULED_TOOLS.items()]
+
+
 TOOLS = {
-    'jellyfish_list_documents': (Directory, '列出当前 admin 的文档目录，最多 200 项。'),
-    'jellyfish_read_document': (Document, '读取当前 admin 的 UTF-8 文档（最多 256KB）。虚拟路径 /docs/...。'),
+    'jellyfish_list_documents': (AreaDirectory, '列出当前 admin 的 /docs 文档目录，或已启用的虚拟 /service-records Service 记录区；后者支持 offset/limit 分页。'),
+    'jellyfish_read_document': (AreaDocument, '读取当前 admin 的 /docs UTF-8 文档（最多 256KB），或已启用的虚拟 /service-records 反馈、会话消息及 Token 用量。记录区支持 offset/limit 分页；长消息设 limit=1，按返回的 next_content_offset 续读，并原样传回 message_ref。'),
     'jellyfish_read_memory': (Empty, '读取当前 admin 的长期记忆与 sha256，用于更新前合并。'),
     'jellyfish_update_memory': (MemoryWrite, '更新当前 admin 的长期记忆；先读取并合并旧记忆，传入原 sha256。锁定时拒绝。'),
+    'jellyfish_write_project_brief': (ProjectBriefWrite, '完整替换当前管理员对话所属项目的 Markdown brief；项目由会话确定，不能指定其他项目。先合并现有内容再写入。'),
     'jellyfish_list_services': (Empty, '列出当前 admin 的服务名称、ID 和文档范围，不返回服务凭据。'),
     'jellyfish_read_service_document': (ServiceDocument, '读取当前 admin 所有、且在指定服务文档范围内的文档。'),
 }
@@ -70,6 +104,8 @@ class BusinessTools:
         return data.decode('utf-8')
 
     async def __call__(self, session, run, params):
+        if session['binding'].get('scheduler_scope'):
+            return await ScheduledBusinessTools(self.storage, self.store, self.authorize)(session, run, params)
         if session['binding'].get('service_scope'):
             from app.runtime.consumer_tools import ServiceTools
             return await ServiceTools(self.storage, self.store, self.authorize)(session, run, params)
@@ -82,28 +118,44 @@ class BusinessTools:
         if not schema:
             return self.result('此业务工具未开放', False)
         try:
+            if name == 'jellyfish_write_project_brief' and run.get('channel') == 'voice':
+                raise PermissionError('语音运行不能写入项目 brief')
             args = schema[0].model_validate(params.get('arguments', {}))
             self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'running', 'input': args.model_dump()})
             # These bounded metadata/file operations run in the scheduler thread so
             # permission checks and memory compare/write cannot interleave.
-            value = self.invoke(actor_id, name, args)
+            value = self.invoke(actor_id, name, args,
+                                conversation_id=session.get('conversation_id'))
             self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'completed', 'result': value})
             return self.result(value, True)
         except Exception:
-            self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'failed', 'result': '工具拒绝执行：检查路径、大小、作用域、记忆锁或版本；没有访问其他 admin 的数据。'})
-            return self.result('工具拒绝执行：检查路径、大小、作用域、记忆锁或版本；没有访问其他 admin 的数据。', False)
+            area = (name in ('jellyfish_list_documents', 'jellyfish_read_document') and
+                    isinstance(params.get('arguments'), dict) and
+                    str(params['arguments'].get('path', '')).startswith('/service-records'))
+            message = ('Service 记录区读取失败：请检查权限和路径；结果过长时缩小 limit 或调整 offset/content_offset。'
+                       if area else '工具拒绝执行：检查路径、大小、作用域、记忆锁或版本；没有访问其他 admin 的数据。')
+            self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'failed', 'result': message})
+            return self.result(message, False)
 
     @staticmethod
     def result(value, success):
         text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         return {'contentItems': [{'type': 'inputText', 'text': text}], 'success': success}
 
-    def invoke(self, actor_id, name, args):
+    def invoke(self, actor_id, name, args, *, conversation_id=None):
         from app.services.prompt import get_agent_notes, is_agent_notes_locked, set_agent_notes
         if name == 'jellyfish_list_documents':
+            if args.path.startswith('/service-records'):
+                from app.services.service_records import list_area
+                return list_area(actor_id, args.path, getattr(args, 'offset', 0), getattr(args, 'limit', 20))
             return [{'name': e.name, 'is_dir': e.is_dir, 'size': e.size}
                     for e in self.storage.list_dir(actor_id, docs_path(args.path, True))][:200]
         if name == 'jellyfish_read_document':
+            if args.path.startswith('/service-records'):
+                from app.services.service_records import read_area
+                return read_area(actor_id, args.path, getattr(args, 'offset', 0), getattr(args, 'limit', 20),
+                                 content_offset=getattr(args, 'content_offset', 0),
+                                 message_ref=getattr(args, 'message_ref', None))
             return self.read(actor_id, args.path)
         if name == 'jellyfish_read_memory':
             notes = get_agent_notes(actor_id)
@@ -113,6 +165,9 @@ class BusinessTools:
                 raise ValueError('记忆已锁定或更新，请重新读取')
             set_agent_notes(actor_id, args.content)
             return {'updated': True, 'sha256': digest(args.content.encode())}
+        if name == 'jellyfish_write_project_brief':
+            from app.services.project_context import write_current_project_brief
+            return write_current_project_brief(actor_id, conversation_id, args.content)
         from app.services.published import list_services, get_service
         if name == 'jellyfish_list_services':
             return [{'id': s['id'], 'name': s.get('name', s['id']), 'allowed_docs': s.get('allowed_docs', [])}
@@ -131,7 +186,69 @@ class BusinessTools:
         raise ValueError('Unsupported tool')
 
 
-def instructions(actor_id, runtime='codex'):
+class ScheduledBusinessTools:
+    """Only the durable scheduler grant decides which paths a CLI can touch."""
+    def __init__(self, storage, store, authorize):
+        self.storage, self.store, self.authorize = storage, store, authorize
+
+    async def __call__(self, session, run, params):
+        from app.runtime.consumer import authorize_scheduler
+        from app.services import workspace_lock as wl
+        actor, binding = session['actor_id'], session['binding']
+        grant = authorize_scheduler(actor, binding)
+        self.authorize(actor, binding)
+        name = params.get('tool')
+        schema = SCHEDULED_TOOLS.get(name)
+        if not schema:
+            return BusinessTools.result('此业务工具未向定时任务开放', False)
+        try:
+            args = schema[0].model_validate(params.get('arguments', {}))
+            clean = grant.path(args.path, write=name.endswith('_write_file'))
+            path = '/' + clean
+            if name.endswith('_list_files'):
+                rows = []
+                for entry in self.storage.list_dir(actor, path)[:200]:
+                    try:
+                        grant.path(entry.path)
+                    except PermissionError:
+                        continue
+                    rows.append({'name': entry.name, 'path': entry.path,
+                                 'is_dir': entry.is_dir, 'size': entry.size})
+                value = rows
+            elif name.endswith('_read_file'):
+                data = self.storage.read_bytes(actor, path)
+                if len(data) > 256 * 1024:
+                    raise ValueError('文件超过 256KB')
+                value = data.decode('utf-8')
+            else:
+                call_id = params.get('callId')
+                if not isinstance(call_id, (str, int)) or not str(call_id) or len(str(call_id)) > 128:
+                    raise ValueError('持久化写入要求稳定的工具调用 ID')
+                encoded = args.content.encode('utf-8')
+                if len(encoded) > 65536:
+                    raise ValueError('定时任务单次写入不能超过 64KB')
+                owner = 'scheduled-' + grant.run['id']
+                process = wl.get_process(owner)
+                if not process or process.user_id != actor or not wl.is_write_allowed(owner, path):
+                    raise PermissionError('定时任务未持有此路径的工作区写锁')
+                effect_id = f"cli:{grant.run['id']}:{call_id}"
+                grant.execution.store.effect_start(grant.run['id'], grant.run['token'], effect_id,
+                    {'kind': 'write_file', 'path': path, 'sha256': digest(encoded)})
+                grant.path(args.path, write=True)
+                self.authorize(actor, binding)
+                self.storage.write_text_durable(actor, path, args.content)
+                grant.execution.store.effect_done(grant.run['id'], grant.run['token'], effect_id,
+                                                  {'path': path, 'size': len(encoded)})
+                value = {'path': path, 'written': True}
+            self.authorize(actor, binding)
+            self.store.emit(run, 'business_tool', {'name': name, 'status': 'completed'})
+            return BusinessTools.result(value, True)
+        except (ValueError, OSError, PermissionError, UnicodeError) as exc:
+            self.store.emit(run, 'business_tool', {'name': name, 'status': 'failed', 'result': str(exc)[:200]})
+            return BusinessTools.result('工具拒绝执行：路径、授权、大小或调用 ID 无效。', False)
+
+
+def instructions(actor_id, runtime='codex', *, project_brief_write=True):
     from app.services.prompt import get_user_system_prompt, build_user_profile_prompt
     from app.services.preferences import get_tz_offset
     profile = build_user_profile_prompt(actor_id)[:16000]
@@ -143,12 +260,16 @@ def instructions(actor_id, runtime='codex'):
         prompt += '\n\n' + profile
     # User prompt and profile are actor-owned. The adapter capabilities below are
     # authoritative even if a legacy prompt describes unavailable tools.
-    return '\n\n'.join([
+    parts = [
         prompt,
         f'你正在 OpenJellyfish 的 {runtime} 运行环境内。遵守当前用户的系统提示和偏好。',
         '可使用注册的 jellyfish_* 业务工具，以及客户端实际提供的网页搜索、生图和文件/命令工具；不要声称拥有旧提示中未注册的工具。',
         '当前工作目录是该用户本会话的副本。/docs 是业务工具的虚拟路径；导入文件在工作目录的 docs/。'
         '仅在当前工作目录内读写执行，不访问其他目录或账号配置。新文件在结束后归档到当前用户产物。',
-        '长期记忆使用 jellyfish_read_memory 和 jellyfish_update_memory；写入前保留旧信息并遵守锁。'
+        '长期记忆使用 jellyfish_read_memory 和 jellyfish_update_memory；写入前保留旧信息并遵守锁。',
+        '管理员启用 Service 记录区后，可用 jellyfish_list_documents / jellyfish_read_document 的 /service-records 虚拟路径只读查看反馈、消费者对话和用量。长消息用 limit=1 读取，随后用同一消息 offset、返回的 next_content_offset 和 message_ref 续读；不要访问宿主上的原始 Service 文件。',
         '网页搜索后使用普通 Markdown 来源链接。原生生图结果由 Jellyfish 自动收集到本聊天 generated/ 并展示；生图完成后无需用命令复制文件，也不需要输出本机绝对路径图片链接。图片附件直接作为视觉输入；普通文件位于本工作区附件路径，应读取内容。语音、视频、发布、定时任务与消费者服务执行不在本运行能力内；不得转用其他付费供应商。',
-    ])
+    ]
+    if project_brief_write:
+        parts.append('若当前管理员对话属于项目，可用 jellyfish_write_project_brief 完整更新该项目的 Markdown brief；工具只能修改当前对话所属项目，写入前保留已有事实。')
+    return '\n\n'.join(parts)

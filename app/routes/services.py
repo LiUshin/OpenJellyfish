@@ -1,6 +1,8 @@
 """Admin routes for managing published services and their API keys."""
 
-from typing import Optional
+from typing import Optional, Annotated
+from datetime import datetime
+from pydantic import BaseModel, Field, ConfigDict
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 
@@ -15,6 +17,73 @@ from app.services.published import (
 from app.services.usage_log import list_records as list_usage_records
 
 router = APIRouter(prefix="/api/services", tags=["services"])
+
+
+class NoticeRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    message: str = Field(min_length=1, max_length=8000)
+    conversation_ids: list[Annotated[str, Field(pattern=r'^[A-Za-z0-9_-]{1,128}$')]] = Field(min_length=1, max_length=500)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    scheduled_at: Optional[datetime] = None
+
+
+class RetryNoticeRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    allow_unknown: bool = False
+
+
+def _notice(owner_id, service_id, broadcast_id):
+    from app.services.service_messaging import get_notice_broadcast
+    item = get_notice_broadcast(owner_id, broadcast_id)
+    if not item or item['service_id'] != service_id:
+        raise HTTPException(404, '广播不存在')
+    return item
+
+
+@router.post('/{service_id}/broadcasts', status_code=202)
+async def api_create_notice(service_id: str, req: NoticeRequest, user=Depends(get_current_user)):
+    from app.services.service_messaging import create_notice_broadcast, MessagingConflict
+    try:
+        return create_notice_broadcast(user['user_id'], service_id, req.conversation_ids, req.message,
+            idempotency_key=req.idempotency_key, scheduled_at=req.scheduled_at.isoformat() if req.scheduled_at else None)
+    except MessagingConflict as exc:
+        raise HTTPException(409, str(exc))
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get('/{service_id}/broadcasts')
+async def api_list_notices(service_id: str, user=Depends(get_current_user)):
+    if not get_service(user['user_id'], service_id):
+        raise HTTPException(404, 'Service 不存在')
+    from app.services.service_messaging import list_notice_broadcasts
+    return list_notice_broadcasts(user['user_id'], service_id)
+
+
+@router.get('/{service_id}/broadcasts/{broadcast_id}')
+async def api_get_notice(service_id: str, broadcast_id: str, user=Depends(get_current_user)):
+    return _notice(user['user_id'], service_id, broadcast_id)
+
+
+@router.post('/{service_id}/broadcasts/{broadcast_id}/cancel')
+async def api_cancel_notice(service_id: str, broadcast_id: str, user=Depends(get_current_user)):
+    _notice(user['user_id'], service_id, broadcast_id)
+    from app.services.service_messaging import cancel_notice_broadcast
+    return cancel_notice_broadcast(user['user_id'], broadcast_id)
+
+
+@router.post('/{service_id}/broadcasts/{broadcast_id}/retry')
+async def api_retry_notice(service_id: str, broadcast_id: str, req: RetryNoticeRequest, user=Depends(get_current_user)):
+    _notice(user['user_id'], service_id, broadcast_id)
+    from app.services.service_messaging import retry_notice_broadcast, MessagingConflict
+    try:
+        return retry_notice_broadcast(user['user_id'], broadcast_id, allow_unknown=req.allow_unknown)
+    except MessagingConflict as exc:
+        raise HTTPException(409, str(exc))
 
 
 @router.post("")
@@ -66,6 +135,14 @@ async def api_update_service(service_id: str, req: UpdateServiceRequest, user=De
     from app.services.consumer_agent import clear_consumer_cache
     clear_consumer_cache(admin_id=user["user_id"], service_id=service_id)
 
+    if 'published' in updates:
+        from app.channels.wechat.session_manager import get_session_manager
+        manager = get_session_manager()
+        if svc.get('published', True):
+            manager.resume_service_polling(user['user_id'], service_id)
+        else:
+            await manager.stop_service_polling(user['user_id'], service_id)
+
     return svc
 
 
@@ -73,6 +150,8 @@ async def api_update_service(service_id: str, req: UpdateServiceRequest, user=De
 async def api_delete_service(service_id: str, user=Depends(get_current_user)):
     if not delete_service(user["user_id"], service_id):
         raise HTTPException(status_code=404, detail="Service 不存在")
+    from app.channels.wechat.session_manager import get_session_manager
+    await get_session_manager().stop_service_polling(user['user_id'], service_id)
     return {"success": True}
 
 
@@ -124,7 +203,7 @@ async def api_get_service_conversation(service_id: str, conv_id: str,
     if not get_service(user["user_id"], service_id):
         raise HTTPException(status_code=404, detail="Service 不存在")
     conv = get_consumer_conversation(user["user_id"], service_id, conv_id)
-    if not conv:
+    if not conv or conv.get('source') == 'admin_test':
         raise HTTPException(status_code=404, detail="会话不存在")
     return conv
 
@@ -134,6 +213,9 @@ async def api_delete_service_conversation(service_id: str, conv_id: str,
                                           user=Depends(get_current_user)):
     if not get_service(user["user_id"], service_id):
         raise HTTPException(status_code=404, detail="Service 不存在")
+    conv = get_consumer_conversation(user["user_id"], service_id, conv_id)
+    if not conv or conv.get('source') == 'admin_test':
+        raise HTTPException(status_code=404, detail="会话不存在")
     if not delete_consumer_conversation(user["user_id"], service_id, conv_id):
         raise HTTPException(status_code=404, detail="会话不存在")
     return {"success": True}

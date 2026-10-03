@@ -916,6 +916,7 @@ export default function FilePanel() {
 
   const panelBody = (
     <div
+      data-jf-file-panel
       ref={panelRef}
       tabIndex={0}
       onKeyDown={handlePanelKeyDown}

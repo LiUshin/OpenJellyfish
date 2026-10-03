@@ -85,11 +85,17 @@ users/{user_id}/
 │   └── soul/                     ← Memory Subagent 可读写的笔记/人格文件（按需创建）
 │
 ├── conversations/                ← Admin 自己的聊天历史
-│   ├── {conv_id}.json            ← ★ 单个对话主体（schema 见 §3.1）★
-│   └── {conv_id}/                ← 同名目录（**与 .json 文件并列**）
+│   └── {conv_id}/                ← 对话元数据、消息和附件（schema 见 §3.1）
+│       ├── meta.json             ← 可选 project_id 表示所属项目
+│       ├── messages.jsonl        ← DeepAgent 对话消息
 │       └── query_appendix/       ← 用户上传的附件（图片/文件）
 │           └── images/
 │               └── wx_xxxxxxxx.jpg
+│
+├── projects/                     ← Admin 项目：只管理对话分组和 brief
+│   └── {project_id}/
+│       ├── meta.json             ← id/name/created_at/updated_at
+│       └── brief.md              ← 项目共用的 Markdown 上下文摘要
 │
 ├── services/                     ← Admin 发布的所有 Service
 │   └── {service_id}/             ← 单个 Service 的完整空间（详见 §4）
@@ -121,9 +127,10 @@ users/{user_id}/
 
 ### 关键不变量
 
-1. **`conversations/{conv_id}.json` 与 `conversations/{conv_id}/` 同时存在**：
-   前者放对话消息，后者放该对话的附件（query_appendix）。**绝对不要**把消息
-   塞进同名目录里，`save_message` 永远写 `.json` 文件。
+1. **新 Admin 对话使用 `conversations/{conv_id}/`**：`meta.json` 保存属性，
+   `messages.jsonl` 保存 DeepAgent 消息，附件放 `query_appendix/`。历史
+   `{conv_id}.json` 会懒迁移；Codex/Cursor 的运行历史由 runtime 存储管理。
+   项目只在 `meta.json` 中添加归属，不移动或复制对话目录。
 2. **`filesystem/` 的根才是 deepagents 看到的根**——agent 通过 `read_file("/docs/foo")`
    访问的实际路径是 `users/{uid}/filesystem/docs/foo`。
 3. **`soul/` 出现在两个位置**：
@@ -143,7 +150,7 @@ users/{user_id}/
 
 ```
 conversations/{conv_id}/
-├── meta.json          ← {id, title, created_at, updated_at, message_count}
+├── meta.json          ← {id, title, created_at, updated_at, message_count, project_id?}
 ├── messages.jsonl     ← 每行一条消息（append-only）
 ├── query_appendix/    ← 用户上传附件
 └── .legacy.json       ← 懒迁移备份（旧整文件 {conv_id}.json）
@@ -157,7 +164,8 @@ conversations/{conv_id}/
   "title": "如何创建和管理 Subagent...",
   "created_at": "2026-04-02T17:49:25.684348",
   "updated_at": "2026-04-02T17:50:01.386854",
-  "message_count": 12
+  "message_count": 12,
+  "project_id": "a1b2c3d4"
 }
 ```
 
@@ -170,6 +178,12 @@ conversations/{conv_id}/
 
 **写入路径**：SSE 流（`chat.py` / `consumer.py` / WeChat bridge）经
 `save_message()` → `append_jsonl` 追加消息 + `meta.json` 原子更新。
+
+**项目 brief**：`users/{uid}/projects/{project_id}/brief.md` 是每个项目唯一的
+Markdown 摘要。项目对话每轮从该文件读取上下文，注入最多 5,000 token。
+用户修改或 Agent 的受限写入会持久更新该文件；项目内搜索按归属读取
+DeepAgent JSONL 或 CLI runtime 历史，不把检索索引当作主数据。删除项目时
+对话取消归属，历史仍留在原目录。
 
 **`blocks` 字段** 是 2026-04 引入的统一交错渲染格式，前端 `MessageBubble`
 检测到 `blocks` 就走 `BlocksRenderer`，否则 fallback 旧格式
@@ -969,7 +983,8 @@ Service Agent → contact_admin
 | `config/registration_keys.json` | keys[].key/used/used_by | §5.2 |
 | `users/{uid}/api_keys.json` | 9 个 provider 字段（加密） | §5.3 |
 | `users/{uid}/soul/config.json` | memory_enabled / memory_subagent_enabled / soul_edit_enabled | §2 |
-| `users/{uid}/conversations/{cid}/meta.json` + `messages.jsonl` | id/title/message_count；每行 messages[].{role,content,blocks,attachments} | §3.1 |
+| `users/{uid}/conversations/{cid}/meta.json` + `messages.jsonl` | id/title/message_count/project_id?；每行 messages[].{role,content,blocks,attachments} | §3.1 |
+| `users/{uid}/projects/{pid}/meta.json` + `brief.md` | id/name/timestamps；项目共用 Markdown brief | §3.1 |
 | `users/{uid}/services/{svc}/config.json` | capabilities/wechat_channel/welcome_message/quick_questions | §4.1 |
 | `users/{uid}/services/{svc}/keys.json` | keys[].{prefix,key_hash,name} | §4.2 |
 | `users/{uid}/services/{svc}/wechat_sessions.json` | sessions[].{from_user_id,context_token,updates_buf} | §9.4 |

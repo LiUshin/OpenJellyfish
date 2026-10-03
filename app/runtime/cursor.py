@@ -98,6 +98,7 @@ class CursorAdapter:
         self.loaded_threads = set()
         self.bridges = {}
         self.input_files = []
+        self.image_mode = 'native'
         self.agent_capabilities = {}
         self.prepare_timings = {}
 
@@ -354,6 +355,8 @@ class CursorAdapter:
                         elif kind in ('tool_call', 'tool_call_update'):
                             yield RuntimeEvent('tool', cursor_tool(update))
                     elif method == 'cursor/generate_image':
+                        if self.image_mode == 'off' or (getattr(self, 'service_scope', None) and not self.service_scope.get('image')):
+                            raise RuntimeFailure('当前运行未获得生图授权')
                         yield RuntimeEvent('image', {'item_id': p.get('toolCallId'), 'saved_path': p.get('filePath')})
                 # Give the event reader one scheduling turn to drain messages
                 # preceding the prompt response, including a last text chunk.
@@ -363,6 +366,10 @@ class CursorAdapter:
                     reason = result.get('stopReason')
                     if reason not in ('end_turn', 'cancelled'):
                         raise RuntimeFailure('Cursor 本轮未正常完成，请检查模型与配额')
+                    # ACP permits PromptResponse.usage, but Cursor versions that
+                    # omit it must remain unmetered rather than becoming zero.
+                    if isinstance(result.get('usage'), dict):
+                        yield RuntimeEvent('usage', {'usage': result['usage']})
                     if reason == 'end_turn':
                         self.instructions_pending = False
                     yield RuntimeEvent('cancelled' if reason == 'cancelled' else 'completed', {})
@@ -384,8 +391,8 @@ class CursorAdapter:
             await self.respond(request_id, {})
             return
         if method == 'cursor/generate_image':
-            if getattr(self, 'service_scope', None) and not self.service_scope.get('image'):
-                await self.rpc.send({'id': request_id, 'error': {'code': -32001, 'message': 'Image generation disabled for this Service'}})
+            if self.image_mode == 'off' or (getattr(self, 'service_scope', None) and not self.service_scope.get('image')):
+                await self.rpc.send({'id': request_id, 'error': {'code': -32001, 'message': 'Image generation disabled for this session'}})
                 return
             await self.respond(request_id, {})
             yield RuntimeEvent('image', {'item_id': params.get('toolCallId'), 'saved_path': params.get('filePath')})
@@ -393,9 +400,10 @@ class CursorAdapter:
         if method == 'cursor/create_plan':
             self.permission_options[request_id] = {'plan': True}
             yield RuntimeEvent('request', {'request_id': request_id,
-                'method': 'item/commandExecution/requestApproval',
-                'params': {'command': 'Cursor 计划：' + str(params.get('name', ''))[:500],
-                           'reason': str(params.get('plan') or params.get('overview') or '')[:32000]}})
+                'method': 'plan/requestApproval',
+                'params': {'title': str(params.get('name') or '')[:500],
+                           'plan': str(params.get('plan') or params.get('overview') or '')[:32000],
+                           'availableDecisions': ['accept', 'decline']}})
             return
         if method != 'session/request_permission':
             yield RuntimeEvent('request', {'request_id': request_id, 'method': method, 'params': params})
@@ -409,7 +417,14 @@ class CursorAdapter:
             names = {value for t in self.dynamic_tools for value in
                      (f"jellyfish: {t['name']}", f"jellyfish-{t['name']}: {t['name']}")}
             allowed = (tool.get('kind') == 'other' and tool.get('title') in names)
-            allowed = allowed or (self.service_scope.get('web') and tool.get('kind') == 'search' and not tool.get('locations'))
+            web_search = (self.service_scope.get('web') and tool.get('kind') == 'search' and
+                          not tool.get('locations'))
+            if self.service_scope.get('run_id'):
+                # ACP's generic search kind can also describe a local search.
+                # Cursor's built-in web search advertises both markers below.
+                web_search = (web_search and str(tool.get('toolCallId', '')).startswith('web_search_') and
+                              str(tool.get('title', '')).startswith('Web search:'))
+            allowed = allowed or web_search
             await self.respond(request_id, {'decision': 'accept' if allowed else 'decline'})
             return
         kind, title = tool.get('kind'), str(tool.get('title') or '')[:8000]

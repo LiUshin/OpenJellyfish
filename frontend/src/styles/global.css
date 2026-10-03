@@ -364,6 +364,53 @@ kbd {
 .jf-file-md-preview img { max-width: 100%; border-radius: 6px; }
 .jf-file-md-preview hr { border: none; border-top: 1px solid var(--jf-border); margin: 1.2em 0; }
 
+/* The app loads highlight.js's GitHub dark palette for dark mode. Keep code
+   readable on light file previews (including Markdown, JSON and write_file). */
+[data-color='light'] .hljs {
+  color: var(--jf-text);
+  background: var(--jf-bg-code);
+}
+[data-color='light'] .hljs-doctag,
+[data-color='light'] .hljs-keyword,
+[data-color='light'] .hljs-meta .hljs-keyword,
+[data-color='light'] .hljs-template-tag,
+[data-color='light'] .hljs-template-variable,
+[data-color='light'] .hljs-type,
+[data-color='light'] .hljs-variable.language_ { color: #b42332; }
+[data-color='light'] .hljs-title,
+[data-color='light'] .hljs-title.class_,
+[data-color='light'] .hljs-title.class_.inherited__,
+[data-color='light'] .hljs-title.function_ { color: #6639ad; }
+[data-color='light'] .hljs-attr,
+[data-color='light'] .hljs-attribute,
+[data-color='light'] .hljs-literal,
+[data-color='light'] .hljs-meta,
+[data-color='light'] .hljs-number,
+[data-color='light'] .hljs-operator,
+[data-color='light'] .hljs-variable,
+[data-color='light'] .hljs-selector-attr,
+[data-color='light'] .hljs-selector-class,
+[data-color='light'] .hljs-selector-id { color: #0550ae; }
+[data-color='light'] .hljs-regexp,
+[data-color='light'] .hljs-string,
+[data-color='light'] .hljs-meta .hljs-string { color: #0a5a87; }
+[data-color='light'] .hljs-built_in,
+[data-color='light'] .hljs-symbol { color: #a14800; }
+[data-color='light'] .hljs-comment,
+[data-color='light'] .hljs-code,
+[data-color='light'] .hljs-formula { color: #596579; }
+[data-color='light'] .hljs-name,
+[data-color='light'] .hljs-quote,
+[data-color='light'] .hljs-selector-tag,
+[data-color='light'] .hljs-selector-pseudo { color: #147d36; }
+[data-color='light'] .hljs-subst,
+[data-color='light'] .hljs-emphasis,
+[data-color='light'] .hljs-strong { color: var(--jf-text); }
+[data-color='light'] .hljs-section { color: #0550ae; }
+[data-color='light'] .hljs-bullet { color: #735c0f; }
+[data-color='light'] .hljs-addition { color: #146c2e; background: #dafbe1; }
+[data-color='light'] .hljs-deletion { color: #b42332; background: #ffebe9; }
+
 /* ============================================================
    MOBILE BASELINE (max-width: 767px)
    仅给 <= 767px 的设备添加基础适配规则；桌面端完全不受影响。

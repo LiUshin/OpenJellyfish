@@ -174,12 +174,15 @@ export default function WeChatPage() {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [qr, setQr] = useState<QrResult | null>(null);
   const [qrStatus, setQrStatus] = useState<QrStatus['status']>('waiting');
+  const [qrError, setQrError] = useState('');
   const [messages, setMessages] = useState<WeChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const qrGenerationRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const stopPolling = useCallback(() => {
+    ++qrGenerationRef.current;
     if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
@@ -220,14 +223,21 @@ export default function WeChatPage() {
   }, [messages]);
 
   const handleGenerateQR = async () => {
+    stopPolling();
+    const generation = qrGenerationRef.current;
+    setQrError('');
     setLoading(true);
     try {
       const data = await api.request<QrResult>('POST', '/admin/wechat/qrcode');
+      if (generation !== qrGenerationRef.current) return;
       setQr(data);
       setQrStatus('waiting');
       setPageState('qr');
       startPolling(data.qr_id);
     } catch (e: unknown) {
+      if (generation !== qrGenerationRef.current) return;
+      setQrError(e instanceof Error ? e.message : '生成二维码失败');
+      setQrStatus('expired');
       message.error(e instanceof Error ? e.message : '生成二维码失败');
     } finally {
       setLoading(false);
@@ -236,12 +246,18 @@ export default function WeChatPage() {
 
   const startPolling = (qrId: string) => {
     stopPolling();
+    const generation = qrGenerationRef.current;
+    let busy = false;
     pollRef.current = setInterval(async () => {
+      if (busy || generation !== qrGenerationRef.current) return;
+      busy = true;
       try {
         const data = await api.request<QrStatus>(
           'GET',
           `/admin/wechat/qrcode/status?qrcode=${encodeURIComponent(qrId)}`,
         );
+        if (generation !== qrGenerationRef.current) return;
+        setQrError('');
         setQrStatus(data.status);
         if (data.status === 'confirmed') {
           stopPolling();
@@ -249,8 +265,18 @@ export default function WeChatPage() {
         } else if (data.status === 'expired') {
           stopPolling();
         }
-      } catch {
-        stopPolling();
+      } catch (err) {
+        if (generation !== qrGenerationRef.current) return;
+        const status = (err as { status?: number }).status;
+        if (status && [401, 403, 404, 409, 410].includes(status)) {
+          stopPolling();
+          setQrStatus('expired');
+          setQrError(err instanceof Error ? err.message : '二维码已失效，请重新生成');
+        } else {
+          setQrError('连接暂时中断，正在重试确认…');
+        }
+      } finally {
+        busy = false;
       }
     }, POLL_INTERVAL);
   };
@@ -342,7 +368,7 @@ export default function WeChatPage() {
           <>
             <WechatOutlined style={S.icon('#07c160')} />
             <h2 style={S.title}>扫描二维码登录</h2>
-            <div style={S.qrContainer}>
+            <div style={{ ...S.qrContainer, display: qrStatus === 'expired' ? 'none' : undefined }}>
               <img
                 src={`data:image/png;base64,${qr.qr_image_b64}`}
                 alt="微信登录二维码"
@@ -365,7 +391,7 @@ export default function WeChatPage() {
               {qrStatus === 'expired' && (
                 <>
                   <CloseCircleOutlined style={{ color: '#e74c3c' }} />
-                  <span style={{ color: '#e74c3c' }}>二维码已过期</span>
+                  <span role="alert" style={{ color: '#e74c3c' }}>{qrError || '二维码已过期'}</span>
                   <Button
                     size="small"
                     icon={<ReloadOutlined />}
@@ -377,6 +403,7 @@ export default function WeChatPage() {
                 </>
               )}
             </div>
+            {qrError && qrStatus !== 'expired' && <p role="status" style={S.subtitle}>{qrError}</p>}
           </>
         )}
 

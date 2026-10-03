@@ -100,7 +100,7 @@ function TaskNode({ data }: NodeProps<TaskNodeData>) {
         marginTop: 4, fontSize: 10, color: 'var(--jf-text-muted)',
         display: 'flex', justifyContent: 'space-between',
       }}>
-        <span>{(t.runs || []).length} 次运行</span>
+        <span>{t.run_count ?? (t.runs || []).length} 次运行</span>
         <span style={{ color: accent[status], fontWeight: 500 }}>{status}</span>
       </div>
       <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />

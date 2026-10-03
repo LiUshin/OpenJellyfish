@@ -1,9 +1,10 @@
 """Per-admin token usage summary (admin web 端「用量统计」).
 
 每个 admin 只看自己的 LLM token 用量，按模型 / Service / API Key / Provider /
-渠道 / 日期 拆分。数据源是 ``users/{admin_id}/llm_usage/usage-YYYY-MM.jsonl``
-（由 ``token_usage.record_llm_usage`` 落盘）。跨用户的超管全量视图在 Tauri
-启动器里（直读同一批 jsonl），此端点不暴露跨用户数据。
+渠道 / 日期拆分。DeepAgents 与 Service 调用来自
+``users/{admin_id}/llm_usage/usage-YYYY-MM.jsonl``；管理员 Codex/Cursor
+运行从该用户的持久 Runtime run 快照合并。Token 未完整上报的 CLI 运行单列提示。
+此端点不暴露跨用户数据。
 
 Endpoint:
     GET /api/usage/summary?months=3  → 聚合 + service/key 友好名映射

@@ -1,5 +1,8 @@
 import SettingsLoadError from '../../components/SettingsLoadError';
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import WorkspaceSidebarHeader from '../../components/WorkspaceSidebarHeader';
+import SplitWorkspaceHeading from '../../components/SplitWorkspaceHeading';
+import ServiceBroadcastPanel from './ServiceBroadcastPanel';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Table, Modal, Form, Input, Select, Button, Tag, message,
   Popconfirm, Space, Typography, Checkbox,
@@ -51,6 +54,7 @@ import { fmtUserTime } from '../../utils/timezone';
 import LogoLoading from '../../components/LogoLoading';
 import { useIsMobile } from '../../hooks/useMediaQuery';
 import { ArrowLeft } from '@phosphor-icons/react';
+import { useNavigate } from 'react-router-dom';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -311,6 +315,7 @@ function PickerField({
 /* ───────── Main Page ───────── */
 
 export default function AdminServicesPage() {
+  const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [services, setServices] = useState<ServiceConfig[]>([]);
   const [currentSvc, setCurrentSvc] = useState<ServiceConfig | null>(null);
@@ -348,10 +353,14 @@ export default function AdminServicesPage() {
 
   // key modal
   const [keyModalOpen, setKeyModalOpen] = useState(false);
-  const [generatedKey, setGeneratedKey] = useState<string | null>(null);
-  const [keyGenerating, setKeyGenerating] = useState(false);
+  const [generatedKeys, setGeneratedKeys] = useState<Record<string, { value: string; billing: 'hosted' | 'byok' }>>({});
+  const [keyGeneratingIds, setKeyGeneratingIds] = useState<string[]>([]);
+  const keyGeneratingRef = useRef(new Set<string>());
   const [keyName, setKeyName] = useState('default');
   const [keyBilling, setKeyBilling] = useState<'hosted' | 'byok'>('hosted');
+  const generatedKey = currentSvc ? generatedKeys[currentSvc.id]?.value ?? null : null;
+  const generatedKeyBilling = currentSvc ? generatedKeys[currentSvc.id]?.billing ?? keyBilling : keyBilling;
+  const keyGenerating = currentSvc ? keyGeneratingIds.includes(currentSvc.id) : false;
 
   // wechat
   const [wcSessions, setWcSessions] = useState<WeChatSession[]>([]);
@@ -379,6 +388,18 @@ export default function AdminServicesPage() {
   const [convDrawerOpen, setConvDrawerOpen] = useState(false);
   const [convDrawerData, setConvDrawerData] = useState<ServiceConvDetail | null>(null);
   const [convDrawerLoading, setConvDrawerLoading] = useState(false);
+
+  // A service switch must invalidate every in-flight detail request. Per-area
+  // sequence numbers also fence two refreshes for the same selected service.
+  const selectedService = useRef<{ id: string | null; generation: number }>({ id: null, generation: 0 });
+  const detailRequests = useRef({ keys: 0, wc: 0, convs: 0, usage: 0, tokens: 0, drawer: 0, chat: 0 });
+  const beginDetailRequest = useCallback((area: keyof typeof detailRequests.current, sid: string) => {
+    const generation = selectedService.current.generation;
+    const request = ++detailRequests.current[area];
+    return () => selectedService.current.id === sid
+      && selectedService.current.generation === generation
+      && detailRequests.current[area] === request;
+  }, []);
 
   const [svcSearch, setSvcSearch] = useState('');
 
@@ -436,16 +457,18 @@ export default function AdminServicesPage() {
   /* ─── Keys ─── */
 
   const loadKeys = useCallback(async (serviceId: string) => {
+    if (selectedService.current.id !== serviceId) return;
+    const isCurrent = beginDetailRequest('keys', serviceId);
     setKeysLoading(true);
     try {
       const keys = await listServiceKeys(serviceId) as ServiceKey[];
-      setServiceKeys(keys);
+      if (isCurrent()) setServiceKeys(keys);
     } catch (e: unknown) {
-      message.error((e as Error).message || '加载 Key 列表失败');
+      if (isCurrent()) message.error((e as Error).message || '加载 Key 列表失败');
     } finally {
-      setKeysLoading(false);
+      if (isCurrent()) setKeysLoading(false);
     }
-  }, []);
+  }, [beginDetailRequest]);
 
   const handleDeleteKey = async (keyId: string) => {
     if (!currentSvc) return;
@@ -460,65 +483,82 @@ export default function AdminServicesPage() {
 
   const handleGenerateKey = async () => {
     if (!currentSvc) return;
-    setKeyGenerating(true);
+    const sid = currentSvc.id;
+    if (keyGeneratingRef.current.has(sid)) return;
+    keyGeneratingRef.current.add(sid);
+    setKeyGeneratingIds(prev => [...prev, sid]);
+    const billing = keyBilling;
     try {
-      const result = await createServiceKey(currentSvc.id, keyName || 'default', keyBilling);
-      setGeneratedKey(result.key);
+      const result = await createServiceKey(sid, keyName || 'default', billing);
+      // Keep one-time secrets scoped to their own Service even if the user
+      // switches panels while the creation request is in flight.
+      setGeneratedKeys(prev => ({ ...prev, [sid]: { value: result.key, billing } }));
     } catch (e: unknown) {
-      message.error((e as Error).message);
+      if (selectedService.current.id === sid) message.error((e as Error).message);
     } finally {
-      setKeyGenerating(false);
+      keyGeneratingRef.current.delete(sid);
+      setKeyGeneratingIds(prev => prev.filter(id => id !== sid));
     }
   };
 
   /* ─── WeChat ─── */
 
   const loadWcSessions = useCallback(async (serviceId: string) => {
+    if (selectedService.current.id !== serviceId) return;
+    const isCurrent = beginDetailRequest('wc', serviceId);
     setWcLoading(true);
     try {
       const sessions = await request<WeChatSession[]>('GET', `/wc/${serviceId}/sessions`);
-      setWcSessions(sessions);
+      if (isCurrent()) setWcSessions(sessions);
     } catch {
-      setWcSessions([]);
+      if (isCurrent()) setWcSessions([]);
     } finally {
-      setWcLoading(false);
+      if (isCurrent()) setWcLoading(false);
     }
-  }, []);
+  }, [beginDetailRequest]);
 
   const handleToggleWeChat = async () => {
     if (!currentSvc) return;
+    const sid = currentSvc.id;
+    const generation = selectedService.current.generation;
     const wc = currentSvc.wechat_channel || { enabled: false };
     const newEnabled = !wc.enabled;
     try {
-      await request('PUT', `/wc/${currentSvc.id}/config`, {
+      await request('PUT', `/wc/${sid}/config`, {
         enabled: newEnabled,
         expires_at: wc.expires_at || null,
         max_sessions: wc.max_sessions || 100,
       });
-      const updated = await getService(currentSvc.id) as ServiceConfig;
-      setCurrentSvc(updated);
+      const updated = await getService(sid) as ServiceConfig;
+      if (selectedService.current.id === sid && selectedService.current.generation === generation) {
+        setCurrentSvc(updated);
+        message.success(newEnabled ? '微信渠道已启用' : '微信渠道已禁用');
+        if (newEnabled) loadWcSessions(sid);
+      }
       setServices(prev => prev.map(s => s.id === updated.id ? updated : s));
-      message.success(newEnabled ? '微信渠道已启用' : '微信渠道已禁用');
-      if (newEnabled) loadWcSessions(currentSvc.id);
     } catch (e: unknown) {
-      message.error((e as Error).message);
+      if (selectedService.current.id === sid && selectedService.current.generation === generation) message.error((e as Error).message);
     }
   };
 
   const handleSaveWcConfig = async (expiresAt: string | null, maxSessions: number) => {
     if (!currentSvc) return;
+    const sid = currentSvc.id;
+    const generation = selectedService.current.generation;
     try {
-      await request('PUT', `/wc/${currentSvc.id}/config`, {
+      await request('PUT', `/wc/${sid}/config`, {
         enabled: true,
         expires_at: expiresAt,
         max_sessions: maxSessions,
       });
-      const updated = await getService(currentSvc.id) as ServiceConfig;
-      setCurrentSvc(updated);
+      const updated = await getService(sid) as ServiceConfig;
+      if (selectedService.current.id === sid && selectedService.current.generation === generation) {
+        setCurrentSvc(updated);
+        message.success('配置已保存');
+      }
       setServices(prev => prev.map(s => s.id === updated.id ? updated : s));
-      message.success('配置已保存');
     } catch (e: unknown) {
-      message.error((e as Error).message);
+      if (selectedService.current.id === sid && selectedService.current.generation === generation) message.error((e as Error).message);
     }
   };
 
@@ -535,74 +575,88 @@ export default function AdminServicesPage() {
 
   const handleViewChat = async (sessionId: string) => {
     if (!currentSvc) return;
+    const sid = currentSvc.id;
+    if (selectedService.current.id !== sid) return;
+    const isCurrent = beginDetailRequest('chat', sid);
     setChatTitle(`对话记录 — ${sessionId}`);
     setChatModalOpen(true);
     setChatLoading(true);
+    setChatMessages([]);
     try {
       const data = await request<{ messages: WeChatMessage[] }>(
-        'GET', `/wc/${currentSvc.id}/sessions/${sessionId}/messages`,
+        'GET', `/wc/${sid}/sessions/${sessionId}/messages`,
       );
-      setChatMessages(data.messages || []);
+      if (isCurrent()) setChatMessages(data.messages || []);
     } catch (e: unknown) {
-      message.error((e as Error).message);
+      if (isCurrent()) message.error((e as Error).message);
     } finally {
-      setChatLoading(false);
+      if (isCurrent()) setChatLoading(false);
     }
   };
 
   /* ─── 使用情况：会话历史 + 调用记录 ─── */
 
   const loadSvcConvs = useCallback(async (sid: string) => {
+    if (selectedService.current.id !== sid) return;
+    const isCurrent = beginDetailRequest('convs', sid);
     setSvcConvsLoading(true);
     try {
-      setSvcConvs(await listServiceConversations(sid));
+      const convs = await listServiceConversations(sid);
+      if (isCurrent()) setSvcConvs(convs);
     } catch {
-      setSvcConvs([]);
+      if (isCurrent()) setSvcConvs([]);
     } finally {
-      setSvcConvsLoading(false);
+      if (isCurrent()) setSvcConvsLoading(false);
     }
-  }, []);
+  }, [beginDetailRequest]);
 
   const loadSvcUsage = useCallback(async (sid: string,
                                           channel?: '' | 'web' | 'api' | 'wechat') => {
+    if (selectedService.current.id !== sid) return;
+    const isCurrent = beginDetailRequest('usage', sid);
     setSvcUsageLoading(true);
     try {
       const r = await listServiceUsage(sid, {
         limit: 200,
         channel: channel || undefined,
       });
-      setSvcUsage(r.records);
+      if (isCurrent()) setSvcUsage(r.records);
     } catch {
-      setSvcUsage([]);
+      if (isCurrent()) setSvcUsage([]);
     } finally {
-      setSvcUsageLoading(false);
+      if (isCurrent()) setSvcUsageLoading(false);
     }
-  }, []);
+  }, [beginDetailRequest]);
 
   const loadSvcTokenUsage = useCallback(async (sid: string, months: number) => {
+    if (selectedService.current.id !== sid) return;
+    const isCurrent = beginDetailRequest('tokens', sid);
     setSvcTokenLoading(true);
     try {
-      setSvcTokenUsage(await getServiceTokenUsage(sid, months));
+      const usage = await getServiceTokenUsage(sid, months);
+      if (isCurrent()) setSvcTokenUsage(usage);
     } catch {
-      setSvcTokenUsage(null);
+      if (isCurrent()) setSvcTokenUsage(null);
     } finally {
-      setSvcTokenLoading(false);
+      if (isCurrent()) setSvcTokenLoading(false);
     }
-  }, []);
+  }, [beginDetailRequest]);
 
   const openSvcConvDrawer = useCallback(async (sid: string, cid: string) => {
+    if (selectedService.current.id !== sid) return;
+    const isCurrent = beginDetailRequest('drawer', sid);
     setConvDrawerOpen(true);
     setConvDrawerLoading(true);
     setConvDrawerData(null);
     try {
       const data = await getServiceConversation(sid, cid);
-      setConvDrawerData(data);
+      if (isCurrent()) setConvDrawerData(data);
     } catch (e: unknown) {
-      message.error((e as Error).message);
+      if (isCurrent()) message.error((e as Error).message);
     } finally {
-      setConvDrawerLoading(false);
+      if (isCurrent()) setConvDrawerLoading(false);
     }
-  }, []);
+  }, [beginDetailRequest]);
 
   const handleDeleteSvcConv = async (sid: string, cid: string) => {
     try {
@@ -616,18 +670,55 @@ export default function AdminServicesPage() {
 
   /* ─── Service CRUD ─── */
 
+  const clearSelectedService = () => {
+    selectedService.current = { id: null, generation: selectedService.current.generation + 1 };
+    setCurrentSvc(null);
+    setKeyModalOpen(false);
+    setServiceKeys([]);
+    setWcSessions([]);
+    setSvcConvs([]);
+    setSvcUsage([]);
+    setSvcTokenUsage(null);
+    setConvDrawerOpen(false);
+    setConvDrawerData(null);
+    setChatModalOpen(false);
+    setChatMessages([]);
+    setKeysLoading(false);
+    setWcLoading(false);
+    setSvcConvsLoading(false);
+    setSvcUsageLoading(false);
+    setSvcTokenLoading(false);
+    setConvDrawerLoading(false);
+    setChatLoading(false);
+  };
+
   const selectService = (svc: ServiceConfig) => {
+    selectedService.current = { id: svc.id, generation: selectedService.current.generation + 1 };
     setCurrentSvc(svc);
+    setKeyModalOpen(!!generatedKeys[svc.id]);
+    setServiceKeys([]);
+    setWcSessions([]);
+    setSvcConvs([]);
+    setSvcUsage([]);
+    setSvcTokenUsage(null);
+    setConvDrawerOpen(false);
+    setConvDrawerData(null);
+    setChatModalOpen(false);
+    setChatMessages([]);
+    setConvDrawerLoading(false);
+    setChatLoading(false);
     loadKeys(svc.id);
     if (svc.wechat_channel?.enabled) {
       loadWcSessions(svc.id);
     } else {
       setWcSessions([]);
+      setWcLoading(false);
     }
     loadSvcConvs(svc.id);
     loadSvcUsage(svc.id);
-    setSvcTokenUsage(null);
+    setSvcTokenLoading(false);
     setUsageView('convs');
+    setUsageChannelFilter('');
   };
 
   const openCreateModal = () => {
@@ -720,11 +811,19 @@ export default function AdminServicesPage() {
 
   const handleDeleteService = async () => {
     if (!currentSvc) return;
+    const sid = currentSvc.id;
+    const generation = selectedService.current.generation;
     try {
-      await deleteService(currentSvc.id);
-      message.success('Service 已删除');
-      setCurrentSvc(null);
-      setServiceKeys([]);
+      await deleteService(sid);
+      if (selectedService.current.id === sid && selectedService.current.generation === generation) {
+        message.success('Service 已删除');
+        clearSelectedService();
+      }
+      setGeneratedKeys(prev => {
+        const next = { ...prev };
+        delete next[sid];
+        return next;
+      });
       await loadAllServices();
     } catch (e: unknown) {
       message.error((e as Error).message);
@@ -1049,9 +1148,9 @@ export default function AdminServicesPage() {
     <div className="settings-master-detail" style={{ display: 'flex', flex: 1, minHeight: 0, height: '100%', width: '100%', background: C.bg0 }}>
       {/* ── Service list 30% ── */}
       <div style={{
-        flex: isMobile ? (showListOnMobile ? '1 1 100%' : '0 0 0') : '0 0 320px',
-        maxWidth: isMobile ? '100%' : '40%',
-        minWidth: isMobile ? 0 : 260,
+        flex: isMobile ? (showListOnMobile ? '1 1 100%' : '0 0 0') : '0 0 clamp(220px, 24vw, 280px)',
+        maxWidth: isMobile ? '100%' : 280,
+        minWidth: isMobile ? 0 : 220,
         background: C.bg1,
         borderRight: isMobile ? 'none' : `1px solid ${C.border}`,
         display: isMobile && !showListOnMobile ? 'none' : 'flex',
@@ -1060,6 +1159,8 @@ export default function AdminServicesPage() {
         paddingLeft: 0,
       }}
       >
+        {!isMobile && <WorkspaceSidebarHeader />}
+        {isMobile && <SplitWorkspaceHeading page="services" />}
         <div style={{
           padding: 16,
           borderBottom: `1px solid ${C.border}`,
@@ -1068,6 +1169,17 @@ export default function AdminServicesPage() {
           <Title level={4} style={{ color: C.text, margin: '0 0 12px', fontSize: 16 }}>
             我的服务
           </Title>
+          <Segmented
+            block
+            aria-label="服务二级导航"
+            value="services"
+            options={[
+              { label: '我的服务', value: 'services' },
+              { label: '收件箱', value: 'inbox' },
+            ]}
+            onChange={value => { if (value === 'inbox') navigate('/settings/inbox'); }}
+            style={{ marginBottom: 12 }}
+          />
           <div style={{
             background: C.bg0, border: `1px solid ${C.border}`,
             borderRadius: 'var(--jf-radius-md)', padding: '6px 10px',
@@ -1177,6 +1289,7 @@ export default function AdminServicesPage() {
         background: C.bg0,
       }}
       >
+        <SplitWorkspaceHeading page="services" />
         {!currentSvc ? (
           <div className="settings-detail-welcome">
             <span className="settings-guide-icon"><GridFour size={28} /></span>
@@ -1202,7 +1315,7 @@ export default function AdminServicesPage() {
                   size="small"
                   type="text"
                   icon={<ArrowLeft size={18} />}
-                  onClick={() => setCurrentSvc(null)}
+                  onClick={clearSelectedService}
                   style={{ color: C.text, padding: '4px 8px', marginRight: 4 }}
                 >
                   返回
@@ -1312,6 +1425,10 @@ export default function AdminServicesPage() {
                 </div>
               </ModuleCard>
 
+              <ModuleCard title="广播与通知" icon={<ChatCircleDots size={16} />}>
+                <ServiceBroadcastPanel key={currentSvc.id} serviceId={currentSvc.id} published={currentSvc.published !== false} externalEngine={currentExternal} />
+              </ModuleCard>
+
               {/* Module: API Keys */}
               <ModuleCard
                 title="API Keys"
@@ -1320,7 +1437,11 @@ export default function AdminServicesPage() {
                   <Button
                     type="primary" size="small" icon={<Plus size={14} weight="bold" />}
                     onClick={() => {
-                      setGeneratedKey(null);
+                      if (currentSvc) setGeneratedKeys(prev => {
+                        const next = { ...prev };
+                        delete next[currentSvc.id];
+                        return next;
+                      });
                       setKeyName('default');
                       setKeyBilling('hosted');
                       setKeyModalOpen(true);
@@ -1440,9 +1561,9 @@ export default function AdminServicesPage() {
                           if (currentSvc) loadSvcTokenUsage(currentSvc.id, m);
                         }}
                         options={[
-                          { value: 1, label: '近 1 月' },
-                          { value: 3, label: '近 3 月' },
-                          { value: 6, label: '近 6 月' },
+                          { value: 1, label: '本月' },
+                          { value: 3, label: '近 3 个自然月' },
+                          { value: 6, label: '近 6 个自然月' },
                         ]}
                       />
                     </div>
@@ -1713,6 +1834,11 @@ export default function AdminServicesPage() {
         onCancel={() => {
           setKeyModalOpen(false);
           if (generatedKey && currentSvc) loadKeys(currentSvc.id);
+          if (currentSvc) setGeneratedKeys(prev => {
+            const next = { ...prev };
+            delete next[currentSvc.id];
+            return next;
+          });
         }}
         footer={null}
         width={isMobile ? '100%' : 440}
@@ -1786,7 +1912,7 @@ export default function AdminServicesPage() {
                 />
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
                   ⚠ 任何拿到此链接的人都能直接以该 Key 身份对话；URL 包含密钥，请勿放入公共渠道。打开后浏览器会自动从 URL 抹除 Key 并存入本地。
-                  {keyBilling === 'byok' && ' 该 Key 为调用方自付，对方打开后还需填写自己的模型凭据才能开始对话。'}
+                  {generatedKeyBilling === 'byok' && ' 该 Key 为调用方自付，对方打开后还需填写自己的模型凭据才能开始对话。'}
                 </div>
               </div>
             )}

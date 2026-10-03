@@ -27,8 +27,17 @@ def codex_tool(item, completed=False):
 
 
 def cursor_tool(update):
-    payload = {"item_id": update.get("toolCallId"), "kind": update.get("kind"),
+    kind = update.get("kind")
+    # ACP's `search` covers local search too. Label it as web search only when
+    # Cursor identifies its built-in web tool, with no local file locations.
+    web_search = (kind == "search" and
+                  str(update.get("toolCallId", "")).startswith("web_search_") and
+                  str(update.get("title", "")).startswith("Web search:") and
+                  not update.get("locations"))
+    payload = {"item_id": update.get("toolCallId"), "kind": "webSearch" if web_search else kind,
                "status": update.get("status"), "command": update.get("title")}
+    if web_search:
+        payload["name"] = "网页搜索"
     if update.get("rawInput") is not None:
         payload["input"] = update["rawInput"]
     if update.get("rawOutput") is not None:

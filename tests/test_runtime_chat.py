@@ -13,6 +13,7 @@ from app.deps import get_current_user
 from app.routes.runtime import router as runtime_router
 from app.routes.conversations import router as conversations_router
 from app.routes.chat import router as chat_router
+from app.routes.voice_live import router as voice_router, get_voice_worker_session
 from app.runtime.manager import get_runtime
 from app.runtime.profiles import ProfileManager
 from app.runtime.policy import DeploymentPolicy
@@ -47,7 +48,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         p = self.profiles.create(HOST_ID, 'Shared'); p['models'] = [{'id': 'model', 'name': 'Model'}]
         self.profiles.save_auth(p, auth_bytes()); self.pid = p['id']
         self.profiles.grant(HOST_ID, self.pid, 'alice', ['model'])
-        self.app = FastAPI(); self.app.include_router(runtime_router); self.app.include_router(conversations_router); self.app.include_router(chat_router)
+        self.app = FastAPI(); self.app.include_router(runtime_router); self.app.include_router(conversations_router); self.app.include_router(chat_router); self.app.include_router(voice_router)
         def actor(authorization: str = Header()):
             uid = authorization.removeprefix('Bearer ')
             if uid not in ('owner','alice','bob'): raise HTTPException(401)
@@ -95,16 +96,68 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(r.status_code, 200, r.text); self.assertIn('first', r.text); self.assertIn('done', r.text)
             legacy.assert_not_called()
         self.assertEqual((await self.client.post('/api/chat/resume', json={'conversation_id':conv['id'], 'decisions':[]})).status_code, 409)
+    async def test_voice_delegate_uses_bound_cli_run_and_chat_history(self):
+        conv = await self.new(); self.backend.gate.set()
+        self.app.dependency_overrides[get_voice_worker_session] = lambda: {
+            'admin_id': 'alice', 'conv_id': conv['id'], 'model': 'model',
+        }
+        with patch('app.routes.chat._create_user_agent_bounded', new_callable=AsyncMock) as legacy:
+            response = await self.client.post('/api/voice/live/delegate', json={'message': 'voice hello'})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIn('first', response.text)
+            self.assertIn('done', response.text)
+            legacy.assert_not_called()
+        runs = self.store.find('run', session_id=conv['runtime_session_id'], actor_id='alice')
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]['message'], 'voice hello')
+        self.assertEqual(runs[0]['channel'], 'voice')
+        self.assertTrue(runs[0]['yolo'])
+        history = (await self.client.get('/api/conversations/' + conv['id'])).json()
+        self.assertEqual([m['content'] for m in history['messages']], ['voice hello', 'first'])
+    async def test_voice_delegate_preserves_legacy_graph_and_rejects_invalid_binding(self):
+        from app.services.conversations import create_conversation, get_conversation, _write_meta
+        conv = create_conversation('alice')
+        self.app.dependency_overrides[get_voice_worker_session] = lambda: {
+            'admin_id': 'alice', 'conv_id': conv['id'], 'model': 'old-model',
+            'capabilities': ['web'],
+        }
+        async def legacy_stream(*args, **kwargs):
+            yield 'data: {"type":"token","content":"legacy voice"}\n\n'
+            yield 'data: {"type":"done"}\n\n'
+        with patch('app.routes.chat._create_user_agent_bounded', new_callable=AsyncMock) as build, patch('app.routes.chat._stream_agent', legacy_stream):
+            response = await self.client.post('/api/voice/live/delegate', json={'message': 'hello'})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIn('legacy voice', response.text)
+            self.assertEqual(build.call_args.kwargs['model'], 'old-model')
+            self.assertEqual(build.call_args.kwargs['capabilities'], ['web'])
+        self.assertEqual(get_conversation('alice', conv['id'])['messages'][0]['content'], 'hello')
+        _write_meta('alice', conv['id'], {**conv, 'runtime_binding': {'runtime': 'cursor'}})
+        with patch('app.routes.chat._create_user_agent_bounded', new_callable=AsyncMock) as legacy:
+            response = await self.client.post('/api/voice/live/delegate', json={'message': 'again'})
+            self.assertEqual(response.status_code, 409, response.text)
+            legacy.assert_not_called()
+    async def test_voice_token_requires_an_owned_conversation(self):
+        from app.services.conversations import create_conversation
+        conv = create_conversation('bob')
+        with patch('app.routes.voice_live.is_livekit_configured', return_value=True), \
+             patch('app.routes.voice_live.livekit_server_config', return_value={'url': 'wss://example.test', 'api_key': 'key', 'api_secret': 'secret'}), \
+             patch('app.routes.voice_live.mint_livekit_token', return_value='signed') as mint:
+            response = await self.client.post('/api/voice/live/token', json={'conversation_id': conv['id']})
+            self.assertEqual(response.status_code, 404, response.text)
+            mint.assert_not_called()
     async def test_legacy_without_binding_keeps_deepagent_entry(self):
         from app.services.conversations import create_conversation
         conv = create_conversation('alice')
         async def legacy_stream(*args, **kwargs):
             yield 'data: {"type":"token","content":"legacy"}\n\n'
             yield 'data: {"type":"done"}\n\n'
-        with patch('app.routes.chat._create_user_agent_bounded', new_callable=AsyncMock) as build, patch('app.routes.chat._stream_agent', legacy_stream):
+        with patch('app.routes.chat._create_user_agent_bounded', new_callable=AsyncMock) as build, \
+             patch('app.routes.chat._stream_agent', legacy_stream), \
+             patch('app.routes.chat.context_for_conversation', return_value='<current-project-brief>current</current-project-brief>'):
             r = await self.client.post('/api/chat', json={'conversation_id':conv['id'], 'message':'hello', 'model':'old-model'})
             self.assertEqual(r.status_code,200,r.text); self.assertIn('legacy',r.text)
             self.assertEqual(build.call_args.kwargs['model'], 'old-model')
+            self.assertIn('current', build.call_args.kwargs['project_brief'])
     async def test_business_tools_document_memory_and_service_scope(self):
         bridge = BusinessTools(self.storage, self.profiles.authorize, self.store)
         self.storage.write_text('alice','/docs/public.txt','ALICE')

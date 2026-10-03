@@ -33,7 +33,9 @@ def history(actor_id, session_id):
             output = run.get('output', '')
             for item in run.get('artifacts', []):
                 output += f"\n\n<<FILE:{item['path']}>>"
-            messages.append({'role': 'assistant', 'content': output, 'run_id': run['id'], 'runtime_status': run['status']})
+            messages.append({'role': 'assistant', 'content': output,
+                             'timestamp': datetime.fromtimestamp(run['created_at']).isoformat(),
+                             'run_id': run['id'], 'runtime_status': run['status']})
     return messages
 
 
@@ -82,8 +84,11 @@ def conversation_binding(actor_id, conv_id):
     return meta
 
 
-def enqueue_chat(actor_id, conv_id, request_id, message, model=None, attachments=None, *, yolo=False):
+def enqueue_chat(actor_id, conv_id, request_id, message, model=None, attachments=None, *, yolo=False,
+                 channel='web'):
     meta = conversation_binding(actor_id, conv_id)
+    if meta.get('test_service_id'):
+        raise HTTPException(409, '此对话正在测试 Service；请通过 /api/chat 发送测试消息')
     if not meta.get('runtime_session_id'):
         raise HTTPException(409, '此会话使用 DeepAgents')
     attachments = list(attachments or [])
@@ -106,11 +111,18 @@ def enqueue_chat(actor_id, conv_id, request_id, message, model=None, attachments
     session = runtime.runs.own('session', meta['runtime_session_id'], actor_id)
     if session.get('deleted'):
         raise HTTPException(404, '会话已删除')
-    run = runtime.runs.enqueue(actor_id, session['id'], request_id, message, model=model, attachments=attachments, yolo=yolo)
+    run = runtime.runs.enqueue(actor_id, session['id'], request_id, message, model=model,
+                               attachments=attachments, yolo=yolo, channel=channel)
     meta['runtime_binding'] = runtime.store.get('session', session['id'])['binding']
     from app.services.conversations import _write_meta
     runs = runtime.store.find('run', session_id=session['id'], actor_id=actor_id)
-    meta['message_count'] = len(runs) * 2
+    # Native runs live in runtime.sqlite3; Service preview bubbles are mirrored
+    # into this admin conversation's JSONL. Keep both in the sidebar count.
+    from app.core.jsonl_store import read_jsonl
+    from app.services.conversations import _msgs_path
+    preview_count = sum(1 for row in read_jsonl(_msgs_path(actor_id, conv_id))
+                        if row.get('test_service_id'))
+    meta['message_count'] = len(runs) * 2 + preview_count
     meta['updated_at'] = datetime.now().isoformat()
     if meta.get('title') == '新对话':
         meta['title'] = message[:30] or attachments[0]['name'][:30]

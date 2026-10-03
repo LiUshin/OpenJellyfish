@@ -119,7 +119,7 @@ export async function createConversation(apiKey: string, title = ''): Promise<{ 
   const res = await fetch(`${API_BASE}/api/v1/conversations`, {
     method: 'POST',
     headers: authHeaders(apiKey, true),
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, source: 'web' }),
   });
   if (res.status === 401) throw new AuthError('API Key 无效，请重新输入');
   if (!res.ok) throw new Error(`创建会话失败: ${res.status}`);
@@ -197,11 +197,33 @@ export function saveConvStore(serviceId: string, items: ConvMeta[], activeId: st
 
 // ── 拉取单个会话（含历史消息）────────────────────────────────────────
 export interface ConsumerMessage {
+  event_id?: string;
+  message_id?: string;
+  author_type?: string;
   role: string;
   content: string;
   timestamp?: string;
   tool_calls?: { name?: string; args?: string; result?: string }[];
   blocks?: unknown[];
+}
+
+export interface ConversationEvent {
+  id: string;
+  seq: number;
+  conversation_id: string;
+  type: 'message';
+  message: { id: string; role: string; author_type: string; content: string; created_at: string };
+}
+
+export async function getConversationEvents(apiKey: string, convId: string, after: number, signal?: AbortSignal): Promise<{
+  events: ConversationEvent[]; next_cursor: number; has_more: boolean;
+}> {
+  const res = await fetch(`${API_BASE}/api/v1/conversations/${encodeURIComponent(convId)}/events?after=${after}`, {
+    headers: authHeaders(apiKey), signal,
+  });
+  if (res.status === 401 || res.status === 403) throw new AuthError('Service 或 Key 已停用，请重新连接');
+  if (!res.ok) throw new Error(`加载新消息失败: ${res.status}`);
+  return res.json();
 }
 
 export interface ConsumerConversation {

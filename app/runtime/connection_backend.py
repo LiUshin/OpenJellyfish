@@ -205,12 +205,13 @@ class ConnectionBackend(LocalBackend):
         pid = session['binding']['profile_id']
         prior = self.clients.get(pid)
         was_ready = self.public_state(pid)['status'] == 'ready'
-        entry = await self._ensure(pid, session['binding'].get('service_scope'))
+        entry = await self._ensure(pid, session['binding'].get('service_scope') or session['binding'].get('scheduler_scope'))
         adapter = entry['adapter']
         ok = False
         try:
             entry['session'] = session
             adapter.model, adapter.reused, adapter.reusable = session['binding']['model'], was_ready and entry is prior, False
+            adapter.image_mode = session['binding'].get('image_mode', 'native')
             adapter.workspace = self.workspace(session)
             adapter.workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
             adapter.session_key = session['id']

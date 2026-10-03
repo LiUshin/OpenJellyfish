@@ -18,6 +18,8 @@ export interface TaskConfig {
   capabilities?: string[];
   permissions?: TaskPermissions;
   model?: string;
+  runtime_choice?: import('../../services/runtime').RuntimeChoice;
+  runtime_binding?: import('../../services/runtime').RuntimeChoice;
 }
 
 export interface ReplyTo {
@@ -44,8 +46,17 @@ export interface StepData {
   fs_dir?: string;
 }
 
+export interface RunDelivery {
+  id: string;
+  channel: string;
+  status: string;
+  attempt: number;
+  error?: string;
+}
+
 export interface RunData {
   run_id?: string;
+  deliveries?: RunDelivery[];
   status: string;
   started_at?: string;
   finished_at?: string;
@@ -67,6 +78,7 @@ export interface TaskData {
   schedule_type: string;
   schedule?: string;
   enabled?: boolean;
+  recovery_required?: boolean;
   created_at?: string;
   last_run_at?: string;
   next_run_at?: string;

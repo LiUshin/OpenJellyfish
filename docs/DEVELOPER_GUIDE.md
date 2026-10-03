@@ -250,6 +250,7 @@ app/
 │   ├── script_runner.py       # 脚本执行（subprocess + AST 检查 + 信号量队列）
 │   ├── _sandbox_wrapper.py    # 运行时 I/O 沙箱（monkey-patch）
 │   ├── conversations.py       # Admin 对话持久化 + 附件
+│   ├── projects.py            # Admin 项目分组 + Markdown brief + 项目内搜索
 │   ├── prompt.py              # System Prompt 版本管理 + capability prompts
 │   ├── preferences.py         # 用户时区/界面偏好
 │   ├── subagents.py           # Subagent 配置 + DEFAULT_SUBAGENTS
@@ -262,6 +263,7 @@ app/
 ├── routes/                    # 详见 §4.2 路由总表
 │   ├── auth.py
 │   ├── conversations.py
+│   ├── projects.py            # 仅 Admin 的项目 API
 │   ├── chat.py
 │   ├── files.py
 │   ├── scripts.py
@@ -313,6 +315,7 @@ app/
 | 前缀 | 用途 |
 |---|---|
 | `/api/conversations` | 对话 CRUD + 附件 |
+| `/api/projects` | Admin 项目 CRUD、brief 和项目内对话搜索；Service 无项目能力 |
 | `/api/chat` | 主 SSE 聊天 + `/resume` + `/stop` + `/streaming-status` |
 | `/api/files` | 文件 CRUD + 上传 + 下载 + media |
 | `/api/scripts` | 脚本执行 + audio 转写 |
@@ -694,6 +697,8 @@ Key 更新后自动调用 `clear_agent_cache(user_id)` + `clear_consumer_cache(a
 
 `app/runtime/chat_adapters.py` 将现有聊天入口分派到 DeepAgents 或已绑定的 Codex / Cursor 会话。没有 runtime 绑定的旧会话仍走 DeepAgents。外部引擎使用独立 SQLite 运行与事件存储、有界队列、单连接串行和版本化模型授权，不替换 LangGraph checkpoints；未知或失效绑定直接报错。
 
+Admin 项目在 `users/{uid}/projects/{pid}/` 保存元数据与一份 `brief.md`，对话的 `meta.json` 只增加可空归属 ID。项目不改变 CLI session 和文件工作区。Admin 项目对话每轮重新读取 brief，并把最多 5,000 token 的副本放入 DeepAgent/Codex/Cursor 上下文；Agent 写入通过当前对话归属约束的持久操作完成。项目内搜索同时读取 DeepAgent JSONL 和 CLI runtime 历史，只返回用户可见文本。Service consumer 没有项目字段、brief 注入或项目写入权限。设计与验收边界见 [项目对话分组](projects-conversation-groups-design.md)。
+
 `app/core/host_auth.py` 为 `/api/superadmin/runtime` 验证独立的 `host:owner` 身份，前端入口为 `/superadmin`。注册 admin 通过 `/api/runtime` 和主聊天使用授权连接。旧 owner 连接迁移为主机所有，保留已有撤权记录；新部署不要配置 `JELLYFISH_OWNER_USER_ID`。
 
 `ConnectionBackend` 按连接预热有界客户端池（`MAX_CLIENTS` 默认等于 `MAX_RUNNING`，最大 16），连接持有客户端和凭据租约，每轮重新绑定 actor、会话、工作区、模型与工具。`KEEP_WARM=0` 关闭预热；当前没有生效的 `JELLYFISH_RUNTIME_IDLE_SECONDS` 配置。仅支持 macOS / Linux、单 API worker、`trusted_shared + local`。应用容器化不构成租户隔离，多副本不得共享这份本地状态。
@@ -701,6 +706,12 @@ Key 更新后自动调用 `clear_agent_cache(user_id)` + `clear_consumer_cache(a
 详见 [运行说明](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-standard-mode.md)、[主机控制台与 Docker 配置](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/superadmin-console.md)。回归命令：`python -m unittest discover -s tests -p 'test_runtime*.py'`。供应商真实账号验收需另行执行，单元测试与构建不代表该项通过。
 
 v1.3.1 的 `app/runtime/consumer.py` 与 `consumer_tools.py` 将授权套餐扩展至 Service 网页、API 与微信，复用 Runtime 队列和单连接串行。服务端绑定 admin / Service / conversation 身份，限制开放文档、脚本与当前会话产物；连接、模型或资源配置变更后重建原生会话，撤权会取消排队及运行任务。套餐 Service 拒绝 BYOK、语音、视频与定时任务；管理员 YOLO 不改变 Service 的资源范围。详见[Service 分发与边界](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-service-distribution.md)。
+
+### 4.12 v1.4.0 项目、Service 测试与 Tracing
+
+`app/routes/projects.py` 与 `app/services/projects.py` 管理 owner 范围内的对话分组；`project_context.py` 每轮注入最多 5,000 token（含包装）的 brief。项目不是新文件工作区，不进入消费者或 Service 测试上下文。删除项目只解除分组。
+
+`app/services/service_test.py` 将管理员对话持久保存的 `test_service_id` 路由到独立 Service 测试会话；按 Service 当前配置执行并排除真实消费者记录和外部反馈通知。Tracing 由前端 `TracingView.tsx`、`TraceCanvas.tsx` 与 `tracePosition.ts` 从持久消息和工具块推导文件 / 动作视图；缺失位置必须保留未知状态，不能当作读取覆盖率证明。
 
 ## 5. 前端架构
 
@@ -1371,6 +1382,12 @@ Consumer agent 通过：
 Service 镜像路径：`/api/scheduler/services/{service_id}/...`
 
 ---
+
+### 8.12 v1.4.0 持久执行与消息投递
+
+`app/execution/` 保存 Run、执行授权、恢复和 outbox；`app/services/service_messaging.py` 在同一 `users/.scheduler/executions.sqlite3` 中使用独立 `sm_*` 表保存反馈、回复与明确正文的通知。执行完成、历史投影和微信回执是独立状态；外部发送结果未知时不自动重发。
+
+管理员 Agent 任务可绑定经授权的 DeepAgents / Codex / Cursor；CLI Service Agent 定时任务仍未开放。直接文字通知不执行模型。`DISABLE_SCHEDULER` 不停止消息 worker，`DISABLE_SERVICE_MESSAGING=1` 单独停止它，`SAFE_STARTUP=1` 同时停止两者。升级 / 回滚前停机备份完整用户数据及数据库，或使用 SQLite 一致性备份；个人 ZIP 不包含完整运行 / 投递事实源。详见 [消息与备份边界](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/service-messaging.md)。
 
 ## 9. Inbox（收件箱）
 

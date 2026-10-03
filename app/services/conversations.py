@@ -37,6 +37,7 @@ Why this layout?
 import os
 import json
 import uuid
+import threading
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -50,6 +51,12 @@ from app.core.jsonl_store import (
     read_jsonl_tail,
     safe_load_json,
 )
+
+
+# All metadata read/modify/write operations share this lock. Runtime binding
+# writes can be based on a previously loaded conversation; _write_meta preserves
+# the current project assignment so a move is not overwritten by a later turn.
+_meta_lock = threading.RLock()
 
 
 # ── path helpers ────────────────────────────────────────────────────
@@ -128,12 +135,43 @@ def _migrate_if_needed(user_id: str, conv_id: str) -> None:
 # ── meta sidecar ────────────────────────────────────────────────────
 
 def _write_meta(user_id: str, conv_id: str, meta: Dict[str, Any]) -> None:
-    atomic_json_save(_meta_path(user_id, conv_id), meta,
-                     ensure_ascii=False, indent=2)
+    with _meta_lock:
+        current = _load_meta(user_id, conv_id)
+        if current is not None:
+            meta = {**meta, **{key: current.get(key) for key in (
+                "project_id", "test_service_id", "test_consumer_conversation_id",
+                "test_service_revision")}}
+        atomic_json_save(_meta_path(user_id, conv_id), meta,
+                         ensure_ascii=False, indent=2)
 
 
 def _load_meta(user_id: str, conv_id: str) -> Optional[Dict[str, Any]]:
     return safe_load_json(_meta_path(user_id, conv_id))
+
+
+def get_conversation_meta(user_id: str, conv_id: str) -> Optional[Dict[str, Any]]:
+    """Read metadata without loading a long message history."""
+    _migrate_if_needed(user_id, conv_id)
+    return _load_meta(user_id, conv_id)
+
+
+def set_conversation_project(user_id: str, conv_id: str,
+                             project_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Assign an existing admin conversation to a project or ungroup it.
+
+    The caller validates project ownership before passing a non-null ID.
+    The move is metadata-only and leaves the runtime session untouched.
+    """
+    _migrate_if_needed(user_id, conv_id)
+    with _meta_lock:
+        meta = _load_meta(user_id, conv_id)
+        if meta is None:
+            return None
+        meta["project_id"] = project_id
+        meta["updated_at"] = datetime.now().isoformat()
+        atomic_json_save(_meta_path(user_id, conv_id), meta,
+                         ensure_ascii=False, indent=2)
+        return meta
 
 
 # ── public API ──────────────────────────────────────────────────────
@@ -181,6 +219,8 @@ def list_conversations(user_id: str) -> List[Dict[str, Any]]:
             "created_at": meta.get("created_at", ""),
             "updated_at": meta.get("updated_at", ""),
             "message_count": meta.get("message_count", 0),
+            "project_id": meta.get("project_id"),
+            "test_service_id": meta.get("test_service_id"),
             "runtime_binding": meta.get("runtime_binding"),
             "runtime_session_id": meta.get("runtime_session_id"),
         })
@@ -189,7 +229,8 @@ def list_conversations(user_id: str) -> List[Dict[str, Any]]:
     return out
 
 
-def create_conversation(user_id: str, title: str = "新对话") -> Dict[str, Any]:
+def create_conversation(user_id: str, title: str = "新对话",
+                        project_id: Optional[str] = None) -> Dict[str, Any]:
     conv_root = get_user_conversations_dir(user_id)
     os.makedirs(conv_root, exist_ok=True)
     conv_id = str(uuid.uuid4())[:8]
@@ -202,6 +243,8 @@ def create_conversation(user_id: str, title: str = "新对话") -> Dict[str, Any
         "created_at": now,
         "updated_at": now,
         "message_count": 0,
+        "project_id": project_id,
+        "test_service_id": None,
     }
     _write_meta(user_id, conv_id, meta)
     # Touch messages.jsonl so directory has both files even if user
@@ -227,7 +270,11 @@ def get_conversation(user_id: str, conv_id: str) -> Optional[Dict[str, Any]]:
     messages = read_jsonl(_msgs_path(user_id, conv_id))
     if meta.get('runtime_session_id'):
         from app.runtime.chat import history
-        messages = history(user_id, meta['runtime_session_id'])
+        # Native admin history lives in the runtime store; Service preview
+        # bubbles are mirrored in this conversation's JSONL. Show both.
+        preview = [m for m in messages if m.get('test_service_id')]
+        messages = sorted(history(user_id, meta['runtime_session_id']) + preview,
+                          key=lambda m: m.get('timestamp', ''))
     out = dict(meta)
     out["messages"] = messages
     return out
@@ -270,7 +317,8 @@ def delete_conversation(user_id: str, conv_id: str) -> bool:
 
 def save_message(user_id: str, conv_id: str, role: str, content: str,
                  tool_calls: list = None, attachments: list = None,
-                 blocks: list = None):
+                 blocks: list = None, event_id: str = None,
+                 test_service_id: str | None = None):
     """Append one message and refresh meta.json.
 
     Replaces the old read-full-rewrite-full pattern: one append to
@@ -286,6 +334,8 @@ def save_message(user_id: str, conv_id: str, role: str, content: str,
         "content": content,
         "timestamp": now,
     }
+    if test_service_id:
+        msg['test_service_id'] = test_service_id
     if tool_calls:
         msg["tool_calls"] = tool_calls
     if attachments:
@@ -293,20 +343,29 @@ def save_message(user_id: str, conv_id: str, role: str, content: str,
     if blocks:
         msg["blocks"] = blocks
 
-    append_jsonl(_msgs_path(user_id, conv_id), msg)
+    if event_id:
+        from app.core.jsonl_store import append_jsonl_once
+        append_jsonl_once(_msgs_path(user_id, conv_id), msg, event_id)
+    else:
+        append_jsonl(_msgs_path(user_id, conv_id), msg)
 
-    meta = _load_meta(user_id, conv_id) or {
-        "id": conv_id,
-        "title": "新对话",
-        "created_at": now,
-        "updated_at": now,
-        "message_count": 0,
-    }
-    meta["message_count"] = int(meta.get("message_count", 0)) + 1
-    meta["updated_at"] = now
-    if meta.get("title", "新对话") == "新对话" and role == "user":
-        meta["title"] = content[:30] + ("..." if len(content) > 30 else "")
-    _write_meta(user_id, conv_id, meta)
+    with _meta_lock:
+        meta = _load_meta(user_id, conv_id) or {
+            "id": conv_id,
+            "title": "新对话",
+            "created_at": now,
+            "updated_at": now,
+            "message_count": 0,
+        }
+        if event_id:
+            from app.core.jsonl_store import read_jsonl
+            meta['message_count'] = len(read_jsonl(_msgs_path(user_id, conv_id)))
+        else:
+            meta["message_count"] = int(meta.get("message_count", 0)) + 1
+        meta["updated_at"] = now
+        if meta.get("title", "新对话") == "新对话" and role == "user":
+            meta["title"] = content[:30] + ("..." if len(content) > 30 else "")
+        _write_meta(user_id, conv_id, meta)
 
 
 # ── attachment helpers (unchanged behaviour) ────────────────────────

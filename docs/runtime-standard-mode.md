@@ -11,16 +11,31 @@ v1.3.0：PR 00–06、Cursor 接入、主机超管控制台及可选 Docker CLI 
 - 新对话直接在聊天输入区选择 API / Codex / Cursor 模型，首次发送时自动建立内部会话，不再经过创建配置弹窗。已有会话可在同一连接内逐轮切换模型；每轮保存实际选择并重新检查授权。引擎、连接、账号代次、授权版本和生图模式仍绑定会话；不会跨账号或供应商自动迁移上下文。
 - Codex / Cursor 请求在单调度进程的 SQLite 队列中运行；同连接并发为 1，全局和每 admin 排队有上限。管理员主聊天断开浏览器不停止任务；刷新后重新打开会话可恢复输出和审批。内部 Service 的流断开会取消该次任务。
 - 支持文本、文档副本、原生命令/文件审批、停止、产物预览 / 下载。业务工具包含文档读取、带版本检查的个人记忆更新及当前 admin 的服务文档读取。
+- 管理员 Web 聊天中的 CLI 会话现复用欢迎入口和输入组件；运行记录支持流式过程、长会话虚拟列表、问答导航、回到底部、附件在用户消息内展示、搜索/生图入口状态及独立审批卡。Cursor 的这两项状态只表示适配入口存在，真实能力尚待验收。运行中发送的文字会在前端按会话排队；同一浏览器标签内切换页面或刷新后，待发项从 `sessionStorage` 恢复，并按固定请求编号与服务端对账。新会话首条消息在提交期间显示等待状态；首条和普通消息的待确认提交也按 admin 保存在同一标签的 `sessionStorage`，恢复后先按请求编号对账，未确认时用原编号重试，存储失败则保留输入并阻止提交。前端构建和模拟浏览器验收已覆盖主要布局；真实供应商端到端交互仍需验收。
 
 **范围说明：** DeepAgents 适配器保留原 LangGraph/checkpointer/HITL 执行机制与 SSE 行为；新增 CLI 队列、账号并发和凭据租用作用于 Codex / Cursor。没有把旧 DeepAgents 任务伪装为 Codex 持久队列任务。
 
 admin 还可将已授权连接与模型用于[内部 Service 的网页、API 和微信](runtime-service-distribution.md)。访客仅通过 Service 工具访问发布的资源，不能取得超管凭据或使用管理员主聊天工具。
 
+## 管理员个人微信与实时语音
+
+- 管理员个人微信扫码确认时新建独立对话，并按当时的默认引擎与授权连接绑定。绑定 Codex / Cursor 的微信消息进入同一 Runtime 队列；绑定属于会话，之后改变默认引擎不会切换这段微信对话。接入前已创建、没有 Runtime 绑定的微信对话继续使用 DeepAgents；损坏的 CLI 绑定直接报错。
+- 微信入站消息用 iLink `message_id` 生成稳定请求编号，避免协议重投重复执行。CLI 运行结果从该会话读取，归档的原生图片可作为微信媒体投递。出站每个部分保存 `pending`、`sending`、`sent` 或 `unknown` 状态：明确拒收的 `pending` 可在原消息重投时重试；发送结果不确定时不盲目重发。当前没有后台投递恢复任务，微信端收发仍需真实 iLink 验收。
+- LiveKit 实时语音前台仍使用配置的低延迟 LLM 处理对话与工具调用。只有前台调用 `delegate_to_jellyfish` 委派后台任务时，Core 才按该对话的引擎绑定执行：Codex / Cursor 进入 Runtime 队列，DeepAgents 保留原执行路径。真实 LiveKit 音频往返与委派端到端验收尚未完成。
+
+## 管理员定时任务
+
+- 管理员 Agent 定时任务可显式选择 DeepAgents、Codex 或 Cursor，并在保存时固定连接、模型和授权版本。旧任务没有 `runtime_choice` 时仍走 DeepAgents；改变管理员的默认聊天引擎不会暗中切换已有任务。脚本任务不能选择 CLI。
+- CLI 定时任务复用 Runtime 的连接队列，但由持久化调度授权限定读写目录和业务工具。客户端原生命令与文件工具被拒绝，文件读写只能经过受限业务工具；联网搜索和原生生图须在任务能力中单独授权。当前不开放语音、视频或 CLI 子任务创建；任务最终文本由调度账本提交后投递，不依赖 `send_message` 工具。
+- 参考文档会随执行指令一起进入 CLI 输入；合计超过 32,000 字符时任务明确失败并提示缩短内容，不静默截断。
+- 执行中持续检查任务版本、账号授权和能力范围。取消外层任务会停止内层 CLI 运行；结果提交前再次核对授权与投递目标，失效结果不投递。文件写入和原生图片归档记录持久化副作用，崩溃后不自动重放不确定写入。
+- 代码与模拟后端回归已覆盖授权收紧、撤权、重复写入、取消、最终提交及 Cursor 本地搜索拒绝；真实 Codex / Cursor 定时执行、联网搜索、生图和最终微信投递尚需部署侧验收。Service 定时任务继续遵循[内部 Service 能力边界](runtime-service-distribution.md#能力边界)。
+
 ## Admin YOLO 模式
 
-「设置 → 通用 → YOLO」同时作用于 DeepAgents、Codex 与 Cursor 的 admin 聊天。新对话首条消息及后续消息均传递该设置，服务端按每轮请求保存；关闭后下一轮恢复手动审批，已发出的轮次保留发送时的设置。网络重试复用原请求及原设置。
+「设置 → 通用 → YOLO」同时作用于 DeepAgents、Codex 与 Cursor 的 admin 聊天。新对话首条消息及后续消息均传递该设置，服务端按每轮请求保存；关闭后下一轮恢复手动审批，已发出的轮次保留发送时的设置。网络重试复用原请求及原设置。Cursor 自行提出的计划始终需要人工接受或拒绝，YOLO 不自动批准计划；完整的 CLI Plan mode 尚未接入，范围见 [Plan 与 CLI mode 契约草案](runtime-plan-mode-contract.md)。
 
-Codex / Cursor 的普通命令、文件修改和 Cursor 计划请求，先经过原有账号授权、工作区范围和供应商审批选项检查，再自动批准。超范围或无法核实的操作自动拒绝，不扩大沙箱权限，不生成等待点击的审批卡。自动处理记录保存在该轮事件中，界面用 YOLO 标签标识开启状态。Service 访客的执行范围及拒绝原生命令 / 文件审批的规则不受此开关影响。
+Codex / Cursor 的普通命令和文件修改先经过原有账号授权、工作区范围和供应商审批选项检查，再由 YOLO 自动批准。超范围或无法核实的操作自动拒绝，不扩大沙箱权限，不生成等待点击的审批卡。自动处理记录保存在该轮事件中，界面用 YOLO 标签标识开启状态。Cursor 的计划请求保留人工审批；Service 访客的执行范围及拒绝原生命令 / 文件审批的规则不受此开关影响。
 
 ## 部署开关
 
@@ -91,14 +106,15 @@ python scripts/runtime_admin.py recover --profile-id <profile_id> --confirm-stop
 
 ## 能力与验收边界
 
-- Codex 原生生图已通过本机 API 生成与归档 PNG 验证；Cursor 生图适配已实现，但未完成真实生图验收。支持 `image_mode=native/off`，前端生图最终视觉验收尚未完成。详见 [流式聊天与原生能力](runtime-streaming-chat.md)。
-- 每租户 Docker / Cloudflare 执行后端、多副本协调、不可信公众的套餐分发、管理员个人微信、调度与语音的外部引擎接入尚未开放。内部 Service 微信已接入共享执行路径，实际微信收发仍需部署侧验收。整套应用的 Docker 部署不等于这些隔离后端。
+- Codex 原生生图已通过本机 API 生成与归档 PNG 验证；Cursor 生图适配已实现，但未完成真实生图验收。`image_mode=off` 现会在每轮重绑定客户端，并在 Codex 会话配置、Cursor 生图回调及原生产物归档处执行；它控制 CLI 原生生图，不限制图片输入或普通文件。真实 Cursor 生图、模式切换及前端生图视觉效果仍需部署侧验收。详见 [流式聊天与原生能力](runtime-streaming-chat.md)。
+- 每租户 Docker / Cloudflare 执行后端、多副本协调、不可信公众的套餐分发尚未实现。管理员个人微信、受限调度与语音后台委派已有上述 CLI 代码路径，但真实 iLink / LiveKit 和定时 CLI 端到端验收仍待完成；内部 Service 微信已接入共享执行路径，实际微信收发仍需部署侧验收。整套应用的 Docker 部署不等于这些隔离后端。
 - Cloudflare、第二个独立供应商身份没有真实验证。两个测试 admin 共享同一供应商账号的成功不能替代这些验收。
 
 ## 验证方法
 
 ```bash
 python -m unittest discover -s tests -p 'test_runtime*.py' -v
+python -m unittest tests.test_admin_wechat_runtime tests.test_scheduler_cli -v
 python tests/test_storage_local.py
 cd frontend && npm run build
 ```

@@ -45,7 +45,8 @@ class CursorMCP:
             elif method == 'tools/call':
                 if params.get('name') not in {t['name'] for t in self.tools}:
                     raise ValueError()
-                response = await self.call({'tool': params['name'], 'arguments': params.get('arguments', {})})
+                response = await self.call({'tool': params['name'], 'arguments': params.get('arguments', {}),
+                                            'callId': str(message['id'])})
                 result = {'content': [{'type': 'text', 'text': i['text']} for i in response['contentItems']],
                           'isError': not response['success']}
             else:

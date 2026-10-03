@@ -16,6 +16,10 @@ class History(Empty):
     last_n: int = Field(default=20, ge=1, le=100)
 
 
+class ContactAdmin(Empty):
+    message: str = Field(min_length=1, max_length=8000)
+
+
 class WriteFile(Document):
     content: str = Field(max_length=65536)
 
@@ -28,6 +32,7 @@ class Script(Empty):
 
 
 TOOLS = {
+    'contact_admin': (ContactAdmin, '向本 Service 的管理员提交反馈或求助，绑定当前对话。成功仅表示反馈已记录，不代表管理员已经阅读或回复。'),
     'list_documents': (Directory, '列出本 Service 开放的 /docs 文档目录；只显示白名单范围。'),
     'read_document': (Document, '读取本 Service 白名单内的文档，支持文本、PDF、Word、Excel，单文件最多 8 MB。'),
     'read_my_conversation': (History, '读取当前 Service 对话的最近消息，不包含其他对话或 admin 长期记忆。'),
@@ -116,7 +121,26 @@ class ServiceTools:
         try:
             args = TOOLS[name][0].model_validate(params.get('arguments', {}))
             self.store.emit(run, 'business_tool', {'name': params['tool'], 'status': 'running'})
-            if name == 'run_script':
+            if name == 'contact_admin':
+                if binding['service_scope'].get('channel') == 'admin_test':
+                    result = {'status': 'preview_only', 'message': '测试模式：已模拟提交，不写入真实收件箱。'}
+                    text = json.dumps(result, ensure_ascii=False)
+                    self.store.emit(run, 'business_tool', {'name': params['tool'], 'status': 'completed', 'result': text})
+                    return BusinessTools.result(text, True)
+                # Identity is exclusively server-bound. Replayed supplier calls
+                # reuse their effect identity; providers without a call ID are
+                # deduplicated by content within this run.
+                import hashlib
+                from app.services.service_messaging import post_contact
+                scope = binding['service_scope']
+                call_id = params.get('callId') or hashlib.sha256(args.message.encode()).hexdigest()
+                case = await asyncio.to_thread(
+                    post_contact, actor, scope['service_id'], scope['conversation_id'], args.message,
+                    wechat_session_id=scope.get('wechat_session_id'), channel=scope['channel'],
+                    idempotency_key=f"runtime:{run['id']}:{call_id}",
+                )
+                result = {'case_id': case['id'], 'status': 'submitted', 'message': '反馈已提交给管理员，可在当前会话接收后续回复。'}
+            elif name == 'run_script':
                 # Wait for the bounded runner to terminate even if the caller
                 # disconnects; don't release the profile with a script still live.
                 job = asyncio.create_task(asyncio.to_thread(self.script, actor, binding, svc, args))

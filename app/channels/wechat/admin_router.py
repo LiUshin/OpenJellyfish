@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime
 from typing import Optional, Dict
@@ -19,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from app.deps import get_current_user
 from app.channels.wechat.client import ILinkClient, generate_qrcode, poll_qrcode_status
-from app.services.conversations import create_conversation, get_conversation
+from app.services.conversations import create_conversation, delete_conversation, get_conversation
 
 log = logging.getLogger("wechat.admin_router")
 
@@ -27,7 +28,14 @@ router = APIRouter(prefix="/api/admin/wechat", tags=["admin-wechat"])
 
 _admin_sessions: Dict[str, dict] = {}
 _admin_poll_tasks: Dict[str, asyncio.Task] = {}
-_admin_confirmed_qrcodes: Dict[str, dict] = {}
+_admin_qr_challenges: Dict[str, dict] = {}
+_admin_confirm_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _authorize_admin_send(user_id: str, expected: dict):
+    if _admin_sessions.get(user_id) is not expected or not expected.get("connected"):
+        raise HTTPException(403, "管理员微信连接已失效")
+
 
 _PERSIST_FIELDS = (
     "user_id", "conversation_id", "bot_token", "ilink_user_id",
@@ -81,7 +89,15 @@ async def api_admin_qrcode(user=Depends(get_current_user)):
     if not ok:
         raise HTTPException(status_code=429, detail=reason)
 
+    for key, challenge in list(_admin_qr_challenges.items()):
+        if challenge["expires_at"] <= time.monotonic():
+            _admin_qr_challenges.pop(key, None)
+    if len(_admin_qr_challenges) >= 2000:
+        raise HTTPException(429, "扫码请求过多，请稍后重试")
     qr_data = await generate_qrcode()
+    _admin_qr_challenges[qr_data["qr_id"]] = {
+        "user_id": user_id, "expires_at": time.monotonic() + 600, "result": None,
+    }
     return {
         "qr_id": qr_data["qr_id"],
         "qr_image_b64": base64.b64encode(qr_data["qr_image_png"]).decode(),
@@ -93,53 +109,62 @@ async def api_admin_qrcode(user=Depends(get_current_user)):
 async def api_admin_qrcode_status(qrcode: str, user=Depends(get_current_user)):
     """Poll QR scan status. On confirmed, create session + conversation."""
     user_id = user["user_id"]
-    if qrcode in _admin_confirmed_qrcodes:
-        return _admin_confirmed_qrcodes[qrcode]
+    lock = _admin_confirm_locks.setdefault(user_id, asyncio.Lock())
+    async with lock:
+        challenge = _admin_qr_challenges.get(qrcode)
+        if not challenge or challenge["user_id"] != user_id:
+            raise HTTPException(404, "二维码不存在，请重新获取")
+        if challenge["expires_at"] <= time.monotonic():
+            _admin_qr_challenges.pop(qrcode, None)
+            raise HTTPException(410, "二维码已过期，请重新获取")
+        existing = _get_session(user_id)
+        if challenge["result"] is not None:
+            if not existing or not existing.get("connected") or existing["conversation_id"] != challenge["result"]["conversation_id"]:
+                raise HTTPException(410, "微信连接已失效，请重新扫码")
+            return challenge["result"]
+        if existing and existing.get("connected"):
+            raise HTTPException(409, "已有活跃的微信连接，请先断开再重新扫码")
 
-    info = await poll_qrcode_status(qrcode)
-    status = info.get("status", "waiting")
-
-    if status == "confirmed":
-        bot_token = info.get("bot_token", "")
-        ilink_user_id = info.get("ilink_user_id", "")
-        ilink_bot_id = info.get("ilink_bot_id", "")
-        base_url = info.get("baseurl", "https://ilinkai.weixin.qq.com")
-
-        conv = create_conversation(user_id, title="微信对话")
-
-        client = ILinkClient(
-            bot_token=bot_token,
-            ilink_user_id=ilink_user_id,
-            ilink_bot_id=ilink_bot_id,
-            base_url=base_url,
-        )
-
-        session = {
-            "user_id": user_id,
-            "conversation_id": conv["id"],
-            "client": client,
-            "bot_token": bot_token,
-            "ilink_user_id": ilink_user_id,
-            "ilink_bot_id": ilink_bot_id,
-            "base_url": base_url,
-            "connected": True,
-            "connected_at": datetime.now().isoformat(),
-            "context_token": "",
-            "from_user_id": "",
-        }
-        _admin_sessions[user_id] = session
-        _save_admin_session(user_id)
-
-        _start_admin_polling(user_id)
-
-        result = {
-            "status": "confirmed",
-            "conversation_id": conv["id"],
-        }
-        _admin_confirmed_qrcodes[qrcode] = result
-        return result
-
-    return {"status": status}
+        info = await poll_qrcode_status(qrcode)
+        if _admin_qr_challenges.get(qrcode) is not challenge or challenge["expires_at"] <= time.monotonic():
+            raise HTTPException(410, "二维码已失效，请重新获取")
+        status = info.get("status", "waiting")
+        if status == "confirmed":
+            if not all(info.get(key) for key in ("bot_token", "ilink_user_id", "ilink_bot_id")):
+                raise HTTPException(502, "微信确认信息不完整，请重新扫码")
+            if any(s.get("bot_token") == info["bot_token"] for s in _admin_sessions.values()):
+                raise HTTPException(409, "此微信连接已绑定，请重新扫码")
+            # A WeChat conversation is its own main-chat conversation. Freeze the
+            # selected engine when the QR connection is established, just as the
+            # web conversation endpoint does; later preference changes must not
+            # silently switch an ongoing WeChat conversation.
+            from app.runtime.chat import choice, bind_conversation
+            binding = choice(user_id, None)
+            conv = create_conversation(user_id, title="微信对话")
+            try:
+                conv = bind_conversation(user_id, conv, binding, [])
+            except Exception:
+                delete_conversation(user_id, conv["id"])
+                raise
+            client = ILinkClient(bot_token=info["bot_token"], ilink_user_id=info["ilink_user_id"],
+                                 ilink_bot_id=info["ilink_bot_id"],
+                                 base_url=info.get("baseurl", "https://ilinkai.weixin.qq.com"))
+            session = {"user_id": user_id, "conversation_id": conv["id"], "client": client,
+                       "bot_token": info["bot_token"], "ilink_user_id": info["ilink_user_id"],
+                       "ilink_bot_id": info["ilink_bot_id"],
+                       "base_url": info.get("baseurl", "https://ilinkai.weixin.qq.com"),
+                       "connected": True, "connected_at": datetime.now().isoformat(),
+                       "context_token": "", "from_user_id": ""}
+            client.authorize_send = lambda: _authorize_admin_send(user_id, session)
+            _admin_sessions[user_id] = session
+            _save_admin_session(user_id)
+            _start_admin_polling(user_id)
+            result = {"status": "confirmed", "conversation_id": conv["id"]}
+            challenge["result"] = result
+            return result
+        if status == "expired":
+            _admin_qr_challenges.pop(qrcode, None)
+        return {"status": status}
 
 
 @router.get("/session")
@@ -205,6 +230,11 @@ async def _admin_poll_loop(user_id: str):
 
             for msg in msgs:
                 from_user = msg.get("from_user_id", "")
+                if _admin_sessions.get(user_id) is not session or not session.get("connected"):
+                    return
+                if session.get("from_user_id") and from_user != session["from_user_id"]:
+                    log.warning("Ignoring foreign sender on admin WeChat connection")
+                    continue
                 if from_user and not session.get("from_user_id"):
                     session["from_user_id"] = from_user
                     _save_admin_session(user_id)
@@ -230,8 +260,11 @@ async def _admin_poll_loop(user_id: str):
 
 
 async def _remove_admin_session(user_id: str):
+    for key, challenge in list(_admin_qr_challenges.items()):
+        if challenge["user_id"] == user_id:
+            _admin_qr_challenges.pop(key, None)
     task = _admin_poll_tasks.pop(user_id, None)
-    if task and not task.done():
+    if task and not task.done() and task is not asyncio.current_task():
         task.cancel()
 
     session = _admin_sessions.pop(user_id, None)
@@ -299,6 +332,7 @@ async def restore_admin_sessions():
             "context_token": data.get("context_token", ""),
             "from_user_id": data.get("from_user_id", ""),
         }
+        client.authorize_send = lambda uid=user_id, current=session: _authorize_admin_send(uid, current)
         _admin_sessions[user_id] = session
         _start_admin_polling(user_id)
         count += 1

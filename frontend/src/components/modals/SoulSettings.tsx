@@ -301,17 +301,37 @@ export default function SoulSettings({ open, onClose, inline }: Props) {
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-              <Text strong style={{ fontSize: 14, color: 'var(--jf-text)' }}>{t('soul.consumerConvTitle')}</Text>
+              <Text strong style={{ fontSize: 14, color: 'var(--jf-text)' }}>{t('soul.serviceRecordsTitle')}</Text>
               <Switch
-                checked={config.include_consumer_conversations}
-                loading={updating === 'include_consumer_conversations'}
-                onChange={(v) => toggle('include_consumer_conversations', v)}
-                style={config.include_consumer_conversations ? { backgroundColor: 'var(--jf-primary)' } : undefined}
+                checked={config.service_records_enabled || config.include_consumer_conversations}
+                loading={updating === 'service_records_enabled'}
+                disabled={updating !== null}
+                onChange={(v) => toggle('service_records_enabled', v)}
+                style={config.service_records_enabled || config.include_consumer_conversations ? { backgroundColor: 'var(--jf-primary)' } : undefined}
               />
             </div>
             <Paragraph style={{ color: 'var(--jf-text-muted)', fontSize: 12, marginBottom: 0, lineHeight: '18px' }}>
-              {t('soul.consumerConvDesc')}
+              {t('soul.serviceRecordsDesc')}
             </Paragraph>
+            {config.include_consumer_conversations && !config.service_records_enabled && (
+              <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 'var(--jf-radius-sm)', background: 'rgba(var(--jf-accent-rgb), 0.08)' }}>
+                <Text style={{ color: 'var(--jf-text)', fontSize: 12 }}>
+                  {t('soul.serviceRecordsLegacyNotice')}
+                </Text>
+                <div style={{ marginTop: 4 }}>
+                  <Button
+                    size="small"
+                    type="link"
+                    loading={updating === 'service_records_enabled'}
+                    disabled={updating !== null}
+                    onClick={() => toggle('service_records_enabled', true)}
+                    style={{ padding: 0 }}
+                  >
+                    {t('soul.serviceRecordsUpgrade')}
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -12,6 +12,9 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Optional, Dict
 
+from fastapi import HTTPException
+from app.channels.wechat.policy import ensure_wechat_active, ensure_wechat_session
+
 from app.channels.wechat.client import ILinkClient
 from app.services.published import (
     get_service, create_consumer_conversation,
@@ -74,49 +77,50 @@ class WeChatSessionManager:
         ilink_bot_id: str,
         base_url: str = "https://ilinkai.weixin.qq.com",
     ) -> WeChatSession:
+        retired_clients = []
         async with self._lock:
+            svc = ensure_wechat_active(admin_id, service_id)
             for existing in self._sessions.values():
                 if existing.bot_token == bot_token:
-                    log.info("Session already exists for bot_token, returning existing: %s",
-                             existing.session_id)
+                    if (existing.admin_id, existing.service_id) != (admin_id, service_id):
+                        raise HTTPException(409, "此微信连接已绑定其他 Service，请重新扫码")
                     return existing
 
-        stale = [
-            sid for sid, s in self._sessions.items()
-            if s.ilink_user_id == ilink_user_id and s.service_id == service_id
-        ]
-        for sid in stale:
-            log.info("Removing stale session %s (same user re-scanned)", sid)
-            await self.remove_session(sid)
+            stale = [s for s in self._sessions.values()
+                     if (s.admin_id, s.service_id, s.ilink_user_id) ==
+                        (admin_id, service_id, ilink_user_id)]
+            count = len(self.list_sessions(service_id=service_id, admin_id=admin_id)) - len(stale)
+            maximum = (svc.get("wechat_channel") or {}).get("max_sessions", 100)
+            if count >= maximum:
+                raise HTTPException(403, f"已达最大会话数 ({maximum})")
 
-        conv = create_consumer_conversation(admin_id, service_id, title="微信用户", source="wechat")
-        conv_id = conv["id"]
-
-        session = WeChatSession(
-            session_id="ws_" + uuid.uuid4().hex[:8],
-            service_id=service_id,
-            admin_id=admin_id,
-            conversation_id=conv_id,
-            bot_token=bot_token,
-            ilink_user_id=ilink_user_id,
-            ilink_bot_id=ilink_bot_id,
-            base_url=base_url,
-        )
-
-        client = ILinkClient(
-            bot_token=bot_token,
-            ilink_user_id=ilink_user_id,
-            ilink_bot_id=ilink_bot_id,
-            base_url=base_url,
-        )
-
-        async with self._lock:
+            conv = create_consumer_conversation(admin_id, service_id, title="微信用户", source="wechat")
+            session = WeChatSession(
+                session_id="ws_" + uuid.uuid4().hex[:8], service_id=service_id,
+                admin_id=admin_id, conversation_id=conv["id"], bot_token=bot_token,
+                ilink_user_id=ilink_user_id, ilink_bot_id=ilink_bot_id, base_url=base_url,
+            )
+            client = ILinkClient(bot_token=bot_token, ilink_user_id=ilink_user_id,
+                                 ilink_bot_id=ilink_bot_id, base_url=base_url)
+            client.authorize_send = lambda: ensure_wechat_session(
+                admin_id, service_id, session.session_id, conversation_id=session.conversation_id)
+            # Keep all capacity and replacement decisions inside one lock.
+            for old in stale:
+                task = self._poll_tasks.pop(old.session_id, None)
+                if task and task is not asyncio.current_task():
+                    task.cancel()
+                previous_client = self._clients.pop(old.session_id, None)
+                if previous_client:
+                    retired_clients.append(previous_client)
+                self._sessions.pop(old.session_id, None)
             self._sessions[session.session_id] = session
             self._clients[session.session_id] = client
-
-        self._save_sessions(admin_id, service_id)
-        log.info("Session created: %s (conv=%s, service=%s)",
-                 session.session_id, conv_id, service_id)
+            self._save_sessions(admin_id, service_id)
+        for old_client in retired_clients:
+            try:
+                await old_client.close()
+            except Exception:
+                log.exception("Failed to close replaced WeChat client")
         return session
 
     def get_session(self, session_id: str) -> Optional[WeChatSession]:
@@ -153,21 +157,49 @@ class WeChatSessionManager:
     async def remove_session(self, session_id: str):
         async with self._lock:
             task = self._poll_tasks.pop(session_id, None)
-            if task and not task.done():
+            if task and not task.done() and task is not asyncio.current_task():
                 task.cancel()
-
-            client = self._clients.pop(session_id, None)
-            if client:
-                await client.close()
-
+            # Revoke identity before any await, including the client's close.
             session = self._sessions.pop(session_id, None)
+            client = self._clients.pop(session_id, None)
             if session:
                 self._save_sessions(session.admin_id, session.service_id)
                 log.info("Session removed: %s", session_id)
+        if client:
+            await client.close()
+        if task and task is not asyncio.current_task():
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def stop_service_polling(self, admin_id: str, service_id: str):
+        """Stop inbound executions immediately, preserving reconnectable sessions."""
+        tasks = []
+        for session in self.list_sessions(service_id=service_id, admin_id=admin_id):
+            task = self._poll_tasks.pop(session.session_id, None)
+            if task and not task.done() and task is not asyncio.current_task():
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def resume_service_polling(self, admin_id: str, service_id: str):
+        try:
+            ensure_wechat_active(admin_id, service_id)
+        except HTTPException:
+            return
+        for session in self.list_sessions(service_id=service_id, admin_id=admin_id):
+            try:
+                self.start_polling(session.session_id)
+            except HTTPException:
+                log.info("Skipping invalid WeChat session: %s", session.session_id)
 
     # ── polling ─────────────────────────────────────────────────────
 
     def start_polling(self, session_id: str):
+        session = self._sessions.get(session_id)
+        if not session:
+            return
+        ensure_wechat_session(session.admin_id, session.service_id, session_id,
+                              conversation_id=session.conversation_id)
         if session_id in self._poll_tasks:
             task = self._poll_tasks[session_id]
             if not task.done():
@@ -190,7 +222,11 @@ class WeChatSessionManager:
                 if not client or not session:
                     break
 
+                ensure_wechat_session(session.admin_id, session.service_id, session_id,
+                                      conversation_id=session.conversation_id)
                 msgs = await client.get_updates()
+                ensure_wechat_session(session.admin_id, session.service_id, session_id,
+                                      conversation_id=session.conversation_id)
                 consecutive_errors = 0
                 session.updates_buf = client.updates_buf
 
@@ -205,7 +241,12 @@ class WeChatSessionManager:
                     consecutive_empty = 0
 
                 for msg in msgs:
+                    ensure_wechat_session(session.admin_id, session.service_id, session_id,
+                                          conversation_id=session.conversation_id)
                     from_user = msg.get("from_user_id", "")
+                    if session.from_user_id and from_user != session.from_user_id:
+                        log.warning("Ignoring message from a different WeChat user for session %s", session_id)
+                        continue
                     if from_user and not session.from_user_id:
                         session.from_user_id = from_user
                         self._save_sessions(session.admin_id, session.service_id)
@@ -230,6 +271,10 @@ class WeChatSessionManager:
                     self._save_sessions(session.admin_id, session.service_id)
 
             except asyncio.CancelledError:
+                break
+            except HTTPException:
+                # Revoked/expired channels are not transient provider errors.
+                log.info("WeChat polling stopped by channel policy: %s", session_id)
                 break
             except Exception:
                 consecutive_errors += 1
@@ -286,15 +331,19 @@ class WeChatSessionManager:
     # ── persistence ─────────────────────────────────────────────────
 
     def _save_sessions(self, admin_id: str, service_id: str):
-        sessions = [
-            s for s in self._sessions.values()
-            if s.admin_id == admin_id and s.service_id == service_id
-        ]
-        path = _sessions_path(admin_id, service_id)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        data = {"sessions": [asdict(s) for s in sessions]}
+        from app.services.published import _consumer_guard, get_service
         from app.core.fileutil import atomic_json_save
-        atomic_json_save(path, data, ensure_ascii=False, indent=2)
+        with _consumer_guard(admin_id, service_id):
+            # Cleanup may run after a Service was deleted. Session bookkeeping
+            # must not recreate its directory or race with that deletion.
+            if not get_service(admin_id, service_id):
+                return
+            sessions = [
+                s for s in self._sessions.values()
+                if s.admin_id == admin_id and s.service_id == service_id
+            ]
+            data = {"sessions": [asdict(s) for s in sessions]}
+            atomic_json_save(_sessions_path(admin_id, service_id), data, ensure_ascii=False, indent=2)
 
     async def restore_sessions(self):
         """Scan all services and restore persisted sessions."""
@@ -312,18 +361,10 @@ class WeChatSessionManager:
                 if not os.path.isfile(sessions_file):
                     continue
 
-                svc_config = get_service(admin_id, svc_name)
-                wc = (svc_config or {}).get("wechat_channel", {})
-                if not wc.get("enabled"):
+                try:
+                    ensure_wechat_active(admin_id, svc_name)
+                except HTTPException:
                     continue
-
-                expires_at = wc.get("expires_at")
-                if expires_at:
-                    try:
-                        if datetime.fromisoformat(expires_at).replace(tzinfo=None) < datetime.now():
-                            continue
-                    except ValueError:
-                        pass
 
                 try:
                     with open(sessions_file, "r", encoding="utf-8") as f:
@@ -366,6 +407,8 @@ class WeChatSessionManager:
                         base_url=session.base_url,
                     )
                     client.updates_buf = session.updates_buf
+                    client.authorize_send = lambda s=session: ensure_wechat_session(
+                        s.admin_id, s.service_id, s.session_id, conversation_id=s.conversation_id)
 
                     self._sessions[session.session_id] = session
                     self._clients[session.session_id] = client
@@ -378,33 +421,20 @@ class WeChatSessionManager:
 
     async def start_all_polling(self):
         for sid in list(self._sessions.keys()):
-            self.start_polling(sid)
+            try:
+                self.start_polling(sid)
+            except HTTPException:
+                log.info("Skipping invalid restored WeChat session: %s", sid)
 
     # ── service config check ────────────────────────────────────────
 
     @staticmethod
     def check_service_wechat(admin_id: str, service_id: str) -> tuple[bool, str]:
         """Check if service has WeChat channel enabled and not expired."""
-        svc = get_service(admin_id, service_id)
-        if not svc:
-            return False, "Service not found"
-        if not svc.get("published", True):
-            return False, "Service not published"
-        wc = svc.get("wechat_channel", {})
-        if not wc.get("enabled"):
-            return False, "WeChat channel not enabled"
-        expires_at = wc.get("expires_at")
-        if expires_at:
-            try:
-                if datetime.fromisoformat(expires_at).replace(tzinfo=None) < datetime.now():
-                    return False, "WeChat channel expired"
-            except ValueError:
-                pass
-        max_sessions = wc.get("max_sessions", 100)
-        mgr = get_session_manager()
-        current = len(mgr.list_sessions(service_id=service_id))
-        if current >= max_sessions:
-            return False, f"已达最大会话数 ({max_sessions})"
+        try:
+            ensure_wechat_active(admin_id, service_id)
+        except HTTPException as exc:
+            return False, str(exc.detail)
         return True, "ok"
 
     # ── lifecycle ───────────────────────────────────────────────────

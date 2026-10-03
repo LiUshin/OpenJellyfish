@@ -1,361 +1,63 @@
+"""Admin feedback facade. SQLite is authoritative; old JSON is imported once.
+
+Notifications are durable delivery intents, never privileged Agent executions.
+The public fields remain compatible with the existing inbox UI and memory tools.
 """
-Admin inbox — receives notifications from service agents via contact_admin.
+from app.services import service_messaging as messaging
 
-Storage:
-    {USERS_DIR}/{admin_id}/inbox/{msg_id}.json   - one message per file
-    {USERS_DIR}/{admin_id}/inbox/_index.json     - {msg_id: {summary fields}}
-                                                   maintained on every save;
-                                                   used by list_inbox /
-                                                   count_unread to skip
-                                                   reading every message file.
 
-The per-message file is the source of truth (status updates write to
-the file then refresh the index entry).  The index is rebuilt from disk
-on first access if missing or out-of-sync with the file count, so it's
-self-healing across crashes / manual file edits.
-
-Each message can optionally trigger a read-only admin agent to evaluate
-whether to forward the notification to the admin's WeChat.
-"""
+def set_main_loop(loop):
+    """Compatibility for older startup callers; tools no longer schedule tasks."""
+    return None
 
-import json
-import os
-import uuid
-import asyncio
-import logging
-from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional
-
-from app.core.security import USERS_DIR
-from app.core.fileutil import atomic_json_save
-from app.core.jsonl_store import safe_load_json
-
-log = logging.getLogger("inbox")
-
-_INDEX_NAME = "_index.json"
-# Fields preserved in the sidecar summary index. Includes `agent_response`
-# because the existing /api/inbox listing endpoint and memory_tools.read_inbox
-# both display it directly from the listing without re-opening the file.
-_INDEX_FIELDS = ("id", "service_id", "service_name", "conversation_id",
-                 "wechat_session_id", "wechat_user_id", "message",
-                 "timestamp", "status", "handled_by", "agent_response")
-
-_main_loop: Optional[asyncio.AbstractEventLoop] = None
-
-
-def set_main_loop(loop: asyncio.AbstractEventLoop):
-    """Cache the main event loop so sync tools (running in thread pool) can
-    schedule coroutines back onto it via run_coroutine_threadsafe."""
-    global _main_loop
-    _main_loop = loop
-
-
-def _inbox_dir(admin_id: str) -> str:
-    return os.path.join(USERS_DIR, admin_id, "inbox")
-
-
-def _msg_path(admin_id: str, msg_id: str) -> str:
-    return os.path.join(_inbox_dir(admin_id), f"{msg_id}.json")
-
-
-def _index_path(admin_id: str) -> str:
-    return os.path.join(_inbox_dir(admin_id), _INDEX_NAME)
-
-
-def _summary_from_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
-    return {k: msg.get(k) for k in _INDEX_FIELDS if k in msg}
-
-
-def _load_msg(admin_id: str, msg_id: str) -> Optional[Dict[str, Any]]:
-    path = _msg_path(admin_id, msg_id)
-    if not os.path.isfile(path):
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-# ── Sidecar index ────────────────────────────────────────────────────
-
-def _load_index(admin_id: str) -> Dict[str, Dict[str, Any]]:
-    return (safe_load_json(_index_path(admin_id)) or {}).get("messages", {}) or {}
-
-
-def _save_index(admin_id: str, index: Dict[str, Dict[str, Any]]) -> None:
-    d = _inbox_dir(admin_id)
-    os.makedirs(d, exist_ok=True)
-    payload = {"version": 1, "messages": index}
-    atomic_json_save(_index_path(admin_id), payload,
-                     ensure_ascii=False, indent=2)
-
-
-def _rebuild_index(admin_id: str) -> Dict[str, Dict[str, Any]]:
-    """Walk every {msg_id}.json and rebuild the summary index from scratch.
-
-    Self-healing call: used when the index file is missing, malformed,
-    or out-of-sync with the on-disk files.
-    """
-    d = _inbox_dir(admin_id)
-    index: Dict[str, Dict[str, Any]] = {}
-    if not os.path.isdir(d):
-        return index
-    for fname in os.listdir(d):
-        if not fname.endswith(".json") or fname == _INDEX_NAME:
-            continue
-        try:
-            with open(os.path.join(d, fname), "r", encoding="utf-8") as f:
-                msg = json.load(f)
-            mid = msg.get("id") or fname[:-5]
-            index[mid] = _summary_from_msg(msg)
-        except Exception:
-            continue
-    try:
-        _save_index(admin_id, index)
-    except OSError:
-        log.exception("Failed to persist rebuilt inbox index for %s", admin_id)
-    return index
-
-
-def _ensure_index(admin_id: str) -> Dict[str, Dict[str, Any]]:
-    """Return current index, rebuilding when it doesn't match on-disk files."""
-    d = _inbox_dir(admin_id)
-    if not os.path.isdir(d):
-        return {}
-    index = _load_index(admin_id)
-    on_disk = sum(1 for f in os.listdir(d)
-                  if f.endswith(".json") and f != _INDEX_NAME)
-    if len(index) != on_disk:
-        return _rebuild_index(admin_id)
-    return index
-
-
-def _save_msg(admin_id: str, msg: Dict[str, Any]):
-    d = _inbox_dir(admin_id)
-    os.makedirs(d, exist_ok=True)
-    atomic_json_save(_msg_path(admin_id, msg["id"]), msg,
-                     ensure_ascii=False, indent=2)
-    # Refresh the sidecar entry for this message; failure is non-fatal
-    # because _ensure_index can always rebuild from disk.
-    try:
-        index = _load_index(admin_id)
-        index[msg["id"]] = _summary_from_msg(msg)
-        _save_index(admin_id, index)
-    except Exception:
-        log.exception("Failed to update inbox index for msg %s", msg.get("id"))
-
-
-# ===== CRUD =====
-
-def list_inbox(admin_id: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
-    """List inbox message summaries (read from the sidecar index — does
-    NOT open every per-message JSON file).  Use ``get_inbox_message`` to
-    retrieve a full payload (including ``agent_response``)."""
-    index = _ensure_index(admin_id)
-    msgs = list(index.values())
-    if status:
-        msgs = [m for m in msgs if m.get("status") == status]
-    msgs.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
-    return msgs
-
-
-def get_inbox_message(admin_id: str, msg_id: str) -> Optional[Dict[str, Any]]:
-    return _load_msg(admin_id, msg_id)
-
-
-def update_inbox_status(admin_id: str, msg_id: str, status: str) -> Optional[Dict[str, Any]]:
-    msg = _load_msg(admin_id, msg_id)
-    if not msg:
-        return None
-    msg["status"] = status
-    if status in ("read", "handled"):
-        msg["handled_by"] = "manual"
-    _save_msg(admin_id, msg)
-    return msg
-
-
-def delete_inbox_message(admin_id: str, msg_id: str) -> bool:
-    path = _msg_path(admin_id, msg_id)
-    removed = False
-    if os.path.isfile(path):
-        os.remove(path)
-        removed = True
-    try:
-        index = _load_index(admin_id)
-        if msg_id in index:
-            index.pop(msg_id, None)
-            _save_index(admin_id, index)
-    except Exception:
-        log.exception("Failed to update inbox index on delete %s", msg_id)
-    return removed
-
-
-def count_unread(admin_id: str) -> int:
-    index = _ensure_index(admin_id)
-    return sum(1 for m in index.values() if m.get("status") == "unread")
-
-
-# ===== Post + Agent trigger =====
-
-def post_to_inbox(
-    admin_id: str,
-    service_id: str,
-    conversation_id: str,
-    message: str,
-    wechat_session_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Write a message to admin's inbox and optionally trigger admin agent.
-
-    Returns {"id": ..., "summary": ...}.
-    """
-    from app.services.published import get_service
-
-    svc = get_service(admin_id, service_id)
-    svc_name = svc.get("name", service_id) if svc else service_id
-
-    wechat_user_id = ""
-    wechat_session_display = ""
-    if wechat_session_id:
-        try:
-            from app.channels.wechat.session_manager import get_session_manager
-            sess = get_session_manager().get_session(wechat_session_id)
-            if sess:
-                wechat_user_id = sess.from_user_id or ""
-                wechat_session_display = wechat_session_id
-        except Exception:
-            pass
-
-    msg_id = f"inbox_{uuid.uuid4().hex[:8]}"
-    msg = {
-        "id": msg_id,
-        "service_id": service_id,
-        "service_name": svc_name,
-        "conversation_id": conversation_id,
-        "wechat_session_id": wechat_session_display,
-        "wechat_user_id": wechat_user_id,
-        "message": message,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "status": "unread",
-        "handled_by": None,
-        "agent_response": None,
-    }
-    _save_msg(admin_id, msg)
-    log.info("Inbox message %s from service %s (user=%s): %s",
-             msg_id, svc_name, wechat_user_id or "unknown", message[:100])
-
-    admin_wc = _get_admin_wechat_session(admin_id)
-    if admin_wc and admin_wc.get("connected"):
-        coro = _trigger_inbox_agent(
-            admin_id, msg_id, svc_name, message, admin_wc,
-            wechat_user_id=wechat_user_id,
-        )
-        scheduled = False
-        # Try current event loop first (works when called from async context)
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(coro)
-            scheduled = True
-        except RuntimeError:
-            pass
-        # Fallback: sync tool running in thread pool — use cached main loop
-        if not scheduled and _main_loop is not None and _main_loop.is_running():
-            asyncio.run_coroutine_threadsafe(coro, _main_loop)
-            scheduled = True
-        if scheduled:
-            return {"id": msg_id, "summary": "已通知管理员，消息已记录到收件箱。微信通知已触发。"}
-        else:
-            log.warning("Cannot schedule inbox agent: no event loop available")
-
-    return {"id": msg_id, "summary": "已通知管理员，消息已记录到收件箱。"}
-
-
-def _get_admin_wechat_session(admin_id: str) -> Optional[dict]:
-    try:
-        from app.channels.wechat.admin_router import _get_session
-        return _get_session(admin_id)
-    except Exception:
-        return None
-
-
-async def _trigger_inbox_agent(
-    admin_id: str,
-    msg_id: str,
-    service_name: str,
-    message: str,
-    admin_wc: dict,
-    wechat_user_id: str = "",
-):
-    """Run a minimal admin agent to evaluate and optionally forward to WeChat."""
-    try:
-        from app.services.agent import create_user_agent, _get_default_model
-        from app.services.scheduler import (
-            _resolve_wechat_client, _run_agent_loop, _step,
-        )
-        from app.services.memory_tools import load_recent_inbox
-
-        # Inject recent inbox history so the agent knows what was already handled
-        recent_inbox = load_recent_inbox(admin_id, last_n=3)
-        inbox_ctx = ""
-        if recent_inbox:
-            inbox_ctx = f"[最近收件箱记录]\n---\n{recent_inbox}\n---\n\n"
-
-        user_line = f"来源微信用户：{wechat_user_id}\n" if wechat_user_id else ""
-        prompt = (
-            "[系统指令 - Service 收件箱通知]\n"
-            "以下是来自 Service Agent 的通知，不是来自终端用户的消息。\n\n"
-            f"{inbox_ctx}"
-            f"[新通知] 来自 Service「{service_name}」的反馈：\n"
-            f"{user_line}\n"
-            f"{message}\n\n"
-            "请评估这条信息的重要性和紧急程度。\n"
-            "如果你认为管理员需要立即知道，请用 send_message 通知管理员。\n"
-            "如果不够重要或已经通知过类似内容，可以不发送通知。\n"
-            "回复时简洁说明来源和内容要点。\n\n"
-            "---\n"
-            "send_message 工具将消息发送给管理员本人（微信）。"
-        )
-
-        model = _get_default_model()
-        agent = create_user_agent(admin_id, model=model, capabilities=["humanchat"])
-
-        reply_to = {
-            "channel": "wechat",
-            "admin_id": admin_id,
-            "service_id": None,
-            "session_id": "",
-            "conversation_id": admin_wc.get("conversation_id", ""),
-        }
-
-        wechat_client, wechat_to_user, wechat_ctx_token = _resolve_wechat_client(reply_to)
-        if not wechat_client:
-            log.warning("Inbox agent for %s: admin WeChat client not resolved, "
-                        "notification will not be forwarded to WeChat", admin_id)
-        elif not wechat_to_user:
-            log.warning("Inbox agent for %s: from_user_id is empty, "
-                        "WeChat delivery may fail", admin_id)
-
-        # Stable thread_id per admin so the inbox agent accumulates context
-        thread_id = f"inbox-{admin_id}"
-        agent_config = {"configurable": {"thread_id": thread_id}}
-        input_payload = {"messages": [{"role": "user", "content": prompt}]}
-        steps = []
-        output_parts = []
-
-        await _run_agent_loop(
-            agent, input_payload, agent_config, steps, output_parts,
-            wechat_client=wechat_client,
-            wechat_to_user=wechat_to_user or "",
-            wechat_ctx_token=wechat_ctx_token or "",
-            user_id=admin_id,
-        )
-
-        sent = any(s.get("type") == "wechat_send" for s in steps)
-        msg = _load_msg(admin_id, msg_id)
-        if msg:
-            msg["status"] = "handled"
-            msg["handled_by"] = "agent"
-            msg["agent_response"] = "\n".join(output_parts)[:2000] if output_parts else None
-            _save_msg(admin_id, msg)
-
-        log.info("Inbox agent for %s completed (sent_to_wechat=%s)", msg_id, sent)
-
-    except Exception:
-        log.exception("Failed to run inbox agent for %s", msg_id)
+
+def _store(admin_id):
+    from app.core.security import USERS_DIR
+    store = messaging.get_store()
+    store.migrate_legacy(admin_id, USERS_DIR)
+    return store
+
+
+def list_inbox(admin_id, status=None):
+    return _store(admin_id).list_cases(admin_id, status)
+
+
+def list_inbox_summaries(admin_id, offset=0, limit=20):
+    """Owner-scoped feedback summaries for the Agent's paged record area."""
+    return _store(admin_id).list_case_summaries(admin_id, offset, limit)
+
+
+def get_inbox_message(admin_id, msg_id):
+    return _store(admin_id).get_case(admin_id, msg_id)
+
+
+def update_inbox_status(admin_id, msg_id, status=None, *, case_status=None):
+    return _store(admin_id).update_case(admin_id, msg_id, status=status, case_status=case_status)
+
+
+def delete_inbox_message(admin_id, msg_id):
+    return _store(admin_id).delete_case(admin_id, msg_id)
+
+
+def count_unread(admin_id):
+    return len(list_inbox(admin_id, status='unread'))
+
+
+def post_to_inbox(admin_id, service_id, conversation_id, message, wechat_session_id=None, *, idempotency_key=None, channel=None):
+    result = messaging.post_contact(admin_id, service_id, conversation_id, message,
+        wechat_session_id=wechat_session_id, channel=channel, idempotency_key=idempotency_key)
+    return {'id': result['id'], 'summary': f"反馈已提交到管理员收件箱（编号：{result['id']}）。通知将按连接状态投递；尚不代表管理员已阅读。"}
+
+
+def reply_to_inbox(admin_id, msg_id, message, *, idempotency_key):
+    _store(admin_id)
+    return messaging.reply_to_case(admin_id, msg_id, message, idempotency_key=idempotency_key)
+
+
+def retry_delivery(admin_id, msg_id, delivery_id, *, allow_unknown=False):
+    store = _store(admin_id)
+    case = store.get_case(admin_id, msg_id)
+    if not case or not any(d['id'] == delivery_id for d in case['deliveries']):
+        raise KeyError('反馈投递不存在')
+    store.manage_deliveries(admin_id, [delivery_id], allow_unknown=allow_unknown)
+    return store.get_case(admin_id, msg_id)

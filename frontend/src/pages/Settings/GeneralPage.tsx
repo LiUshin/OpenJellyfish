@@ -888,10 +888,12 @@ function ModelVisibilityCard() {
   );
 }
 
-export default function GeneralPage() {
+const SHOW_AUTOMATION_SETTINGS = false;
+
+export default function GeneralPage({ mode = 'settings' }: { mode?: 'environment' | 'settings' }) {
   const isMobile = useIsMobile();
   const { t } = useTranslation();
-  const [section, setSection] = useState('engine');
+  const [section, setSection] = useState(mode === 'environment' ? 'engine' : 'preferences');
   const [loadError, setLoadError] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -931,13 +933,18 @@ export default function GeneralPage() {
   }, [section]);
 
   const handleTzChange = async (val: number) => {
+    const previous = offset;
+    setOffset(val);
+    setTzOffset(val);
     setSaving(true);
     try {
       await api.updatePreferences({ tz_offset_hours: val });
-      setOffset(val); setTzOffset(val);
       message.success(t('common.saved', '已保存'));
-    } catch { message.error(t('settingsPolish.saveFailed')); }
-    setSaving(false);
+    } catch {
+      setOffset(previous);
+      setTzOffset(previous);
+      message.error(t('settingsPolish.saveFailed'));
+    } finally { setSaving(false); }
   };
 
   if (loading) {
@@ -961,8 +968,12 @@ export default function GeneralPage() {
   return (
     <div className="settings-page general-settings">
       {loadError && <SettingsLoadError onRetry={() => setLoadAttempt(n => n + 1)} />}
-      <SettingsSectionNav label={t('general.pageTitle')} value={section} onChange={setSection}
-        items={['engine', 'preferences', 'automation', 'advanced'].map(value => ({ value, label: t(`settingsPolish.${value}`), description: t(`settingsDesign.${value}Hint`) }))} />
+      {mode === 'settings' && <SettingsSectionNav label={t('general.pageTitle')} value={section} onChange={setSection}
+        items={[
+          'preferences',
+          ...(SHOW_AUTOMATION_SETTINGS ? ['automation'] : []),
+          'advanced',
+        ].map(value => ({ value, label: t(`settingsPolish.${value}`), description: t(`settingsDesign.${value}Hint`) }))} />}
       <section hidden={section !== 'preferences'} aria-label={t('settingsPolish.preferences')}>
 
       {/* Interface language */}
@@ -980,7 +991,7 @@ export default function GeneralPage() {
       </div>
 
       </section>
-      <section hidden={section !== 'engine'} aria-label={t('settingsPolish.engine')}>
+      {mode === 'environment' && <section aria-label={t('settingsPolish.engine')}>
       {/* API Keys */}
       <RuntimeSettingsCard />
       <ApiKeysCard />
@@ -994,7 +1005,7 @@ export default function GeneralPage() {
       <ModelVisibilityCard />
       </details>
 
-      </section>
+      </section>}
       <section hidden={section !== 'preferences'} aria-label={t('settingsPolish.preferences')}>
       {/* Time & Timezone */}
       <div style={cardBase}>
@@ -1107,7 +1118,7 @@ export default function GeneralPage() {
       </div>
 
       </section>
-      <section hidden={section !== 'automation'} aria-label={t('settingsPolish.automation')}>
+      {SHOW_AUTOMATION_SETTINGS && <section hidden={section !== 'automation'} aria-label={t('settingsPolish.automation')}>
       {/* Batch run */}
       <div style={{ ...cardBase, marginTop: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
@@ -1120,7 +1131,7 @@ export default function GeneralPage() {
         <BatchRunner open onClose={() => {}} inline />
       </div>
 
-      </section>
+      </section>}
       <section hidden={section !== 'advanced'} aria-label={t('settingsPolish.advanced')}>
       {/* Advanced Pages */}
       <div style={{ ...cardBase, marginTop: 16 }}>

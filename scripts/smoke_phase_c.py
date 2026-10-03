@@ -103,7 +103,7 @@ def test_spawn_inside_context_creates_child() -> str:
 
 
 def test_spawn_rate_limit(root_id: str) -> None:
-    _section("3. spawn rate limit (limit=3 set via env) blocks the 4th")
+    _section("3. durable quota remembers the first child after cache reset")
     spawn_limits.reset_chain("admin", UID, root_id)
 
     parent = sch._load_task(UID, root_id)
@@ -119,9 +119,9 @@ def test_spawn_rate_limit(root_id: str) -> None:
             }))
         ok_count = sum(1 for r in results if "已派生子任务" in r)
         blocked = [r for r in results if "派生频次超限" in r]
-        assert ok_count == 3, f"expected 3 ok, got {ok_count}: {results}"
-        assert len(blocked) == 1, f"expected 1 blocked, got {len(blocked)}"
-        print(f"  ✓ 3 spawned, 1 blocked → {blocked[0][:100]}...")
+        assert ok_count == 2, f"expected 2 remaining slots, got {ok_count}: {results}"
+        assert len(blocked) == 2, f"expected 2 blocked, got {len(blocked)}"
+        print(f"  ✓ 2 spawned, 2 blocked; earlier reservation retained → {blocked[0][:100]}...")
     finally:
         sch._current_task_var.reset(token)
 

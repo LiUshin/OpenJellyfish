@@ -1,4 +1,5 @@
-use chrono::{Local, Utc};
+use chrono::{Datelike, Local, Utc};
+use rusqlite::{Connection, OpenFlags};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1586,8 +1587,8 @@ fn get_admin_stats(state: State<'_, AppState>) -> Result<AdminStats, String> {
 }
 
 // ── Token Usage Stats (P3) ───────────────────────────────────────
-// 直读 users/{admin}/llm_usage/usage-YYYY-MM.jsonl（P0 落盘），按用户/模型/
-// 渠道/日期聚合。纯文件读，不走后端 HTTP——符合「启动器读文件」原则。
+// 只读 users/{admin}/llm_usage/usage-YYYY-MM.jsonl 和 Runtime SQLite，
+// 按用户/模型/渠道/日期聚合，不依赖后端 HTTP。
 
 #[derive(Serialize, Default, Clone)]
 struct UsageBucket {
@@ -1622,7 +1623,16 @@ struct TokenUsageStats {
     by_model: Vec<NamedBucket>,
     by_channel: Vec<NamedBucket>,
     by_day: Vec<NamedBucket>,
+    by_core: Vec<NamedBucket>,
+    coverage: UsageCoverage,
     months_scanned: u32,
+}
+
+#[derive(Serialize, Default)]
+struct UsageCoverage {
+    unreported_runs: u64,
+    unreported_by_core: HashMap<String, u64>,
+    runtime_read_error: bool,
 }
 
 #[derive(Deserialize)]
@@ -1634,11 +1644,103 @@ struct UsageRecord {
     #[serde(default)]
     output_tokens: i64,
     #[serde(default)]
-    total_tokens: i64,
-    #[serde(default)]
     ts: String,
     #[serde(default)]
     channel: String,
+    #[serde(default)]
+    runtime: String,
+}
+
+fn month_index(year: i32, month: u32) -> i32 {
+    year * 12 + month as i32 - 1
+}
+
+fn usage_month_from_file(path: &Path) -> Option<i32> {
+    let name = path.file_name()?.to_str()?;
+    let label = name.strip_prefix("usage-")?.strip_suffix(".jsonl")?;
+    let (year, month) = label.split_once('-')?;
+    let year = year.parse::<i32>().ok()?;
+    let month = month.parse::<u32>().ok()?;
+    (1..=12).contains(&month).then_some(month_index(year, month))
+}
+
+fn runtime_usage_pair(value: &serde_json::Value) -> Option<(u64, u64)> {
+    // Old Codex records contain {total,last}: total is thread-cumulative and
+    // last is only one model response. Neither is this Jellyfish run's total.
+    if value.get("last").is_some() || value.get("total").is_some() {
+        return None;
+    }
+    let input = value.get("inputTokens")?.as_i64()?;
+    let output = value.get("outputTokens")?.as_i64()?;
+    (input >= 0 && output >= 0 && (input > 0 || output > 0))
+        .then_some((input as u64, output as u64))
+}
+
+fn usage_for_runtime_run(run: &serde_json::Value, service_scope: bool) -> (Option<(u64, u64)>, bool) {
+    let usage = run.get("usage").and_then(runtime_usage_pair);
+    let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    // Legacy Service Codex JSONL contains only the final model response, so
+    // its token total is partial and needs the same coverage warning.
+    let unreported = usage.is_none()
+        && run.get("started_at").is_some_and(|v| !v.is_null())
+        && ["completed", "failed", "cancelled"].contains(&status);
+    (if service_scope { None } else { usage }, unreported)
+}
+
+fn read_runtime_run_rows(path: &Path) -> rusqlite::Result<Vec<String>> {
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut statement = db.prepare("SELECT data FROM records WHERE kind='run'")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?.collect();
+    rows
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn only_flat_turn_usage_is_metered() {
+        assert_eq!(runtime_usage_pair(&json!({"inputTokens": 12, "outputTokens": 3})), Some((12, 3)));
+        assert_eq!(runtime_usage_pair(&json!({"total": {"inputTokens": 80, "outputTokens": 20},
+            "last": {"inputTokens": 3, "outputTokens": 1}})), None);
+        assert_eq!(runtime_usage_pair(&json!({"inputTokens": -1, "outputTokens": 3})), None);
+        assert_eq!(runtime_usage_pair(&json!({})), None);
+    }
+
+    #[test]
+    fn service_cli_is_never_counted_twice_and_missing_usage_is_reported() {
+        let metered = json!({"status":"completed", "started_at":1,
+            "usage":{"inputTokens":12,"outputTokens":3}});
+        let missing = json!({"status":"completed", "started_at":1, "usage":null});
+        let legacy = json!({"status":"completed", "started_at":1,
+            "usage":{"last":{"inputTokens":12,"outputTokens":3}}});
+        assert_eq!(usage_for_runtime_run(&metered, true), (None, false));
+        assert_eq!(usage_for_runtime_run(&missing, true), (None, true));
+        assert_eq!(usage_for_runtime_run(&legacy, true), (None, true));
+        assert_eq!(usage_for_runtime_run(&metered, false), (Some((12, 3)), false));
+    }
+
+    #[test]
+    fn calendar_month_is_taken_from_filename() {
+        assert_eq!(usage_month_from_file(Path::new("usage-2026-10.jsonl")), Some(month_index(2026, 10)));
+        assert_eq!(usage_month_from_file(Path::new("usage-2026-13.jsonl")), None);
+        assert_eq!(usage_month_from_file(Path::new("other.jsonl")), None);
+    }
+
+    #[test]
+    fn runtime_runs_are_read_without_mutating_database() {
+        let path = std::env::temp_dir().join(format!("jf-usage-{}-{}.sqlite3",
+            std::process::id(), rand::random::<u64>()));
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch("CREATE TABLE records (kind TEXT, id TEXT, data TEXT);").unwrap();
+            db.execute("INSERT INTO records VALUES ('run','r1',?1)", ["{\"actor_id\":\"alice\"}"]).unwrap();
+        }
+        let rows = read_runtime_run_rows(&path).unwrap();
+        assert_eq!(rows, vec!["{\"actor_id\":\"alice\"}"]);
+        fs::remove_file(path).unwrap();
+    }
 }
 
 fn bucket_map_to_sorted_vec(map: HashMap<String, UsageBucket>, by_name: bool) -> Vec<NamedBucket> {
@@ -1687,6 +1789,11 @@ fn get_token_usage_stats(months: Option<u32>, state: State<'_, AppState>) -> Tok
     let mut by_model: HashMap<String, UsageBucket> = HashMap::new();
     let mut by_channel: HashMap<String, UsageBucket> = HashMap::new();
     let mut by_day: HashMap<String, UsageBucket> = HashMap::new();
+    let mut by_core: HashMap<String, UsageBucket> = HashMap::new();
+    let mut coverage = UsageCoverage::default();
+    let current = Local::now();
+    let current_month = month_index(current.year(), current.month());
+    let first_month = current_month - months as i32 + 1;
 
     if let Ok(entries) = fs::read_dir(&users_dir) {
         for entry in entries.flatten() {
@@ -1699,18 +1806,17 @@ fn get_token_usage_stats(months: Option<u32>, state: State<'_, AppState>) -> Tok
             if !llm_dir.is_dir() {
                 continue;
             }
-            // 收集 usage-*.jsonl，按文件名倒序（最近月份在前），取最近 months 个
+            // A sparse log must not make a one-month query pull an old file.
             let mut files: Vec<PathBuf> = Vec::new();
             if let Ok(rd) = fs::read_dir(&llm_dir) {
                 for f in rd.flatten() {
-                    let fname = f.file_name().to_string_lossy().to_string();
-                    if fname.starts_with("usage-") && fname.ends_with(".jsonl") {
+                    if usage_month_from_file(&f.path())
+                        .is_some_and(|index| index >= first_month && index <= current_month) {
                         files.push(f.path());
                     }
                 }
             }
             files.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-            files.truncate(months as usize);
 
             let display_name = uid_to_name
                 .get(&admin_id)
@@ -1731,13 +1837,13 @@ fn get_token_usage_stats(months: Option<u32>, state: State<'_, AppState>) -> Tok
                         Ok(r) => r,
                         Err(_) => continue,
                     };
-                    let inp = rec.input_tokens.max(0) as u64;
-                    let out = rec.output_tokens.max(0) as u64;
-                    let tot = if rec.total_tokens > 0 {
-                        rec.total_tokens as u64
-                    } else {
-                        inp + out
-                    };
+                    if rec.input_tokens < 0 || rec.output_tokens < 0
+                        || (rec.input_tokens == 0 && rec.output_tokens == 0) {
+                        continue;
+                    }
+                    let inp = rec.input_tokens as u64;
+                    let out = rec.output_tokens as u64;
+                    let tot = inp + out;
                     total.add(inp, out, tot);
                     by_user.entry(display_name.clone()).or_default().add(inp, out, tot);
                     let model = if rec.model.is_empty() {
@@ -1746,6 +1852,12 @@ fn get_token_usage_stats(months: Option<u32>, state: State<'_, AppState>) -> Tok
                         rec.model.clone()
                     };
                     by_model.entry(model).or_default().add(inp, out, tot);
+                    let core = if rec.runtime.is_empty() {
+                        if rec.model.starts_with("codex:") { "codex" }
+                        else if rec.model.starts_with("cursor:") { "cursor" }
+                        else { "deepagents" }
+                    } else { rec.runtime.as_str() };
+                    by_core.entry(core.to_string()).or_default().add(inp, out, tot);
                     let channel = if rec.channel.is_empty() {
                         "(其它)".to_string()
                     } else {
@@ -1761,12 +1873,75 @@ fn get_token_usage_stats(months: Option<u32>, state: State<'_, AppState>) -> Tok
         }
     }
 
+    let runtime_root = std::env::var_os("JELLYFISH_RUNTIME_DATA_DIR")
+        .map(PathBuf::from)
+        .map(|path| if path.is_absolute() { path } else { project_dir.join(path) })
+        .unwrap_or_else(|| project_dir.join("data/runtime"));
+    let runtime_db = runtime_root.join("runtime.sqlite3");
+    if runtime_db.is_file() {
+        match read_runtime_run_rows(&runtime_db) {
+            Ok(rows) => for raw in rows {
+                let run: serde_json::Value = match serde_json::from_str(&raw) {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                let binding = match run.get("binding") {
+                    Some(binding) => binding,
+                    None => continue,
+                };
+                let core = match binding.get("runtime").and_then(|v| v.as_str()) {
+                    Some("codex") => "codex",
+                    Some("cursor") => "cursor",
+                    _ => continue,
+                };
+                // Service CLI calls are already projected to JSONL, but a
+                // missing supplier report still needs a coverage warning.
+                let service_scope = binding.get("service_scope").is_some_and(|v| !v.is_null());
+                let used_at = ["finished_at", "updated_at", "started_at", "created_at"]
+                    .iter().find_map(|field| run.get(*field).and_then(|v| v.as_f64()));
+                let Some(used_at) = used_at else { continue };
+                let Some(used_dt) = chrono::DateTime::<Utc>::from_timestamp_millis((used_at * 1000.0) as i64)
+                    .map(|dt| dt.with_timezone(&Local)) else { continue };
+                let index = month_index(used_dt.year(), used_dt.month());
+                if index < first_month || index > current_month {
+                    continue;
+                }
+                let (usage, unreported) = usage_for_runtime_run(&run, service_scope);
+                let Some((inp, out)) = usage else {
+                    if unreported {
+                        coverage.unreported_runs += 1;
+                        *coverage.unreported_by_core.entry(core.to_string()).or_default() += 1;
+                    }
+                    continue;
+                };
+                let tot = inp + out;
+                total.add(inp, out, tot);
+                let admin_id = run.get("actor_id").and_then(|v| v.as_str()).unwrap_or("(未知)");
+                let display_name = uid_to_name.get(admin_id).map(String::as_str).unwrap_or(admin_id);
+                by_user.entry(display_name.to_string()).or_default().add(inp, out, tot);
+                let model = binding.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                by_model.entry(format!("{core}:{model}")).or_default().add(inp, out, tot);
+                by_core.entry(core.to_string()).or_default().add(inp, out, tot);
+                let channel = if binding.get("scheduler_scope").is_some_and(|v| !v.is_null()) {
+                    "scheduler"
+                } else {
+                    run.get("channel").and_then(|v| v.as_str()).unwrap_or("web")
+                };
+                by_channel.entry(channel.to_string()).or_default().add(inp, out, tot);
+                by_day.entry(used_dt.format("%Y-%m-%d").to_string()).or_default().add(inp, out, tot);
+            },
+            Err(_) => coverage.runtime_read_error = true,
+        }
+    }
+
     TokenUsageStats {
         total,
         by_user: bucket_map_to_sorted_vec(by_user, false),
         by_model: bucket_map_to_sorted_vec(by_model, false),
         by_channel: bucket_map_to_sorted_vec(by_channel, false),
         by_day: bucket_map_to_sorted_vec(by_day, true),
+        by_core: bucket_map_to_sorted_vec(by_core, false),
+        coverage,
         months_scanned: months,
     }
 }

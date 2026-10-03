@@ -25,6 +25,25 @@ from app.channels.wechat.media import (
 
 log = logging.getLogger("wechat.ilink")
 
+
+class ILinkAPIError(RuntimeError):
+    """Invalid/missing response, or an explicit provider rejection."""
+    def __init__(self, message: str, *, explicit_rejection: bool = False):
+        self.explicit_rejection = explicit_rejection
+        super().__init__(message)
+
+
+def ensure_ilink_success(data: dict, *, require_ack: bool = False) -> dict:
+    if not isinstance(data, dict):
+        raise ILinkAPIError("iLink returned an invalid response")
+    for field in ("ret", "errcode"):
+        if data.get(field) not in (None, 0, "0"):
+            # Do not include tokens or user payloads in exception text/logs.
+            raise ILinkAPIError(f"iLink rejected request: {field}={data[field]}", explicit_rejection=True)
+    if require_ack and not any(data.get(field) in (0, "0") for field in ("ret", "errcode")):
+        raise ILinkAPIError("iLink response is missing a delivery acknowledgement")
+    return data
+
 BASE_URL = os.environ.get("ILINK_BASE_URL", "https://ilinkai.weixin.qq.com")
 CDN_BASE = os.environ.get("ILINK_CDN_URL", "https://novac2c.cdn.weixin.qq.com/c2c")
 CHANNEL_VERSION = "1.0.2"
@@ -90,7 +109,7 @@ async def generate_qrcode(http: Optional[httpx.AsyncClient] = None) -> dict:
             headers=_headers(),
         )
         resp.raise_for_status()
-        data = resp.json()
+        data = ensure_ilink_success(resp.json())
 
         qr_id = data["qrcode"]
         qr_url = (
@@ -135,7 +154,7 @@ async def poll_qrcode_status(
             headers=_headers(),
         )
         resp.raise_for_status()
-        return resp.json()
+        return ensure_ilink_success(resp.json())
     finally:
         if own_http:
             await http.aclose()
@@ -160,21 +179,19 @@ class ILinkClient:
         self.ilink_bot_id = ilink_bot_id
         self.updates_buf: str = ""
         self.typing_ticket: str = ""
+        self.authorize_send = None
         self._http = _create_http_client()
 
     async def _post(self, endpoint: str, payload: dict) -> dict:
+        if endpoint in ("sendmessage", "getuploadurl") and self.authorize_send:
+            self.authorize_send()
         url = f"{self.base_url}/ilink/bot/{endpoint}"
         resp = await self._http.post(url, json=payload, headers=_headers(self.token))
         resp.raise_for_status()
         text = resp.text
         if not text or text.strip() == "":
-            return {}
-        data = json.loads(text)
-        ret = data.get("ret")
-        if ret is not None and ret != 0:
-            log.warning("[%s] ret=%s: %s", endpoint, ret,
-                        json.dumps(data, ensure_ascii=False)[:300])
-        return data
+            raise ILinkAPIError("iLink returned an empty response")
+        return ensure_ilink_success(json.loads(text), require_ack=endpoint == "sendmessage")
 
     # ── receive messages ────────────────────────────────────────────
 

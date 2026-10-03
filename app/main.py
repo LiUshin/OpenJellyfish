@@ -37,6 +37,7 @@ from app.services.agent import init_checkpointer
 
 from app.routes.auth import router as auth_router
 from app.routes.conversations import router as conversations_router
+from app.routes.projects import router as projects_router
 from app.routes.chat import router as chat_router
 from app.routes.runtime_pilot import router as runtime_pilot_router
 from app.routes.runtime import router as runtime_router
@@ -85,6 +86,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(conversations_router)
+app.include_router(projects_router)
 app.include_router(chat_router)
 app.include_router(runtime_pilot_router)
 app.include_router(runtime_router)
@@ -129,17 +131,16 @@ def _apply_safe_startup() -> None:
         return
     os.environ["DISABLE_SCHEDULER"] = "1"
     os.environ["RESTORE_VENVS_ON_STARTUP"] = "0"
+    os.environ["DISABLE_SERVICE_MESSAGING"] = "1"
     print(
         "[OpenJellyfish] SAFE_STARTUP: set DISABLE_SCHEDULER=1, "
-        "RESTORE_VENVS_ON_STARTUP=0 (remove SAFE_STARTUP after recovery)"
+        "RESTORE_VENVS_ON_STARTUP=0, DISABLE_SERVICE_MESSAGING=1 (remove SAFE_STARTUP after recovery)"
     )
 
 
 @app.on_event("startup")
 async def startup():
     import asyncio
-    from app.services.inbox import set_main_loop
-    set_main_loop(asyncio.get_running_loop())
 
     from app.core.host_auth import ensure_key
     try:
@@ -186,9 +187,14 @@ async def startup():
         await restore_admin_sessions()
         print("[OpenJellyfish] Admin WeChat sessions restored")
 
+    from app.services.service_messaging import start_worker
+    start_worker()
+
 
 @app.on_event("shutdown")
 async def shutdown():
+    from app.services.service_messaging import stop_worker
+    await stop_worker()
     from app.runtime.manager import _manager
     if _manager is not None:
         await _manager.shutdown()

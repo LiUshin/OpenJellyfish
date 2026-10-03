@@ -115,7 +115,44 @@ def _resolve(root: str, path: str) -> str:
     return safe_join(root, path)
 
 
+def _durable_write(full: str, data: bytes) -> None:
+    directory = os.path.dirname(full)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=directory, prefix='.scheduled-')
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, full)
+        # Sync directories through the user root for newly created nested paths.
+        current = os.path.realpath(directory)
+        users_root = os.path.realpath(USERS_DIR)
+        while current == users_root or current.startswith(users_root + os.sep):
+            dir_fd = os.open(current, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+            if current == users_root:
+                break
+            current = os.path.dirname(current)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 class LocalStorageService(StorageService):
+
+    def write_text_durable(self, user_id: str, path: str, content: str) -> None:
+        _durable_write(_resolve(_fs_root(user_id), path), content.encode('utf-8'))
+
+    def write_bytes_durable(self, user_id: str, path: str, data: bytes) -> None:
+        _durable_write(_resolve(_fs_root(user_id), path), data)
+
+    def write_consumer_bytes_durable(self, admin_id: str, service_id: str, conv_id: str,
+                                     path: str, data: bytes) -> None:
+        _durable_write(safe_join(_consumer_gen_root(admin_id, service_id, conv_id), path), data)
 
     # ── directory listing ──
 

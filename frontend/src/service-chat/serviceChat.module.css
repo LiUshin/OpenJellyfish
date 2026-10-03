@@ -204,6 +204,12 @@
   cursor: pointer;
 }
 
+.userMsgStatus {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 /* Tool badge — service 端友好状态条 */
 .toolBadge {
   font-size: 12px;
@@ -332,6 +338,13 @@
   border-top: 1px solid var(--border);
   background: var(--surface);
   flex-shrink: 0;
+}
+
+.sendError {
+  max-width: 900px;
+  margin: 0 auto 10px;
+  color: var(--danger);
+  font-size: 13px;
 }
 
 .inputForm {
@@ -898,3 +911,10 @@
   }
 }
 
+
+.adminMessageLabel {
+  margin: 18px 0 4px;
+  color: var(--jf-text-muted, #687078);
+  font-size: 12px;
+  font-weight: 600;
+}

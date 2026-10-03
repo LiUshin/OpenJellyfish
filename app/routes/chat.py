@@ -16,6 +16,11 @@ from app.services.agent import create_user_agent
 from app.services.conversations import save_message, save_attachment
 from app.services.tools import PLAN_MODE_PROMPT
 from app.services.prompt import stamp_message, expand_file_mentions
+from app.services.project_context import (
+    context_for_conversation,
+    reset_active_admin_conversation,
+    set_active_admin_conversation,
+)
 from app.core.observability import get_langfuse_callbacks, get_langfuse_metadata, flush_langfuse, is_langfuse_enabled
 from app.services.token_usage import build_usage_callbacks
 from app.deps import get_current_user
@@ -157,7 +162,8 @@ def _sse_response(generator):
 
 
 async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool = False,
-                        lock_mode: str = "auto", lock_paths=None, lock_label: str = ""):
+                        lock_mode: str = "auto", lock_paths=None, lock_label: str = "",
+                        admin_project_scope: bool = False):
     """Stream an agent run as SSE events.
 
     yolo: when True, any HITL interrupt (write_file / edit_file / propose_plan)
@@ -257,6 +263,8 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
     wl.register_process(thread_id, user_id, kind="interactive",
                         label=lock_label or f"对话·{conv_id[:8]}")
     _wl_tokens = wl.set_context(thread_id, user_id)
+    _project_token = (set_active_admin_conversation(user_id, conv_id)
+                      if admin_project_scope else None)
     _wl_acquire_event = None  # SSE payload describing the acquired lock (sent below)
     if not is_resume:
         mode = (lock_mode or "auto").lower()
@@ -287,8 +295,7 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
     # SystemMessages from pre-fix deploys (would otherwise break Anthropic
     # _format_messages on every turn).
     from app.services import scheduled_inject
-    await scheduled_inject.repair_scheduled_state(agent, thread_id)
-    await scheduled_inject.mark_thread_active(thread_id)
+    await scheduled_inject.mark_thread_active(thread_id, agent=agent)
     _saved = False
     _cancelled = False
     _pass_state: dict[str, Any] = {"inject": None, "inject_event": None, "reset_stream": False}
@@ -690,6 +697,8 @@ async def _stream_agent(agent, agent_input, config, user_id, conv_id, yolo: bool
         # Release the workspace lock unless we're pausing for HITL approval
         # (in which case the resume pass keeps the same owner + lock alive).
         wl.reset_context(_wl_tokens)
+        if _project_token is not None:
+            reset_active_admin_conversation(_project_token)
         if not _pending_interrupt:
             wl.unregister_process(thread_id)
         # Release scheduled-injection guard; if any L2 pairs were queued during
@@ -717,7 +726,8 @@ async def _deepagents_chat(req: ChatRequest, user):
     save_message(user_id, conv_id, "user", save_text, attachments=attachments)
 
     agent = await _create_user_agent_bounded(
-        user_id, model=req.model, capabilities=req.capabilities, username=username
+        user_id, model=req.model, capabilities=req.capabilities, username=username,
+        project_brief=context_for_conversation(user_id, conv_id),
     )
     thread_id = f"{user_id}-{conv_id}"
     config = {
@@ -726,6 +736,13 @@ async def _deepagents_chat(req: ChatRequest, user):
         "metadata": get_langfuse_metadata(session_id=thread_id, user_id=username),
     }
     user_content = canonical_message
+    from app.services.service_test import review_context
+    test_history = review_context(user_id, conv_id)
+    if test_history:
+        if isinstance(user_content, str):
+            user_content = test_history + user_content
+        elif isinstance(user_content, list):
+            user_content = [{"type": "text", "text": test_history}] + user_content
     if req.plan_mode:
         if isinstance(user_content, str):
             user_content = PLAN_MODE_PROMPT + "\n\n" + user_content
@@ -738,23 +755,29 @@ async def _deepagents_chat(req: ChatRequest, user):
         agent, {"messages": [{"role": "user", "content": user_content}]}, config,
         user_id, conv_id, yolo=bool(req.yolo),
         lock_mode=req.lock_mode or "auto", lock_paths=req.lock_paths,
-        lock_label=lock_label,
+        lock_label=lock_label, admin_project_scope=True,
     ))
 
 
 async def _deepagents_stop(req: StopChatRequest, user):
     user_id = user["user_id"]
     thread_id = f"{user_id}-{req.conversation_id}"
-    if req.follow_up is not None:
-        _follow_up_on_cancel[thread_id] = {
-            "message": req.follow_up,
-            "queue_id": req.queue_id,
-        }
     cancel_event = _cancel_flags.get(thread_id)
     if cancel_event:
+        if req.follow_up is not None:
+            _follow_up_on_cancel[thread_id] = {
+                "message": req.follow_up,
+                "queue_id": req.queue_id,
+            }
+        else:
+            # An ordinary stop revokes any previously requested continuation.
+            _follow_up_on_cancel.pop(thread_id, None)
         cancel_event.set()
         _log.info("Stop requested for %s (follow_up=%s)", thread_id, req.follow_up is not None)
         return {"status": "stopping"}
+    # A rejected interrupt-and-continue must not leave an instruction for a later
+    # run. Only an active cancellation flag can accept a continuation.
+    _follow_up_on_cancel.pop(thread_id, None)
     # If the conversation is paused at a HITL interrupt (not actively streaming),
     # stopping should also drop the retained interrupt state and free its lock.
     if thread_id in _interrupt_state:
@@ -774,6 +797,8 @@ async def api_chat_streaming_status(user=Depends(get_current_user)):
     for tid, info in _active_streams.items():
         if info["user_id"] == user_id:
             active.append(info["conv_id"])
+    from app.services.service_test import active_test_conversations
+    active.extend(active_test_conversations(user_id))
     interrupted = []
     for tid in _interrupt_state:
         if tid.startswith(prefix):
@@ -801,7 +826,8 @@ async def _deepagents_resume(req: ResumeRequest, user):
     username = user.get("username", user_id)
     conv_id = req.conversation_id
     agent = await _create_user_agent_bounded(
-        user_id, model=req.model, capabilities=req.capabilities, username=username
+        user_id, model=req.model, capabilities=req.capabilities, username=username,
+        project_brief=context_for_conversation(user_id, conv_id),
     )
     thread_id = f"{user_id}-{conv_id}"
     config = {
@@ -814,6 +840,7 @@ async def _deepagents_resume(req: ResumeRequest, user):
     return _sse_response(_stream_agent(
         agent, Command(resume={"decisions": req.decisions}), config,
         user_id, conv_id, yolo=bool(req.yolo), lock_label=lock_label,
+        admin_project_scope=True,
     ))
 
 

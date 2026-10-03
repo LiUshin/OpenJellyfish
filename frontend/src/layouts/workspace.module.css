@@ -1,5 +1,4 @@
 .brandButton { display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 0; flex: 1; padding: 0; border: 0; background: none; color: var(--jf-text); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
-.brandButton img { object-fit: contain; flex-shrink: 0; }
 .brandButton span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brandButton:hover { color: var(--jf-primary); }
 .brandButton:focus-visible, .fileTab:focus-visible { outline: 2px solid var(--jf-primary); outline-offset: -2px; }

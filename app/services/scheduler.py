@@ -61,6 +61,7 @@ import time
 import uuid
 import asyncio
 import logging
+from functools import wraps
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -70,8 +71,76 @@ from app.core.security import get_user_dir
 from app.core.jsonl_store import append_jsonl_many, read_jsonl
 from app.services import scheduler_tree as st
 from app.services.token_usage import build_usage_callbacks
+from app.execution import context as execution
+from app.execution.store import Conflict, task_key
+
+from app.services.scheduler_policy import validate_task, validate_reply, permission_dirs, service_doc_paths
 
 log = logging.getLogger("scheduler")
+_state_lock = st.TASK_STORAGE_LOCK
+
+
+def _configure_admin_runtime(uid: str, task_type: str, raw_config: dict) -> dict:
+    """Snapshot an explicitly selected CLI binding at an admin task save."""
+    if not isinstance(raw_config, dict):
+        raise ValueError('task_config must be an object')
+    config = dict(raw_config)
+    config.pop('runtime_binding', None)  # Never trust a binding supplied by HTTP or a child task.
+    choice = config.get('runtime_choice')
+    if choice is not None and (not isinstance(choice, dict) or choice.get('runtime') not in ('deepagents', 'codex', 'cursor')):
+        raise ValueError('定时任务引擎选择无效')
+    if task_type != 'agent' and choice and choice.get('runtime') != 'deepagents':
+        raise ValueError('脚本任务不能选择 CLI 引擎')
+    if task_type != 'agent':
+        return config
+    from app.execution.grants import SERVICE_SUPPORTED_CAPABILITIES
+    capabilities = config.get('capabilities') or []
+    if not isinstance(capabilities, list) or any(not isinstance(c, str) for c in capabilities):
+        raise ValueError('定时任务能力必须是列表')
+    if choice is None or choice['runtime'] == 'deepagents':
+        unsupported = set(capabilities) - SERVICE_SUPPORTED_CAPABILITIES
+        if unsupported:
+            raise ValueError('DeepAgents 定时任务尚不支持这些能力：' + ', '.join(sorted(unsupported)))
+        return config  # Legacy tasks retain their DeepAgents executor.
+    if not isinstance(choice.get('profile_id'), str) or not choice['profile_id'] or not isinstance(choice.get('model'), str) or not choice['model']:
+        raise ValueError('请为 CLI 定时任务选择连接和模型')
+    unsupported = set(capabilities) - {'docs', 'documents', 'humanchat', 'web', 'image'}
+    if unsupported:
+        raise ValueError('CLI 定时任务尚不支持这些能力：' + ', '.join(sorted(unsupported)))
+    from app.runtime.chat import choice as runtime_choice
+    requested = {**choice, 'image_mode': 'native' if 'image' in capabilities else 'off'}
+    config['runtime_binding'] = runtime_choice(uid, requested)
+    return config
+
+
+def _serialized(fn):
+    @wraps(fn)
+    def call(*args, **kwargs):
+        with _state_lock:
+            return fn(*args, **kwargs)
+    return call
+
+
+def _execution_disabled():
+    return os.getenv("DISABLE_SCHEDULER", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _prune_run_steps(task_dir, runs):
+    """Keep only logs referenced by committed summaries (never prune before save)."""
+    keep = {r["run_id"] + ".jsonl" for r in runs if r.get("run_id")}
+    directory = st.runs_dir(task_dir)
+    if not os.path.isdir(directory):
+        return
+    with os.scandir(directory) as entries:
+        for index, entry in enumerate(entries):
+            if index >= 256:
+                break  # bounded work per save; subsequent saves continue removing old logs
+            if entry.name.startswith("run_") and entry.name.endswith(".jsonl") and entry.name not in keep:
+                try:
+                    os.unlink(entry.path)
+                except OSError:
+                    log.exception("Cannot prune scheduled run log %s", entry.name)
+
 
 # 同时为「就绪」状态的定时任务数上限 —— 重启后多条 cron/interval 若同时过期，
 # 未限流时为每条任务起一个 create_user_agent，易在 4GB 实例上触发 OOM。
@@ -337,7 +406,7 @@ async def _safe_persist_admin_failure(user_id: str,
     Best-effort; swallows persistence errors so the scheduler loop keeps running.
     No-op when conv_id is missing (task without a target conversation).
     """
-    if not conv_id:
+    if execution.current() or not conv_id:
         return
     output_text = f"任务执行失败：{error_text}"
     try:
@@ -365,7 +434,7 @@ async def _safe_persist_service_failure(admin_id: str, service_id: str,
                                         task_meta: Optional[Dict[str, Any]],
                                         error_text: str) -> None:
     """Persist a failed service scheduled-task as a tool block + enqueue L2 injection."""
-    if not conversation_id:
+    if execution.current() or not conversation_id:
         return
     output_text = f"任务执行失败：{error_text}"
     try:
@@ -419,9 +488,10 @@ def _next_cron(expr: str, after: datetime, tz_offset_hours: float = 0) -> Option
 
 def _load_task(user_id: str, task_id: str) -> Optional[Dict[str, Any]]:
     """Load an admin task by id. Auto-migrates v1 → v2 on first hit."""
-    return st.load_task_or_migrate("admin", user_id, task_id)
+    return execution.load_task("admin", user_id, task_id)
 
 
+@_serialized
 def _save_task(user_id: str, task: Dict[str, Any]) -> None:
     """Persist an admin task into the v2 tree.
 
@@ -444,6 +514,7 @@ def _save_task(user_id: str, task: Dict[str, Any]) -> None:
     _externalize_run_steps(task_dir, runs)
     task["runs"] = runs
     st.save_task_meta(task_dir, task)
+    _prune_run_steps(task_dir, runs)
     # New mtime on _meta.json — caller (HeapScheduler.upsert) handles re-heap.
 
 
@@ -475,15 +546,19 @@ def _new_task_meta_v2(scope: Literal["admin", "service"], uid: str,
         "schedule_type": data.get("schedule_type", "once"),
         "schedule": data.get("schedule", ""),
         "task_type": data.get("task_type", "agent" if scope == "service" else "script"),
-        "task_config": data.get("task_config", {}),
+        "task_config": (_configure_admin_runtime(uid, data.get("task_type", "script"), data.get("task_config", {}))
+                        if scope == "admin" else data.get("task_config", {})),
         "reply_to": data.get("reply_to"),
         "enabled": data.get("enabled", True),
         "tz_offset_hours": tz_offset,
         "created_at": now.isoformat(),
         "last_run_at": None,
+        "last_scheduled_run_at": None,
         "next_run_at": None,
         "consecutive_failures": 0,
         "runs": [],
+        "run_count": 0,
+        "revision": 1,
         # v2 spawn-tree fields
         "parent_task_id": parent_task_id,
         "root_task_id": root_task_id,
@@ -499,15 +574,22 @@ def _new_task_meta_v2(scope: Literal["admin", "service"], uid: str,
     else:
         meta["admin_id"] = uid
         meta["service_id"] = service_id
+    validate_task(meta, uid, service_id)
     return meta
 
 
+@_serialized
 def create_task(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new admin scheduled task (root by default) and compute next_run_at.
 
     To create a CHILD task under an existing parent, use :func:`create_child_task`
     which sets up parent linkage and bumps parent counters atomically.
     """
+    ctx = get_current_task_context()
+    if ctx:
+        if ctx.scope != "admin" or ctx.uid != user_id:
+            raise PermissionError("Scheduled tasks cannot create tasks in another scope")
+        return create_child_task(ctx, data)
     task_id = "task_" + uuid.uuid4().hex[:8]
     task = _new_task_meta_v2("admin", user_id, data, task_id)
     task["next_run_at"] = _compute_next_run(task, datetime.now(timezone.utc))
@@ -516,6 +598,7 @@ def create_task(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     return task
 
 
+@_serialized
 def list_tasks(user_id: str, *,
                roots_only: bool = True) -> List[Dict[str, Any]]:
     """List admin tasks, summary form.
@@ -529,43 +612,53 @@ def list_tasks(user_id: str, *,
     if roots_only:
         out: List[Dict[str, Any]] = []
         for m in st.list_root_tasks("admin", user_id):
+            count = m.get("run_count", len(m.get("runs", [])))
             m = {k: v for k, v in m.items() if k != "runs"}
-            m.setdefault("run_count", 0)
+            m["run_count"] = count
             out.append(m)
         tasks = out
     else:
         tasks = st.list_all_tasks_flat("admin", user_id, include_runs=False)
+    tasks = [execution.overlay("admin", user_id, None, t) for t in tasks]
     tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     return tasks
 
 
+@_serialized
 def get_task(user_id: str, task_id: str) -> Optional[Dict[str, Any]]:
     return _load_task(user_id, task_id)
 
 
+@_serialized
 def update_task(user_id: str, task_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     task = _load_task(user_id, task_id)
     if not task:
         return None
     # Protect identity / lineage / lifecycle fields from external override.
-    protected = {"id", "user_id", "created_at", "runs",
-                 "parent_task_id", "root_task_id",
-                 "spawn_chain", "spawn_depth"}
-    for k, v in updates.items():
-        if k not in protected:
-            task[k] = v
-    # Re-enabling grants a fresh failure budget, otherwise a task auto-disabled
-    # by the circuit breaker would trip again on its very next failure.
-    if updates.get("enabled") is True:
+    allowed = {"name", "description", "schedule_type", "schedule", "task_type",
+               "task_config", "reply_to", "enabled", "tz_offset_hours"}
+    changed = {k: v for k, v in updates.items() if k in allowed and task.get(k) != v}
+    was_enabled = task.get("enabled", True)
+    task.update(changed)
+    if 'task_config' in changed or 'task_type' in changed:
+        if changed.get('task_type') == 'script' and 'task_config' not in changed:
+            task['task_config'] = {k: v for k, v in task['task_config'].items()
+                                   if k not in ('runtime_choice', 'runtime_binding')}
+        task['task_config'] = _configure_admin_runtime(user_id, task['task_type'], task['task_config'])
+    if not (set(changed) == {"enabled"} and changed["enabled"] is False):
+        validate_task(task, user_id, check_reply_session="reply_to" in changed)
+    if changed.get("enabled") is True and not was_enabled:
         task["consecutive_failures"] = 0
-    if any(k in updates for k in ("schedule_type", "schedule", "enabled")):
-        now = datetime.now(timezone.utc)
-        task["next_run_at"] = _compute_next_run(task, now) if task["enabled"] else None
+    if any(k in changed for k in ("schedule_type", "schedule", "enabled", "tz_offset_hours")):
+        task["next_run_at"] = _compute_next_run(task, datetime.now(timezone.utc))
+    if changed:
+        task["revision"] = task.get("revision", 0) + 1
     _save_task(user_id, task)
     _heap_upsert("admin", user_id, task_id, task.get("next_run_at"))
     return task
 
 
+@_serialized
 def delete_task(user_id: str, task_id: str) -> bool:
     """Delete an admin task and its **entire** spawn subtree (recursive).
 
@@ -581,6 +674,7 @@ def delete_task(user_id: str, task_id: str) -> bool:
     return deleted
 
 
+@_serialized
 def get_task_runs(user_id: str, task_id: str) -> List[Dict[str, Any]]:
     task_dir = st.task_path_for("admin", user_id, task_id)
     if not task_dir:
@@ -591,16 +685,17 @@ def get_task_runs(user_id: str, task_id: str) -> List[Dict[str, Any]]:
         if not task_dir:
             return []
     meta = st.load_task_meta(task_dir) or {}
-    return _attach_run_steps(task_dir, meta.get("runs", []))
+    return execution.merge_runs("admin", user_id, None, task_id, _attach_run_steps(task_dir, meta.get("runs", [])))
 
 
 # ── Service task CRUD ─────────────────────────────────────────────────────
 
 def _load_service_task(admin_id: str, service_id: str, task_id: str) -> Optional[Dict[str, Any]]:
     """Load a service task by id. Auto-migrates v1 → v2 on first hit."""
-    return st.load_task_or_migrate("service", admin_id, task_id, service_id)
+    return execution.load_task("service", admin_id, task_id, service_id)
 
 
+@_serialized
 def _save_service_task(admin_id: str, service_id: str, task: Dict[str, Any]) -> None:
     """Persist a service task into the v2 tree.
 
@@ -619,13 +714,20 @@ def _save_service_task(admin_id: str, service_id: str, task: Dict[str, Any]) -> 
     _externalize_run_steps(task_dir, runs)
     task["runs"] = runs
     st.save_task_meta(task_dir, task)
+    _prune_run_steps(task_dir, runs)
 
 
+@_serialized
 def create_service_task(admin_id: str, service_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a scheduled task under a published service (root by default).
 
     For child tasks within a service tree, use :func:`create_child_task`.
     """
+    ctx = get_current_task_context()
+    if ctx:
+        if ctx.scope != "service" or ctx.uid != admin_id or ctx.service_id != service_id:
+            raise PermissionError("Scheduled cross-service fan-out requires a shared budget and is not enabled")
+        return create_child_task(ctx, data)
     task_id = "stask_" + uuid.uuid4().hex[:8]
     task = _new_task_meta_v2("service", admin_id, data, task_id, service_id)
     task["next_run_at"] = _compute_next_run(task, datetime.now(timezone.utc))
@@ -635,6 +737,7 @@ def create_service_task(admin_id: str, service_id: str, data: Dict[str, Any]) ->
     return task
 
 
+@_serialized
 def list_service_tasks(admin_id: str, service_id: str, *,
                        roots_only: bool = True) -> List[Dict[str, Any]]:
     """List service tasks for one service, summary form.
@@ -645,44 +748,51 @@ def list_service_tasks(admin_id: str, service_id: str, *,
     if roots_only:
         out: List[Dict[str, Any]] = []
         for m in st.list_root_tasks("service", admin_id, service_id):
+            count = m.get("run_count", len(m.get("runs", [])))
             m = {k: v for k, v in m.items() if k != "runs"}
-            m.setdefault("run_count", 0)
+            m["run_count"] = count
             out.append(m)
         tasks = out
     else:
         tasks = st.list_all_tasks_flat("service", admin_id, service_id,
                                        include_runs=False)
+    tasks = [execution.overlay("service", admin_id, service_id, t) for t in tasks]
     tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     return tasks
 
 
+@_serialized
 def get_service_task(admin_id: str, service_id: str, task_id: str) -> Optional[Dict[str, Any]]:
     return _load_service_task(admin_id, service_id, task_id)
 
 
+@_serialized
 def update_service_task(
     admin_id: str, service_id: str, task_id: str, updates: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
     task = _load_service_task(admin_id, service_id, task_id)
     if not task:
         return None
-    protected = {"id", "admin_id", "service_id", "created_at", "runs",
-                 "parent_task_id", "root_task_id",
-                 "spawn_chain", "spawn_depth"}
-    for k, v in updates.items():
-        if k not in protected:
-            task[k] = v
-    if updates.get("enabled") is True:
+    allowed = {"name", "description", "schedule_type", "schedule", "task_type",
+               "task_config", "reply_to", "enabled", "tz_offset_hours"}
+    changed = {k: v for k, v in updates.items() if k in allowed and task.get(k) != v}
+    was_enabled = task.get("enabled", True)
+    task.update(changed)
+    if not (set(changed) == {"enabled"} and changed["enabled"] is False):
+        validate_task(task, admin_id, service_id, check_reply_session="reply_to" in changed)
+    if changed.get("enabled") is True and not was_enabled:
         task["consecutive_failures"] = 0
-    if any(k in updates for k in ("schedule_type", "schedule", "enabled")):
-        now = datetime.now(timezone.utc)
-        task["next_run_at"] = _compute_next_run(task, now) if task["enabled"] else None
+    if any(k in changed for k in ("schedule_type", "schedule", "enabled", "tz_offset_hours")):
+        task["next_run_at"] = _compute_next_run(task, datetime.now(timezone.utc))
+    if changed:
+        task["revision"] = task.get("revision", 0) + 1
     _save_service_task(admin_id, service_id, task)
     _heap_upsert("service", admin_id, task_id, task.get("next_run_at"),
                  service_id=service_id)
     return task
 
 
+@_serialized
 def delete_service_task(admin_id: str, service_id: str, task_id: str) -> bool:
     """Delete a service task and its **entire** spawn subtree (recursive).
 
@@ -698,6 +808,7 @@ def delete_service_task(admin_id: str, service_id: str, task_id: str) -> bool:
     return deleted
 
 
+@_serialized
 def get_service_task_runs(admin_id: str, service_id: str, task_id: str) -> List[Dict[str, Any]]:
     task_dir = st.task_path_for("service", admin_id, task_id, service_id)
     if not task_dir:
@@ -707,7 +818,7 @@ def get_service_task_runs(admin_id: str, service_id: str, task_id: str) -> List[
         if not task_dir:
             return []
     meta = st.load_task_meta(task_dir) or {}
-    return _attach_run_steps(task_dir, meta.get("runs", []))
+    return execution.merge_runs("service", admin_id, service_id, task_id, _attach_run_steps(task_dir, meta.get("runs", [])))
 
 
 def list_all_service_tasks(admin_id: str, *,
@@ -730,6 +841,7 @@ def list_all_service_tasks(admin_id: str, *,
 
 # ── B6: Spawn helpers (used by spawn_child_task tool & v2 chain semantics) ─
 
+@_serialized
 def create_child_task(parent_ctx: TaskContext,
                       data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a child task under the currently-executing parent task.
@@ -740,6 +852,9 @@ def create_child_task(parent_ctx: TaskContext,
     Raises ``RuntimeError`` if the parent's on-disk directory cannot be
     located — should only happen if parent was deleted mid-execution.
     """
+    if execution.current():
+        from app.execution.grants import Grant
+        data = Grant().child(data)
     parent_dir = st.task_path_for(parent_ctx.scope, parent_ctx.uid,
                                   parent_ctx.task_id, parent_ctx.service_id)
     if not parent_dir:
@@ -752,6 +867,9 @@ def create_child_task(parent_ctx: TaskContext,
     # Compose lineage: child's chain = parent's chain + parent itself
     child_spawn_chain = parent_ctx.spawn_chain + [parent_ctx.task_id]
     child_data = dict(data)
+    child_data.setdefault("reply_to", parent_ctx.reply_to)
+    if child_data.get("reply_to") not in (None, parent_ctx.reply_to):
+        raise PermissionError("Child tasks must inherit their parent's delivery target")
     child_data.update({
         "parent_task_id": parent_ctx.task_id,
         "root_task_id": parent_ctx.root_task_id,
@@ -769,6 +887,11 @@ def create_child_task(parent_ctx: TaskContext,
     child_meta["next_run_at"] = _compute_next_run(
         child_meta, datetime.now(timezone.utc))
 
+    from app.services.spawn_limits import check_chain_quota
+    quota = check_chain_quota(parent_ctx.scope, parent_ctx.uid, parent_ctx.root_task_id,
+                              service_id=parent_ctx.service_id)
+    if not quota.allowed:
+        raise ValueError(f"派生频次超限：{quota.current}/{quota.limit}，释放时间 {quota.reset_at}")
     child_dir = st.create_child_dir(parent_dir, child_id)
     runs = child_meta.get("runs") or []
     _externalize_run_steps(child_dir, runs)
@@ -808,6 +931,7 @@ def create_child_task(parent_ctx: TaskContext,
 
 # ── B5: L3 descendants_summary propagation ───────────────────────────────
 
+@_serialized
 def _propagate_descendant_summary(scope: Literal["admin", "service"],
                                   uid: str,
                                   service_id: Optional[str],
@@ -898,7 +1022,7 @@ def _compute_next_run(task: Dict[str, Any], after: datetime) -> Optional[str]:
         # this check next_run_at resolves to "just now" on every cycle and the
         # heap re-fires the task forever (one agent + LLM call per iteration).
         if not sched or sched.strip().lower() == "now":
-            return after.isoformat() if not task.get("last_run_at") else None
+            return after.isoformat() if not task.get("last_scheduled_run_at", task.get("last_run_at")) else None
         try:
             dt = datetime.fromisoformat(sched)
             if dt.tzinfo is None:
@@ -993,22 +1117,16 @@ def _resolve_permission_dirs(user_id: str, dir_names: List[str]) -> List[str]:
     """
     from app.core.security import get_user_filesystem_dir
     fs_dir = get_user_filesystem_dir(user_id)
-    resolved = []
-    for name in dir_names:
-        name = name.strip().strip("/").strip("\\")
-        if not name:
-            continue
-        if name == "*":
-            resolved.append(fs_dir)
-            continue
-        abs_path = os.path.join(fs_dir, name)
-        os.makedirs(abs_path, exist_ok=True)
-        resolved.append(abs_path)
+    resolved = permission_dirs(fs_dir, dir_names)
+    for path in resolved:
+        os.makedirs(path, exist_ok=True)
     return resolved
 
 
 async def _run_script_task(user_id: str, config: Dict[str, Any]) -> dict:
     """Returns {"output": str, "success": bool, "steps": list}."""
+    if execution.current():
+        raise PermissionError('Native script execution is blocked until an OS-isolated grant adapter is configured')
     from app.services.script_runner import run_script, superadmin_script_unrestricted
     from app.core.security import get_user_filesystem_dir
     fs_dir = get_user_filesystem_dir(user_id)
@@ -1037,7 +1155,8 @@ async def _run_script_task(user_id: str, config: Dict[str, Any]) -> dict:
     log.info("Script sandbox dirs — write: %s | read: %s | scripts_dir: %s | fs_dir: %s",
              write_dirs, read_dirs, scripts_dir, fs_dir)
 
-    result = run_script(
+    from app.services.venv_manager import get_user_python
+    worker = asyncio.create_task(asyncio.to_thread(run_script,
         script_path=script_path,
         scripts_dir=scripts_dir,
         input_data=config.get("input_data"),
@@ -1046,7 +1165,14 @@ async def _run_script_task(user_id: str, config: Dict[str, Any]) -> dict:
         allowed_read_dirs=read_dirs,
         allowed_write_dirs=write_dirs,
         unrestricted=superadmin_script_unrestricted(user_id),
-    )
+        python_executable=get_user_python(user_id),
+    ))
+    try:
+        result = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # to_thread does not stop a subprocess. Drain before releasing capacity.
+        await worker
+        raise
 
     if result["error"]:
         steps.append(_step("error", result["error"]))
@@ -1077,6 +1203,16 @@ def _read_docs(user_id: str, doc_paths) -> str:
     if isinstance(doc_paths, str):
         doc_paths = [doc_paths]
 
+    if execution.current():
+        from app.execution.grants import Grant
+        from app.storage import get_storage_service
+        grant = Grant()
+        parts = []
+        for path in doc_paths:
+            clean = 'docs/' + path.replace('\\', '/').lstrip('/')
+            clean = grant.path(clean)
+            parts.append(f'=== 文档: {path} ===\n' + get_storage_service().read_text(user_id, clean))
+        return '\n\n'.join(parts)
     parts = []
     for dp in doc_paths:
         dp = dp.strip()
@@ -1095,7 +1231,8 @@ def _read_docs(user_id: str, doc_paths) -> str:
     return "\n\n".join(parts)
 
 
-def _resolve_wechat_client(reply_to: Optional[Dict[str, Any]]):
+def _resolve_wechat_client(reply_to: Optional[Dict[str, Any]], *, owner_id: str,
+                           owner_service_id: Optional[str] = None):
     """Resolve WeChat client, to_user, ctx_token from reply_to config.
 
     Returns (client, to_user, ctx_token) or (None, None, None).
@@ -1103,7 +1240,8 @@ def _resolve_wechat_client(reply_to: Optional[Dict[str, Any]]):
     if not reply_to or reply_to.get("channel") != "wechat":
         return None, None, None
 
-    service_id = reply_to.get("service_id")
+    validate_reply(reply_to, owner_id, owner_service_id)
+    service_id = owner_service_id
     try:
         if service_id:
             from app.channels.wechat.session_manager import get_session_manager
@@ -1115,9 +1253,11 @@ def _resolve_wechat_client(reply_to: Optional[Dict[str, Any]]):
             return client, session.from_user_id, session.context_token
         else:
             from app.channels.wechat.admin_router import _get_session as _get_admin_session
-            admin_sess = _get_admin_session(reply_to.get("admin_id", ""))
+            admin_sess = _get_admin_session(owner_id)
             if not admin_sess or not admin_sess.get("connected"):
                 return None, None, None
+            if reply_to.get("conversation_id") != admin_sess.get("conversation_id"):
+                raise PermissionError("Admin WeChat conversation no longer matches reply_to")
             return admin_sess.get("client"), admin_sess.get("from_user_id", ""), admin_sess.get("context_token", "")
     except Exception:
         log.exception("Failed to resolve WeChat client from reply_to")
@@ -1241,6 +1381,9 @@ async def _run_agent_loop(agent, input_payload, agent_config, steps: List[dict],
     for loop_i in range(max_loops):
         steps.append(_step("loop", f"Agent 执行循环 #{loop_i + 1}"))
         async for event in agent.astream(input_payload, config=agent_config):
+            if execution.current():
+                from app.execution.grants import Grant
+                Grant().policies()
             if not isinstance(event, dict):
                 continue
             for node_name, node_output in event.items():
@@ -1278,7 +1421,13 @@ async def _run_agent_loop(agent, input_payload, agent_config, steps: List[dict],
                                         parts.append(p)
                                 tool_content = "\n".join(parts)
 
-                        if tool_name == "send_message" and wechat_client:
+                        if tool_name == "send_message" and execution.current():
+                            payload = json.loads(tool_content)
+                            execution.current().collect_message(payload)
+                            if delivered_parts is not None and payload.get('text'):
+                                delivered_parts.append(str(payload['text']))
+                            steps.append(_step('delivery_queued', '结果将在运行提交后投递'))
+                        elif tool_name == "send_message" and wechat_client:
                             await _handle_send_message_tool(
                                 tool_content, wechat_client, wechat_to_user,
                                 wechat_ctx_token, user_id, steps,
@@ -1320,6 +1469,8 @@ async def _run_agent_loop(agent, input_payload, agent_config, steps: List[dict],
         if not has_interrupt:
             break
 
+        if execution.current():
+            raise PermissionError('Scheduled execution requires a scoped grant; unexpected approval is not auto-approved')
         decisions = []
         action_names = []
         for task in state.tasks:
@@ -1339,6 +1490,87 @@ async def _run_agent_loop(agent, input_payload, agent_config, steps: List[dict],
         log.info("Auto-approving %d file operations for scheduled task (loop %d)", len(decisions), loop_i + 1)
 
 
+async def _delete_temporary_checkpoint(thread_id: str):
+    from app.services.agent import _checkpointer
+    if _checkpointer is not None:
+        try:
+            await _checkpointer.adelete_thread(thread_id)
+        except Exception:
+            log.exception("Temporary scheduled checkpoint cleanup failed: %s", thread_id)
+
+
+async def _run_cli_agent_task(user_id: str, config: dict, full_prompt: str, steps: list) -> dict:
+    """Run one CLI turn under the current durable admin task lease."""
+    from app.execution.grants import Grant
+    from app.runtime.chat import choice as runtime_choice
+    from app.runtime.manager import get_runtime
+    from app.runtime.business_tools import scheduler_specifications
+    from app.runtime.service import MAX_CHAT_MESSAGE_CHARS
+    from app.runtime.store import TERMINAL as RUNTIME_TERMINAL
+
+    durable = execution.current()
+    if not durable:
+        raise PermissionError('CLI 定时任务需要持久化执行授权')
+    grant = Grant(durable)
+    grant.policies()
+    if len(full_prompt) > MAX_CHAT_MESSAGE_CHARS:
+        reason = (f'CLI 定时任务输入共 {len(full_prompt)} 字符，超过 {MAX_CHAT_MESSAGE_CHARS} 字符上限。'
+                  '请缩短任务指令或参考文档，再重新运行。')
+        steps.append(_step('cli_failed', reason))
+        return {'output': reason, 'success': False, 'steps': steps}
+    choice = config['runtime_choice']
+    saved = config.get('runtime_binding')
+    if not isinstance(saved, dict) or saved.get('runtime') != choice['runtime']:
+        raise PermissionError('CLI 定时任务缺少可信的引擎绑定，请重新保存任务')
+    requested = {**choice, 'image_mode': 'native' if 'image' in grant.saved['capabilities'] else 'off'}
+    if runtime_choice(user_id, requested) != saved:
+        raise PermissionError('CLI 定时任务引擎授权已经改变，请重新保存任务')
+    scope = {'run_id': durable.run['id'], 'task_id': grant.tid,
+             'revision': grant.snapshot['revision'],
+             'web': 'web' in grant.saved['capabilities'],
+             'image': 'image' in grant.saved['capabilities']}
+    binding = {**saved, 'scheduler_scope': scope}
+    runtime = get_runtime()
+    runtime.runs.authorize(user_id, binding)
+    instructions = ('你正在执行 OpenJellyfish 管理员定时任务。仅使用本会话注册的 jellyfish_scheduled_* 工具访问授权文件。'
+                    '可使用获授权的网页搜索和生图。不要使用原生命令、文件工具、其他 MCP 或插件。'
+                    '直接给出最终结果；系统会在任务提交后把最终文本送到指定会话。')
+    session = runtime.runs.create_session(user_id, binding, instructions=instructions,
+                                          dynamic_tools=scheduler_specifications())
+    session['instructions_version'] = 3
+    runtime.store.put('session', session)
+    run = None
+    try:
+        run = runtime.runs.enqueue(user_id, session['id'], f"scheduled:{durable.run['id']}", full_prompt, yolo=False)
+        steps.append(_step('cli_started', f"{saved['runtime']} 任务已提交", runtime_run_id=run['id']))
+        while True:
+            grant.policies()
+            runtime.runs.authorize(user_id, binding)
+            current = runtime.store.get('run', run['id'])
+            if current and current['status'] in RUNTIME_TERMINAL:
+                break
+            await asyncio.sleep(.25)
+        grant.policies()
+        if current['status'] != 'completed':
+            steps.append(_step('cli_failed', current.get('error') or current['status']))
+            return {'output': current.get('error') or 'CLI 定时任务未完成', 'success': False, 'steps': steps}
+        output = current.get('output') or ''
+        for artifact in current.get('artifacts') or []:
+            output += f"\n\n<<FILE:{artifact['path']}>>"
+        steps.append(_step('finish', f"{saved['runtime']} 任务执行完成"))
+        return {'output': output, 'success': True, 'steps': steps}
+    finally:
+        if run:
+            current = runtime.store.get('run', run['id'])
+            if current and current['status'] not in RUNTIME_TERMINAL:
+                stop = asyncio.create_task(runtime.runs.cancel(user_id, run['id']))
+                try:
+                    await asyncio.shield(stop)
+                except asyncio.CancelledError:
+                    await asyncio.shield(stop)
+                    raise
+
+
 async def _run_agent_task(user_id: str, config: Dict[str, Any],
                           reply_to: Optional[Dict[str, Any]] = None,
                           task_meta: Optional[Dict[str, Any]] = None) -> dict:
@@ -1351,11 +1583,16 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
 
     Returns {"output": str, "success": bool, "steps": list}.
     """
-    from app.services.agent import create_user_agent, _get_default_model
+    if execution.current():
+        from app.execution.grants import Grant
+        Grant().policies()
+    cli = isinstance(config.get('runtime_choice'), dict) and config['runtime_choice'].get('runtime') in ('codex', 'cursor')
+    if not cli:
+        from app.services.agent import create_user_agent, _get_default_model
     from app.services.memory_tools import load_recent_admin_messages
     prompt_text = config.get("prompt", "")
     doc_path = config.get("doc_path", "")
-    model = config.get("model", "")
+    model = (config.get('runtime_binding') or {}).get('model', '') if cli else config.get("model", "")
     capabilities = config.get("capabilities", [])
     perms = config.get("permissions", {})
     steps: List[dict] = []
@@ -1392,22 +1629,31 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
                 f"{full_prompt}"
             )
 
-    full_prompt += (
-        "\n\n---\n"
-        "[重要] 这是一个定时任务。你的直接文本输出用户看不到。"
-        "任务完成后，你必须使用 `send_message` 工具将结果发送给用户，否则用户将收不到任何信息。"
-    )
+    if cli:
+        full_prompt += '\n\n---\n这是定时任务。请直接给出最终结果；系统会在授权检查和提交后送达。'
+    else:
+        full_prompt += (
+            "\n\n---\n"
+            "[重要] 这是一个定时任务。你的直接文本输出用户看不到。"
+            "任务完成后，你必须使用 `send_message` 工具将结果发送给用户，否则用户将收不到任何信息。"
+        )
 
-    if not model:
+    if not model and not cli:
         # 传 user_id 以尊重用户在设置页选的默认 LLM（capability_defaults.llm）；
         # 不传会退回全局 agent_config.json 的旧默认（如 sonnet 4.5）。
         model = _get_default_model(user_id)
 
-    if "humanchat" not in capabilities:
+    if not cli and "humanchat" not in capabilities:
         capabilities = list(capabilities) + ["humanchat"]
 
-    agent = create_user_agent(user_id, model=model, capabilities=capabilities)
-    thread_id = f"scheduled-{uuid.uuid4().hex[:8]}"
+    if cli:
+        agent = None
+    elif execution.current():
+        from app.execution.agent import create_scheduled_agent
+        agent = create_scheduled_agent(model)
+    else:
+        agent = create_user_agent(user_id, model=model, capabilities=capabilities)
+    thread_id = f"scheduled-{execution.current().run['id']}" if cli and execution.current() else f"scheduled-{uuid.uuid4().hex[:8]}"
     agent_config = {
         "configurable": {"thread_id": thread_id},
         "callbacks": build_usage_callbacks(
@@ -1417,10 +1663,10 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
     output_parts: List[str] = []
     delivered_parts: List[str] = []
 
-    wechat_client, wechat_to_user, wechat_ctx_token = _resolve_wechat_client(reply_to)
+    wechat_client, wechat_to_user, wechat_ctx_token = (None, None, None) if execution.current() else _resolve_wechat_client(reply_to, owner_id=user_id)
     if wechat_client:
         steps.append(_step("wechat_connected", "已连接微信推送通道"))
-    elif reply_to and reply_to.get("channel") == "wechat":
+    elif not execution.current() and reply_to and reply_to.get("channel") == "wechat":
         log.warning("Admin task %s: reply_to specifies wechat but client not resolved "
                     "(admin may be disconnected)", "")
         steps.append(_step("wechat_warning",
@@ -1434,25 +1680,28 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
     from app.services import workspace_lock as wl
     _task_label = (task_meta or {}).get("task_name") or "定时任务"
     _write_dirs = perms.get("write_dirs") or ["docs", "scripts", "generated", "tasks"]
-    _regions = ["/" + str(d).strip("/") for d in _write_dirs if str(d).strip("/")] or ["/"]
+    if execution.current():
+        _write_dirs = execution.current().run['snapshot']['execution_grant']['write_dirs']
+    _regions = ['/' if str(d).strip('/') == '*' else '/' + str(d).strip('/') for d in _write_dirs]
     wl.register_process(thread_id, user_id, kind="scheduled", label=_task_label)
     _wl_tokens = wl.set_context(thread_id, user_id)
-    _acq = wl.try_acquire(thread_id, _regions, ttl=2100)
-    if not _acq.ok:
-        for _ in range(10):  # up to ~30s grace
-            await asyncio.sleep(3)
-            _acq = wl.try_acquire(thread_id, _regions, ttl=2100)
-            if _acq.ok:
-                break
-    if not _acq.ok:
-        detail = "；".join(f"{p}←「{lbl}」" for p, _o, lbl in _acq.conflicts)
-        steps.append(_step("workspace_busy", f"工作区被占用，本次运行跳过：{detail}"))
-        wl.reset_context(_wl_tokens)
-        wl.unregister_process(thread_id)
-        return {"output": f"工作区被占用，本次运行跳过（{detail}）", "success": False, "steps": steps}
-    steps.append(_step("workspace_locked", f"已锁定工作区写权限：{_acq.granted}"))
-
     try:
+        _acq = wl.try_acquire(thread_id, _regions, ttl=2100)
+        if not _acq.ok:
+            for _ in range(10):  # up to ~30s grace
+                await asyncio.sleep(3)
+                _acq = wl.try_acquire(thread_id, _regions, ttl=2100)
+                if _acq.ok:
+                    break
+        if not _acq.ok:
+            detail = "；".join(f"{p}←「{lbl}」" for p, _o, lbl in _acq.conflicts)
+            steps.append(_step("workspace_busy", f"工作区被占用，本次运行跳过：{detail}"))
+            return {"output": f"工作区被占用，本次运行跳过（{detail}）", "success": False, "deferred": True, "steps": steps}
+        steps.append(_step("workspace_locked", f"已锁定工作区写权限：{_acq.granted}"))
+
+        if cli:
+            return await _run_cli_agent_task(user_id, config, full_prompt, steps)
+
         input_payload = {"messages": [{"role": "user", "content": full_prompt}]}
         await _run_agent_loop(
             agent, input_payload, agent_config, steps, output_parts,
@@ -1465,6 +1714,8 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
         steps.append(_step("error", "任务超时"))
         await _safe_persist_admin_failure(user_id, conv_id, task_meta, "任务超时（>30min）")
         return {"output": "任务超时", "success": False, "steps": steps}
+    except PermissionError:
+        raise
     except Exception as e:
         steps.append(_step("error", f"Agent 执行失败: {e}"))
         await _safe_persist_admin_failure(user_id, conv_id, task_meta, str(e))
@@ -1474,6 +1725,7 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
         # the bookkeeping/persist tail) so queued tasks can proceed.
         wl.reset_context(_wl_tokens)
         wl.unregister_process(thread_id)
+        await _delete_temporary_checkpoint(thread_id)
 
     text = _compose_clean_task_output(delivered_parts, output_parts)
     # Stash the raw ReAct monologue in steps for debugging, but keep it OUT of
@@ -1490,7 +1742,7 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
     # Persist task output to conversation history as a scheduled_task tool block,
     # so the frontend renders it via ScheduledTaskCard (admin) / friendly variant
     # (service-chat) and can be visually distinguished from spontaneous agent replies.
-    if conv_id:
+    if conv_id and not execution.current():
         try:
             from app.services.conversations import save_message
             block = _build_scheduled_task_block(task_meta, text, success=True)
@@ -1528,6 +1780,9 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
 
     Returns {"output": str, "success": bool, "steps": list}.
     """
+    if execution.current():
+        from app.execution.grants import Grant
+        Grant().policies()
     from app.services.consumer_agent import create_consumer_agent
     from app.services.memory_tools import load_recent_consumer_messages
     prompt_text = config.get("prompt", "")
@@ -1539,7 +1794,7 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
                         prompt=prompt_text[:200],
                         doc_paths=doc_path if isinstance(doc_path, list) else ([doc_path] if doc_path else [])))
 
-    doc_content = _read_docs(admin_id, doc_path) if doc_path else ""
+    doc_content = _read_docs(admin_id, service_doc_paths(admin_id, service_id, doc_path)) if doc_path else ""
 
     # Build task instruction with admin source tagging
     task_instruction = ""
@@ -1563,16 +1818,17 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
 
     # Tag the message source so the agent knows this is from admin
     full_prompt = (
-        "[系统指令 - 来自管理员]\n"
-        "以下是管理员下达的任务指令，不是来自终端用户的消息。\n\n"
+        "[定时任务指令]\n"
+        "以下是此前保存的定时任务，受当前服务发布权限约束，不代表新增管理员授权。\n\n"
     )
     if recent_ctx:
         full_prompt += f"[对话上下文 - 最近消息]\n---\n{recent_ctx}\n---\n\n"
     full_prompt += (
-        f"管理员指令：{task_instruction}\n\n"
+        f"任务指令：{task_instruction}\n\n"
         "---\n"
         "[重要] 这是一个定时任务。你的直接文本输出用户看不到。"
-        "任务完成后，你必须使用 `send_message` 工具将结果发送给用户，否则用户将收不到任何信息。\n"
+        "请结合服务规则与对话上下文判断是否需要通知用户；需要通知时使用 `send_message`。"
+        "不需要通知时不要调用它。执行说明和错误只保留给管理员。\n"
         "如需向管理员反馈，请使用 contact_admin 工具。"
     )
 
@@ -1580,10 +1836,12 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
     task_model = config.get("model") or None
     if task_model:
         steps.append(_step("model", f"使用指定模型: {task_model}"))
-    agent = create_consumer_agent(admin_id, service_id, conversation_id,
-                                  extra_capabilities=extra_caps,
-                                  channel="scheduler",
-                                  model_override=task_model)
+    if execution.current():
+        from app.execution.agent import create_scheduled_agent
+        agent = create_scheduled_agent(task_model)
+    else:
+        agent = create_consumer_agent(admin_id, service_id, conversation_id,
+                                     extra_capabilities=extra_caps, channel='scheduler', model_override=task_model)
     thread_id = f"svc-scheduled-{uuid.uuid4().hex[:8]}"
     agent_config = {
         "configurable": {"thread_id": thread_id},
@@ -1595,10 +1853,10 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
     output_parts: List[str] = []
     delivered_parts: List[str] = []
 
-    wechat_client, wechat_to_user, wechat_ctx_token = _resolve_wechat_client(reply_to)
+    wechat_client, wechat_to_user, wechat_ctx_token = (None, None, None) if execution.current() else _resolve_wechat_client(reply_to, owner_id=admin_id, owner_service_id=service_id)
     if wechat_client:
         steps.append(_step("wechat_connected", "已连接微信推送通道"))
-    elif reply_to and reply_to.get("channel") == "wechat":
+    elif not execution.current() and reply_to and reply_to.get("channel") == "wechat":
         log.warning("Service task (svc=%s): reply_to specifies wechat but client not resolved "
                     "(session may be expired)", service_id)
         steps.append(_step("wechat_warning",
@@ -1622,11 +1880,16 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
         await _safe_persist_service_failure(admin_id, service_id, conversation_id,
                                             task_meta, "任务超时（>30min）")
         return {"output": "任务超时", "success": False, "steps": steps}
+    except PermissionError:
+        raise
     except Exception as e:
         steps.append(_step("error", f"Service Agent 执行失败: {e}"))
         await _safe_persist_service_failure(admin_id, service_id, conversation_id,
                                             task_meta, str(e))
         return {"output": f"Service Agent 执行失败: {e}", "success": False, "steps": steps}
+
+    finally:
+        await _delete_temporary_checkpoint(thread_id)
 
     text = _compose_clean_task_output(delivered_parts, output_parts)
     if delivered_parts and output_parts:
@@ -1636,6 +1899,9 @@ async def _run_service_agent_task(admin_id: str, service_id: str, conversation_i
             f"Agent 原始输出（{len(output_parts)} 段，已折叠；用户实际收到的是 send_message 内容）",
             raw_text=raw_combined[:4000],
         ))
+
+    if execution.current():
+        return {"output": text, "success": True, "steps": steps}
 
     # Persist task output to consumer conversation history as a scheduled_task tool
     # block. Service-chat renders this via the friendly ScheduledTaskCard variant
@@ -1694,12 +1960,82 @@ def _build_task_context_from_meta(scope: Literal["admin", "service"],
     )
 
 
-async def _execute_task(user_id: str, task_id: str) -> None:
-    task = _load_task(user_id, task_id)
-    if not task:
-        return
+def _finalize_execution(scope, uid, sid, tid, revision, manual, record, task_meta):
+    durable = execution.current()
+    with _state_lock:
+        task = execution.load_task(scope, uid, tid, sid)
+        snapshot_config = (durable.run['snapshot'].get('task_config') or {}) if durable else {}
+        snapshot_choice = snapshot_config.get('runtime_choice')
+        cli_snapshot = (durable.run['snapshot'] if durable and scope == 'admin' and
+                        isinstance(snapshot_choice, dict) and snapshot_choice.get('runtime') in ('codex', 'cursor')
+                        else None)
+        suppress_delivery = False
+        if cli_snapshot:
+            suppress_delivery = (not task or (not manual and not task.get('enabled')) or
+                                 task.get('revision') != cli_snapshot.get('revision') or
+                                 task.get('reply_to') != cli_snapshot.get('reply_to') or
+                                 (task.get('task_config') or {}).get('runtime_binding') !=
+                                 (cli_snapshot.get('task_config') or {}).get('runtime_binding'))
+            if not suppress_delivery:
+                from app.execution.grants import Grant
+                try:
+                    Grant(durable).policies()
+                    from app.runtime.manager import get_runtime
+                    get_runtime().profiles.authorize(uid, snapshot_config['runtime_binding'])
+                except Exception:
+                    suppress_delivery = True
+            if suppress_delivery:
+                record['status'] = 'blocked'
+                record['steps'].append(_step('permission_denied', 'CLI 定时任务在结果提交前失去授权；结果未投递'))
+        cursor = None
+        if task:
+            finished = datetime.fromisoformat(record['finished_at'])
+            status = record['status']
+            task['run_count'] = task.get('run_count', len(task.get('runs', []))) + 1
+            task.setdefault('last_scheduled_run_at', task.get('last_run_at'))
+            task['last_run_at'] = record['started_at']
+            if not manual and status != 'deferred':
+                task['last_scheduled_run_at'] = record['started_at']
+            if status == 'blocked' and task.get('revision', 0) == revision:
+                task.update(enabled=False, next_run_at=None)
+            if not manual and task.get('revision', 0) == revision:
+                if status == 'deferred' and task.get('enabled'):
+                    task['next_run_at'] = (finished + timedelta(seconds=60)).isoformat()
+                elif status == 'cancelled':
+                    task.update(enabled=False, next_run_at=None)
+                else:
+                    reason = _apply_post_run_schedule(task, status, finished)
+                    if reason:
+                        record['steps'].append(_step('error', reason))
+            fields = ('run_count', 'last_run_at', 'last_scheduled_run_at', 'next_run_at', 'enabled', 'consecutive_failures')
+            cursor = (task.get('revision', 0), {k: task[k] for k in fields if k in task})
+        if durable:
+            durable.store.finish(durable.run['id'], durable.run['token'], record, cursor,
+                                 () if suppress_delivery else durable.deliveries(record, task_meta))
+        # This compatibility export is not the commit point. Failure must never rerun the executor.
+        if task:
+            try:
+                task['runs'] = (task.get('runs', []) + [record])[-_MAX_RUNS_STORED:]
+                if scope == 'admin':
+                    _save_task(uid, task)
+                else:
+                    _save_service_task(uid, sid, task)
+                _propagate_descendant_summary(scope, uid, sid, task, record)
+            except Exception:
+                if not durable:
+                    raise
+                log.exception('Run committed; task history export will be recovered from ledger')
+            _heap_upsert(scope, uid, tid, task.get('next_run_at'), sid)
 
-    run_id = "run_" + uuid.uuid4().hex[:6]
+
+async def _execute_task(user_id: str, task_id: str, *, manual: bool = False) -> None:
+    durable = execution.current()
+    task = durable.run["snapshot"] if durable else _load_task(user_id, task_id)
+    if not task or _execution_disabled():
+        return
+    revision = task.get("revision", 0)
+
+    run_id = durable.run["id"] if durable else "run_" + uuid.uuid4().hex[:6]
     started = datetime.now(timezone.utc)
     log.info("Executing task %s (run %s)", task_id, run_id)
 
@@ -1723,6 +2059,7 @@ async def _execute_task(user_id: str, task_id: str) -> None:
     ctx = _build_task_context_from_meta("admin", user_id, task)
     ctx_token = _current_task_var.set(ctx)
     try:
+        validate_task(task, user_id)
         ttype = task.get("task_type", "script")
         cfg = task.get("task_config", {})
         if ttype == "script":
@@ -1740,12 +2077,21 @@ async def _execute_task(user_id: str, task_id: str) -> None:
 
         output = result["output"]
         steps = result.get("steps", [])
-        if not result["success"]:
+        if result.get("deferred"):
+            status = "deferred"
+        elif not result["success"]:
             status = "error"
+    except asyncio.CancelledError:
+        output = "任务已取消"
+        status = "cancelled"
     except asyncio.TimeoutError:
         output = f"任务超时（>{_TASK_TIMEOUT_S}s）"
         status = "timeout"
         steps.append(_step("error", output))
+    except PermissionError as e:
+        output = str(e)
+        status = "blocked"
+        steps.append(_step("permission_denied", output))
     except Exception as e:
         output = str(e)
         status = "error"
@@ -1760,45 +2106,28 @@ async def _execute_task(user_id: str, task_id: str) -> None:
     finished = datetime.now(timezone.utc)
     run_record = {
         "run_id": run_id,
+        "trigger": "manual" if manual else "scheduled",
+        "task_revision": revision,
         "started_at": started.isoformat(),
         "finished_at": finished.isoformat(),
         "status": status,
-        "output": output[:4000],
+        "output": output if durable else output[:4000],
         "steps": steps,
     }
     log.info("Task %s run %s finished: %s", task_id, run_id, status)
 
-    # Reload task (may have been updated while running)
-    task = _load_task(user_id, task_id)
-    if not task:
-        return
-    runs = task.get("runs", [])
-    runs.append(run_record)
-    task["runs"] = runs[-_MAX_RUNS_STORED:]
-    task["last_run_at"] = started.isoformat()
-    disabled_reason = _apply_post_run_schedule(task, status, finished)
-    if disabled_reason:
-        log.warning("Task %s auto-disabled: %s", task_id, disabled_reason)
-        run_record.setdefault("steps", []).append(
-            _step("error", disabled_reason))
-    _save_task(user_id, task)
-    _heap_upsert("admin", user_id, task_id, task.get("next_run_at"))
-
-    # B5: propagate one-line summary to all ancestors so a parent task's next
-    # run can read its own descendants_summary and reason about its tree.
-    try:
-        _propagate_descendant_summary("admin", user_id, None, task, run_record)
-    except Exception:
-        log.exception("L3 propagate failed for admin task %s", task_id)
+    _finalize_execution("admin", user_id, None, task_id, revision, manual, run_record, task_meta)
 
 
-async def _execute_service_task(admin_id: str, service_id: str, task_id: str) -> None:
+async def _execute_service_task(admin_id: str, service_id: str, task_id: str, *, manual: bool = False) -> None:
     """Execute a service-scoped scheduled task."""
-    task = _load_service_task(admin_id, service_id, task_id)
-    if not task:
+    durable = execution.current()
+    task = durable.run["snapshot"] if durable else _load_service_task(admin_id, service_id, task_id)
+    if not task or _execution_disabled():
         return
+    revision = task.get("revision", 0)
 
-    run_id = "run_" + uuid.uuid4().hex[:6]
+    run_id = durable.run["id"] if durable else "run_" + uuid.uuid4().hex[:6]
     started = datetime.now(timezone.utc)
     log.info("Executing service task %s/%s (run %s)", service_id, task_id, run_id)
 
@@ -1822,6 +2151,7 @@ async def _execute_service_task(admin_id: str, service_id: str, task_id: str) ->
                                         service_id=service_id)
     ctx_token = _current_task_var.set(ctx)
     try:
+        validate_task(task, admin_id, service_id)
         cfg = task.get("task_config", {})
         conv_id = reply_to.get("conversation_id", f"sched-{task_id}")
 
@@ -1833,12 +2163,21 @@ async def _execute_service_task(admin_id: str, service_id: str, task_id: str) ->
         )
         output = result["output"]
         steps = result.get("steps", [])
-        if not result["success"]:
+        if result.get("deferred"):
+            status = "deferred"
+        elif not result["success"]:
             status = "error"
+    except asyncio.CancelledError:
+        output = "任务已取消"
+        status = "cancelled"
     except asyncio.TimeoutError:
         output = f"任务超时（>{_TASK_TIMEOUT_S}s）"
         status = "timeout"
         steps.append(_step("error", output))
+    except PermissionError as e:
+        output = str(e)
+        status = "blocked"
+        steps.append(_step("permission_denied", output))
     except Exception as e:
         output = str(e)
         status = "error"
@@ -1850,38 +2189,17 @@ async def _execute_service_task(admin_id: str, service_id: str, task_id: str) ->
     finished = datetime.now(timezone.utc)
     run_record = {
         "run_id": run_id,
+        "trigger": "manual" if manual else "scheduled",
+        "task_revision": revision,
         "started_at": started.isoformat(),
         "finished_at": finished.isoformat(),
         "status": status,
-        "output": output[:4000],
+        "output": output if durable else output[:4000],
         "steps": steps,
     }
     log.info("Service task %s/%s run %s finished: %s", service_id, task_id, run_id, status)
 
-    # Reload & persist
-    task = _load_service_task(admin_id, service_id, task_id)
-    if not task:
-        return
-    runs = task.get("runs", [])
-    runs.append(run_record)
-    task["runs"] = runs[-_MAX_RUNS_STORED:]
-    task["last_run_at"] = started.isoformat()
-    disabled_reason = _apply_post_run_schedule(task, status, finished)
-    if disabled_reason:
-        log.warning("Service task %s/%s auto-disabled: %s",
-                    service_id, task_id, disabled_reason)
-        run_record.setdefault("steps", []).append(
-            _step("error", disabled_reason))
-    _save_service_task(admin_id, service_id, task)
-    _heap_upsert("service", admin_id, task_id, task.get("next_run_at"),
-                 service_id=service_id)
-
-    try:
-        _propagate_descendant_summary("service", admin_id, service_id,
-                                      task, run_record)
-    except Exception:
-        log.exception("L3 propagate failed for service task %s/%s",
-                      service_id, task_id)
+    _finalize_execution("service", admin_id, service_id, task_id, revision, manual, run_record, task_meta)
 
 
 # ── Scheduler loop (B2: heap-driven) ──────────────────────────────────────
@@ -1901,7 +2219,7 @@ HeapEntry = tuple
 
 _heap: List[HeapEntry] = []
 _heap_index: Dict[str, float] = {}     # composite key → latest fire_epoch
-_heap_lock = asyncio.Lock()             # only used in async context
+_heap_lock = _state_lock                 # sync tools and event-loop mutations
 _heap_seq = 0                           # monotonic tiebreaker for heap stability
 _wake_event: Optional[asyncio.Event] = None
 _main_loop_ref: Optional[asyncio.AbstractEventLoop] = None
@@ -1928,6 +2246,7 @@ def _parse_next_run_epoch(next_run_iso: Optional[str]) -> Optional[float]:
         return None
 
 
+@_serialized
 def _heap_upsert(scope: Literal["admin", "service"], uid: str, task_id: str,
                  next_run_iso: Optional[str],
                  service_id: Optional[str] = None) -> None:
@@ -1960,241 +2279,266 @@ def _wake() -> None:
 
 
 class HeapScheduler:
-    """Heap-driven scheduler: O(log n) per task event, exact-time firing.
-
-    Replaces the old polling ``TaskScheduler`` (kept as alias for
-    backward-compat with ``get_scheduler()`` callers).  Public surface is
-    unchanged: ``start / stop / run_now / run_service_task_now``.
-    """
+    """One owner per data directory; all queued/running coroutines are tracked."""
 
     def __init__(self):
-        self._task: Optional[asyncio.Task] = None
-        self._running_tasks: set = set()
-        self._exec_sem: Optional[asyncio.Semaphore] = None
-
-    # ── lifecycle ────────────────────────────────────────────────────────
-
-    def start(self) -> None:
-        global _wake_event, _main_loop_ref
-        if self._task is None or self._task.done():
-            slots = scheduler_concurrency_slots()
-            self._exec_sem = asyncio.Semaphore(slots)
-            log.info(
-                "HeapScheduler capacity: at most %d task(s) executing at once "
-                "(SCHEDULER_MAX_CONCURRENT)",
-                slots,
-            )
-            _wake_event = asyncio.Event()
-            _main_loop_ref = asyncio.get_running_loop()
-            # Bootstrap the heap from disk so existing tasks are picked up
-            # immediately at server boot — without this, the first wake_event
-            # only happens when the user mutates a task.
-            self._reload_from_disk()
-            self._task = asyncio.create_task(self._loop())
-            log.info("HeapScheduler started (heap=%d, idx=%d)",
-                     len(_heap), len(_heap_index))
-
-    async def stop(self) -> None:
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        self._task = None
+        self._running_tasks = set()
+        self._handles = {}
         self._exec_sem = None
-        log.info("HeapScheduler stopped")
+        self._owner = None
+        self._loop_ref = None
+        self._stopping = False
+        self._outbox_task = None
 
-    # ── core loop ────────────────────────────────────────────────────────
+    def start(self):
+        global _wake_event, _main_loop_ref
+        if _execution_disabled() or (self._task and not self._task.done()):
+            return
+        from app.core.security import USERS_DIR
+        from app.services.scheduler_owner import SchedulerOwner
+        loop = asyncio.get_running_loop()
+        self._owner = SchedulerOwner(USERS_DIR)
+        self._stopping = False
+        self._loop_ref = loop
+        self._exec_sem = asyncio.Semaphore(scheduler_concurrency_slots())
+        _wake_event = asyncio.Event()
+        _main_loop_ref = loop
+        try:
+            execution.get_store().recover()
+            self._reload_from_disk()
+            self._task = loop.create_task(self._loop())
+            from app.execution.outbox import delivery_loop
+            self._outbox_task = loop.create_task(delivery_loop(execution.get_store()))
+            for run in execution.get_store().queued(self._capacity()):
+                self._launch_run(run)
+        except BaseException:
+            self._owner.close()
+            self._owner = None
+            raise
 
-    async def _loop(self) -> None:
+    async def stop(self):
+        with _state_lock:
+            self._stopping = True
+        if self._task:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+        if self._outbox_task:
+            self._outbox_task.cancel()
+            await asyncio.gather(self._outbox_task, return_exceptions=True)
+        # Flush submit callbacks already accepted from tool worker threads.
+        await asyncio.sleep(0)
+        handles = list(self._handles.values())
+        for task in handles:
+            task.cancel()
+        await asyncio.gather(*handles, return_exceptions=True)
+        self._handles.clear()
+        self._running_tasks.clear()
+        self._exec_sem = None
+        if self._owner:
+            self._owner.close()
+            self._owner = None
+        log.info("HeapScheduler stopped; all executions drained")
+
+    async def _loop(self):
         last_rescan = time.monotonic()
         while True:
             try:
-                # Periodic safety rescan: catches out-of-band file edits /
-                # dropped wake events / clock jumps.  Cheap (just walks tree).
-                if time.monotonic() - last_rescan > _RESCAN_INTERVAL_S:
+                if not _execution_disabled() and not self._stopping:
+                    for run in execution.get_store().queued(self._capacity()):
+                        if len(self._running_tasks) >= self._capacity():
+                            break
+                        self._launch_run(run)
+                if time.monotonic() - last_rescan >= _RESCAN_INTERVAL_S:
                     self._reload_from_disk()
                     last_rescan = time.monotonic()
-
-                wait_s = self._compute_sleep()
+                if _execution_disabled():
+                    wait_s = 1.0
+                else:
+                    wait_s = min(self._compute_sleep(), max(0, _RESCAN_INTERVAL_S - (time.monotonic() - last_rescan)))
                 if wait_s > 0:
                     try:
-                        assert _wake_event is not None
                         await asyncio.wait_for(_wake_event.wait(), timeout=wait_s)
                     except asyncio.TimeoutError:
                         pass
-                    finally:
-                        if _wake_event is not None:
-                            _wake_event.clear()
-                    continue  # re-evaluate after wake / timeout
-
-                await self._dispatch_due()
+                    _wake_event.clear()
+                else:
+                    await self._dispatch_due()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("HeapScheduler loop error; sleeping 5s")
+                log.exception("HeapScheduler loop error")
                 await asyncio.sleep(5)
 
-    def _compute_sleep(self) -> float:
-        """How long to wait before next pop attempt.
+    def _capacity(self):
+        return _env_int("SCHEDULER_MAX_PENDING", 128, minimum=1)
 
-        Returns 0 when something is immediately due, _IDLE_RESCAN_S when the
-        heap is empty.
-        """
-        # Skip stale tops without popping them yet — pop happens in dispatch.
+    @_serialized
+    def _compute_sleep(self):
+        if len(self._running_tasks) >= self._capacity():
+            return 1.0
         while _heap:
-            fire_epoch, seq, scope, uid, task_id, svc_id = _heap[0]
-            key = _heap_key(scope, uid, task_id, svc_id)
-            current = _heap_index.get(key)
-            if current is None or current != fire_epoch:
-                heapq.heappop(_heap)  # discard stale
+            fire, _, scope, uid, tid, sid = _heap[0]
+            if _heap_index.get(_heap_key(scope, uid, tid, sid)) != fire:
+                heapq.heappop(_heap)
                 continue
-            now = time.time()
-            return max(0.0, fire_epoch - now)
+            return min(float(_RESCAN_INTERVAL_S), max(0.0, fire - time.time()))
         return float(_IDLE_RESCAN_S)
 
-    async def _dispatch_due(self) -> None:
-        """Pop and dispatch every entry whose fire_epoch <= now."""
-        now = time.time()
-        while _heap:
-            fire_epoch, seq, scope, uid, task_id, svc_id = _heap[0]
-            key = _heap_key(scope, uid, task_id, svc_id)
-            current = _heap_index.get(key)
-            if current is None or current != fire_epoch:
-                heapq.heappop(_heap)  # stale, drop
-                continue
-            if fire_epoch > now:
-                return  # nothing else due
-            heapq.heappop(_heap)
-            # Remove from index BEFORE dispatch — _execute_*_task will write
-            # next_run_at again and call _heap_upsert with the new value.
-            _heap_index.pop(key, None)
-            self._fire(scope, uid, task_id, svc_id, key)
+    async def _dispatch_due(self):
+        with _state_lock:
+            while _heap and not _execution_disabled() and not self._stopping:
+                if len(self._running_tasks) >= self._capacity():
+                    return
+                fire, _, scope, uid, tid, sid = _heap[0]
+                key = _heap_key(scope, uid, tid, sid)
+                if _heap_index.get(key) != fire:
+                    heapq.heappop(_heap)
+                    continue
+                if fire > time.time():
+                    return
+                heapq.heappop(_heap)
+                _heap_index.pop(key, None)
+                self._fire(scope, uid, tid, sid, key)
 
-    def _fire(self, scope: str, uid: str, task_id: str,
-              service_id: Optional[str], key: str) -> None:
-        if key in self._running_tasks:
-            log.warning("HeapScheduler: %s already running, skipping fire", key)
-            return
-        self._running_tasks.add(key)
-        if scope == "admin":
-            coro = self._run_and_cleanup(key, uid, task_id)
-        else:
-            coro = self._run_service_and_cleanup(key, uid, service_id, task_id)
-        asyncio.create_task(coro)
+    def _fire(self, scope, uid, task_id, service_id, key):
+        accepted = self._submit(scope, uid, task_id, service_id, manual=False)
+        if not accepted:
+            _heap_upsert(scope, uid, task_id, (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat(), service_id)
+        return accepted
 
-    # ── disk bootstrap / safety rescan ───────────────────────────────────
-
-    def _reload_from_disk(self) -> None:
-        """Walk every user's task tree and re-insert enabled tasks into heap.
-
-        Called at startup and every _RESCAN_INTERVAL_S as a safety net.
-        Idempotent: re-inserts produce a fresh heap entry; old entries are
-        lazily dropped via the index check.
-        """
+    @_serialized
+    def _reload_from_disk(self):
         from app.core.security import USERS_DIR
+        # Rebuild, rather than only upserting: remove disk-deleted/disabled tasks.
+        _heap.clear()
+        _heap_index.clear()
+        st.invalidate_path_cache()
         if not os.path.isdir(USERS_DIR):
             return
-        loaded = 0
         for uid in os.listdir(USERS_DIR):
             udir = os.path.join(USERS_DIR, uid)
-            if not os.path.isdir(udir):
+            if uid.startswith(".") or not os.path.isdir(udir):
                 continue
-            try:
-                for t in st.list_all_tasks_flat("admin", uid, include_runs=False):
-                    if t.get("enabled") and t.get("next_run_at"):
-                        _heap_upsert("admin", uid, t["id"], t["next_run_at"])
-                        loaded += 1
-            except Exception:
-                log.exception("rescan: admin uid=%s failed", uid)
-
-            services_dir = os.path.join(udir, "services")
-            if not os.path.isdir(services_dir):
-                continue
-            for svc_id in os.listdir(services_dir):
+            scopes = [("admin", None)]
+            services = os.path.join(udir, "services")
+            if os.path.isdir(services):
+                scopes.extend(("service", sid) for sid in os.listdir(services))
+            for scope, sid in scopes:
                 try:
-                    for t in st.list_all_tasks_flat("service", uid, svc_id,
-                                                    include_runs=False):
-                        if t.get("enabled") and t.get("next_run_at"):
-                            _heap_upsert("service", uid, t["id"],
-                                         t["next_run_at"], service_id=svc_id)
-                            loaded += 1
+                    for task in st.list_all_tasks_flat(scope, uid, sid):
+                        task = execution.overlay(scope, uid, sid, task)
+                        if task.get("enabled") and task.get("next_run_at"):
+                            _heap_upsert(scope, uid, task["id"], task["next_run_at"], sid)
                 except Exception:
-                    log.exception("rescan: service %s/%s failed", uid, svc_id)
-        log.debug("HeapScheduler rescan: indexed %d tasks", loaded)
+                    log.exception("Scheduler rescan failed: %s/%s/%s", scope, uid, sid)
 
-    # ── run wrappers ─────────────────────────────────────────────────────
-
-    async def _run_and_cleanup(self, key: str, user_id: str, task_id: str) -> None:
-        sem = self._exec_sem
-        if sem is None:
-            sem = asyncio.Semaphore(scheduler_concurrency_slots())
-            self._exec_sem = sem
-            log.warning(
-                "HeapScheduler: exec semaphore lazily initialized — "
-                "call start() before run_now when possible",
-            )
+    async def _run_checked(self, key, scope, uid, sid, tid, run):
+        snapshot, manual = run['snapshot'], run['trigger'] == 'manual'
+        store = execution.get_store()
+        claimed = None
+        token = None
         try:
-            async with sem:
-                await _execute_task(user_id, task_id)
+            async with self._exec_sem:
+                with _state_lock:
+                    current = execution.load_task(scope, uid, tid, sid)
+                    valid = (current and not self._stopping and not _execution_disabled()
+                             and not current.get('recovery_required')
+                             and current.get('revision', 0) == snapshot.get('revision', 0)
+                             and (manual or (current.get('enabled') and current.get('next_run_at') == snapshot.get('next_run_at'))))
+                    if not valid:
+                        store.request_cancel(run['id'], uid)
+                        return
+                    claimed = store.claim(run['id'])
+                if not claimed:
+                    return
+                token = execution._current.set(execution.ExecutionContext(store, claimed))
+                if scope == 'admin':
+                    if manual:
+                        await _execute_task(uid, tid, manual=True)
+                    else:
+                        await _execute_task(uid, tid)
+                else:
+                    if manual:
+                        await _execute_service_task(uid, sid, tid, manual=True)
+                    else:
+                        await _execute_service_task(uid, sid, tid)
+        except asyncio.CancelledError:
+            # Queued work survives clean shutdown. Active work acknowledges only after drain.
+            if claimed and store.get(run['id'])['status'] in ('running', 'cancel_requested'):
+                store.finish(run['id'], claimed['token'], {'run_id': run['id'], 'status': 'cancelled', 'output': 'Cancelled before execution completed', 'steps': []})
+            raise
+        except Exception:
+            log.exception('Execution adapter failed: %s', run['id'])
+            if claimed:
+                store.interrupt(run['id'], claimed['token'], 'Execution adapter failed; review effects before retrying')
         finally:
-            self._running_tasks.discard(key)
+            if token is not None:
+                execution._current.reset(token)
+            with _state_lock:
+                current = execution.load_task(scope, uid, tid, sid)
+                if current and current.get('enabled') and not current.get('recovery_required'):
+                    _heap_upsert(scope, uid, tid, current.get('next_run_at'), sid)
+            _wake()
 
-    async def _run_service_and_cleanup(self, key: str, admin_id: str,
-                                       service_id: str, task_id: str) -> None:
-        sem = self._exec_sem
-        if sem is None:
-            sem = asyncio.Semaphore(scheduler_concurrency_slots())
-            self._exec_sem = sem
-            log.warning(
-                "HeapScheduler: exec semaphore lazily initialized — "
-                "call start() before run_now when possible",
-            )
-        try:
-            async with sem:
-                await _execute_service_task(admin_id, service_id, task_id)
-        finally:
-            self._running_tasks.discard(key)
-
-    # ── manual trigger (run-now) ─────────────────────────────────────────
-
-    def _schedule_coro(self, key: str, coro) -> bool:
-        """Schedule a coroutine on the event loop, thread-safe.
-
-        Works both from async context (main thread) and from sync tools
-        running in a thread pool.
-        """
-        if key in self._running_tasks:
-            log.info("run_now: %s already running, ignoring duplicate trigger", key)
-            coro.close()  # avoid 'coroutine was never awaited'
-            return False
+    def _launch_run(self, run):
+        scope, uid, sid, tid = json.loads(run['task_key'])
+        key = _heap_key(scope, uid, tid, sid)
+        if key in self._running_tasks or run['status'] != 'queued':
+            return
         self._running_tasks.add(key)
+        def launch():
+            if self._stopping:
+                self._running_tasks.discard(key)
+                return
+            handle = self._loop_ref.create_task(self._run_checked(key, scope, uid, sid, tid, run))
+            self._handles[key] = handle
+            def done(future):
+                if self._handles.get(key) is future:
+                    self._handles.pop(key, None)
+                    self._running_tasks.discard(key)
+                    _wake()
+                if not future.cancelled() and future.exception():
+                    log.error('Scheduled execution failed: %s', key, exc_info=future.exception())
+            handle.add_done_callback(done)
+        self._loop_ref.call_soon_threadsafe(launch)
+
+    @_serialized
+    def submit_run(self, scope, uid, tid, sid=None, *, manual=True, request_id=None):
+        if (_execution_disabled() or self._stopping or self._owner is None
+                or self._loop_ref is None or not self._loop_ref.is_running()):
+            raise Conflict('Scheduler is not accepting runs')
+        snapshot = execution.load_task(scope, uid, tid, sid)
+        if not snapshot or (not manual and not snapshot.get('enabled')):
+            raise Conflict('Task is missing or disabled')
+        from app.execution.grants import capture
+        snapshot = {**snapshot, 'execution_grant': capture(snapshot, uid, sid)}
+        run = execution.get_store().submit(task_key(scope, uid, sid, tid), uid, snapshot,
+            manual=manual, request_id=request_id, max_pending=self._capacity())
+        self._launch_run(run)
+        return run
+
+    def _submit(self, scope, uid, tid, sid=None, *, manual):
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(coro)
+            self.submit_run(scope, uid, tid, sid, manual=manual)
             return True
-        except RuntimeError:
-            pass
-        from app.services.inbox import _main_loop
-        if _main_loop is not None and _main_loop.is_running():
-            asyncio.run_coroutine_threadsafe(coro, _main_loop)
-            return True
-        self._running_tasks.discard(key)
-        coro.close()
-        log.warning("Cannot schedule task %s: no event loop available", key)
-        return False
+        except Conflict:
+            return False
 
-    def run_now(self, user_id: str, task_id: str) -> bool:
-        """Trigger an admin task immediately (thread-safe)."""
-        key = _heap_key("admin", user_id, task_id)
-        return self._schedule_coro(key, self._run_and_cleanup(key, user_id, task_id))
+    def cancel_run(self, rid, uid):
+        row = execution.get_store().request_cancel(rid, uid)
+        if row and row['status'] == 'cancel_requested':
+            scope, owner, sid, tid = json.loads(row['task_key'])
+            handle = self._handles.get(_heap_key(scope, owner, tid, sid))
+            if handle:
+                self._loop_ref.call_soon_threadsafe(handle.cancel)
+        return row
 
-    def run_service_task_now(self, admin_id: str, service_id: str, task_id: str) -> bool:
-        """Trigger a service task immediately (thread-safe)."""
-        key = _heap_key("service", admin_id, task_id, service_id)
-        return self._schedule_coro(
-            key, self._run_service_and_cleanup(key, admin_id, service_id, task_id)
-        )
+    def run_now(self, user_id, task_id):
+        return self._submit("admin", user_id, task_id, manual=True)
+
+    def run_service_task_now(self, admin_id, service_id, task_id):
+        return self._submit("service", admin_id, task_id, service_id, manual=True)
 
 
 # Backward-compat alias — older code may still import TaskScheduler by name

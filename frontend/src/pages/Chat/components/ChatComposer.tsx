@@ -49,12 +49,12 @@ export default function ChatComposer({ input, attachments, tools, model, hint, o
           {onStop && <Tooltip title={t('chat.stopGeneration')}><Button danger type="primary"
             icon={<Stop size={18} weight="fill" />} aria-label={t('chat.stopGeneration')}
             onClick={onStop} disabled={stopDisabled} /></Tooltip>}
-          <Tooltip title={t('chat.sendMessage')}><Button type="primary"
+          <Tooltip title={t('chat.composeHint')}><Button type="primary"
             icon={<PaperPlaneRight size={18} weight="fill" />} aria-label={t('chat.sendMessage')}
             onClick={onSend} disabled={sendDisabled} loading={sending} /></Tooltip>
         </div>
       </div>
     </div>
-    <div className={styles.composerHint}>{hint ?? t('chat.composeHint')}</div>
+    {hint && <div className={styles.composerHint}>{hint}</div>}
   </div>;
 }

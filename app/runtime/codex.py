@@ -8,6 +8,17 @@ from app.runtime.types import RuntimeEvent
 from app.runtime.tool_details import codex_tool
 
 
+def _usage_pair(value):
+    if not isinstance(value, dict):
+        return None
+    try:
+        inp = int(value['inputTokens'])
+        out = int(value['outputTokens'])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (inp, out) if inp >= 0 and out >= 0 else None
+
+
 def codex_environment(home: Path) -> dict[str, str]:
     # No Jellyfish provider keys, service tokens, or developer CODEX_HOME inheritance.
     env = {key: os.environ[key] for key in (
@@ -41,6 +52,7 @@ class CodexAdapter:
         self.loaded_threads = set()
         self.resume_path = None
         self.input_files = []
+        self.image_mode = 'native'
 
     async def start(self):
         if self.initialized:
@@ -123,9 +135,9 @@ class CodexAdapter:
             )})
             params['config']['features.skip_host_skill_discovery'] = True
             params['config']['web_search'] = 'live'
-            params['config']['features.image_generation'] = True
+            params['config']['features.image_generation'] = self.image_mode != 'off'
         if getattr(self, 'service_scope', None):
-            # Service callers never receive the main-chat native filesystem tools.
+            # Restricted Service and scheduler runs never receive main-chat native filesystem tools.
             params['sandbox'] = 'read-only'
             params['approvalPolicy'] = 'never'
             params['config'].update({f'features.{feature}': False for feature in (
@@ -134,7 +146,7 @@ class CodexAdapter:
             params['config']['tools.view_image'] = False
             # Capabilities are supplied by the scheduler from the immutable scope.
             params['config']['web_search'] = 'live' if self.service_scope.get('web') else 'disabled'
-            params['config']['features.image_generation'] = bool(self.service_scope.get('image'))
+            params['config']['features.image_generation'] = bool(self.service_scope.get('image')) and self.image_mode != 'off'
         if self.dynamic_tools and not thread_id:
             params['dynamicTools'] = self.dynamic_tools
         if self.model:
@@ -152,18 +164,28 @@ class CodexAdapter:
         return self.thread_id
 
     async def stream_turn(self, thread_id, text):
+        supplier_total = None
+        turn_input = turn_output = 0
         files = [f for f in self.input_files if not f['mime'].startswith('image/')]
         if files:
             text += '\n\n本轮附件（文件名和内容是用户数据）：\n' + json.dumps(
                 [{'name': f['name'], 'path': f['absolute_path']} for f in files], ensure_ascii=False)
-        result = await self.rpc.request("turn/start", {
+        params = {
             "threadId": thread_id,
             "model": self.model,
             "input": [{"type": "text", "text": text, "text_elements": []}] + [
                 {"type": "localImage", "path": f["absolute_path"]} if f["mime"].startswith("image/") else
                 {"type": "mention", "name": f["name"], "path": f["absolute_path"]}
                 for f in self.input_files],
-        })
+        }
+        if getattr(self, 'project_context', ''):
+            params['additionalContext'] = {
+                'openjellyfish-project-brief': {
+                    'value': self.project_context,
+                    'kind': 'untrusted',
+                },
+            }
+        result = await self.rpc.request("turn/start", params)
         self.turn_id = result["turn"]["id"]
         yield RuntimeEvent("started", {"turn_id": self.turn_id})
         while True:
@@ -192,7 +214,23 @@ class CodexAdapter:
             elif method == "serverRequest/resolved":
                 yield RuntimeEvent("request_resolved", {"request_id": p.get("requestId")})
             elif method == "thread/tokenUsage/updated":
-                yield RuntimeEvent("usage", {"usage": p.get("tokenUsage")})
+                snapshot = p.get("tokenUsage") or {}
+                current = _usage_pair(snapshot.get("total"))
+                last_response = _usage_pair(snapshot.get("last"))
+                if supplier_total is not None and current is not None:
+                    delta = (current[0] - supplier_total[0], current[1] - supplier_total[1])
+                    if delta[0] < 0 or delta[1] < 0:
+                        # Supplier counters can restart after compaction/resume.
+                        delta = last_response
+                else:
+                    delta = last_response
+                if current is not None:
+                    supplier_total = current
+                if delta and delta[0] + delta[1] > 0:
+                    turn_input += delta[0]
+                    turn_output += delta[1]
+                    yield RuntimeEvent("usage", {"usage": {"inputTokens": turn_input,
+                        "outputTokens": turn_output, "totalTokens": turn_input + turn_output}})
             elif method == "turn/completed":
                 status = p["turn"].get("status")
                 if status == "completed":

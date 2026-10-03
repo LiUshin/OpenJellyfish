@@ -1,9 +1,10 @@
 import { Button, Tooltip } from 'antd';
 import { FolderOpen } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
+import { useLocation } from 'react-router-dom';
 import SplitToggle from './SplitToggle';
 import { useFileWorkspace } from '../stores/fileWorkspaceContext';
-import { useIsMobile } from '../hooks/useMediaQuery';
+import { useIsMobile, useMediaQuery } from '../hooks/useMediaQuery';
 
 export default function HeaderControls() {
   const {
@@ -14,12 +15,14 @@ export default function HeaderControls() {
     setFileBrowserOpen,
   } = useFileWorkspace();
   const isMobile = useIsMobile();
+  const isCompact = useMediaQuery('(max-width: 1199px)');
+  const isChatRoute = useLocation().pathname === '/';
   const { t } = useTranslation();
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
       {/* Split toggle只在桌面端有意义：移动端文件预览本身就是全屏 Drawer */}
-      {!!editingFile && !isMobile && (
+      {!!editingFile && !isMobile && !isCompact && isChatRoute && (
         <>
           <SplitToggle value={splitMode} onChange={setSplitMode} />
           <div style={{

@@ -5,19 +5,22 @@ Supported fixture controls: /__fixture/reset, /__fixture/fail-next-conversation.
 """
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import os
 from urllib.parse import urlparse, parse_qs
 import json
 from email.parser import BytesParser
 from email.policy import default
 import time
 import uuid
+from datetime import date
 
 DIST = Path(__file__).resolve().parents[2] / 'frontend' / 'dist'
 DOCUMENT = '# 客户服务指南\n\n## 回答之前\n先确认用户的问题与适用范围，引用文档中的依据。\n\n## 交付标准\n- 清楚说明结论\n- 标出不确定的部分\n- 给出可执行的下一步\n'
 FILES = {'/客户服务指南.md': DOCUMENT, '/交付检查清单.md': '# 交付检查清单\n\n- [x] 文档已准备\n- [ ] 验证回答\n- [ ] 检查服务访问范围\n'}
 CONVS = [{'id': 'fixture-guide', 'title': '把服务经验整理成可复用的文档', 'created_at': '2026-09-19T09:00:00', 'updated_at': '2026-09-19T09:05:00', 'message_count': 2}, {'id': 'fixture-long', 'title': '发布前检查：知识文档、回答依据与交付边界的完整核对', 'created_at': '2026-09-18T09:00:00', 'updated_at': '2026-09-18T09:05:00', 'message_count': 2}]
 MESSAGES = {c['id']: [{'role': 'user', 'content': '请帮我整理客户服务文档，并说明下一步如何验证。'}, {'role': 'assistant', 'content': '## 文档已经准备好\n\n我将服务经验分成了**回答规则、知识依据和交付标准**。\n\n你可以打开 [客户服务指南.md](/客户服务指南.md) 继续编辑，然后用一个真实问题检查回答是否有依据。\n\n### 建议的下一步\n1. 补充一个常见问题。\n2. 对照原文核对答案。\n3. 确认访问范围后再交付。\n\n> 此处是离线 UI 测试数据，没有调用模型。'}] for c in CONVS}
-STATE = {'fail_next': False, 'language': 'zh', 'no_model': False, 'fail_path': '', 'fail_write': False, 'tz_offset_hours': 8, 'rules': '回答使用中文，先给结论，再说明依据。\n涉及客户资料时，先确认使用范围。', 'agent_notes': '偏好简洁的结构化交付。', 'agent_locked': False}
+STATE = {'fail_next': False, 'language': 'zh', 'no_model': False, 'fail_path': '', 'fail_write': False, 'usage_sample': False, 'service_test_fixture': False, 'tz_offset_hours': 8, 'rules': '回答使用中文，先给结论，再说明依据。\n涉及客户资料时，先确认使用范围。', 'agent_notes': '偏好简洁的结构化交付。', 'agent_locked': False}
+TEST_SERVICE = {'id': 'fixture-service', 'name': '客户服务演示', 'model': 'fixture', 'published': False, 'runtime_choice': {'runtime': 'deepagents'}}
 
 VOICE = {'enabled': True, 'greeting': '你好，我是 Jellyfish。', 'system_prompt': '保持简洁、自然，先确认需求。', 'routing_policy': '文档与复杂任务交给后台处理。', 'fillers': {'delegating': ['我来查一下资料。'], 'tool_running': ['正在处理。'], 'long_task': ['还在处理，请稍等。']}, 'interruption': {'allow_interruptions': True, 'min_interruption_words': 2}, 'providers': {'stt': 'openai', 'stt_model': 'gpt-4o-mini-transcribe', 'llm_model': 'fixture', 'tts': 'openai', 'tts_model': 'gpt-4o-mini-tts', 'tts_voice': 'alloy'}}
 
@@ -55,12 +58,34 @@ class Handler(SimpleHTTPRequestHandler):
         if p == '/__fixture/fail-save':
             STATE['fail_write'] = True
             return self.send_json({'fixture': True})
+        if p == '/__fixture/usage-sample':
+            STATE['usage_sample'] = True
+            return self.send_json({'fixture': True})
+        if p == '/__fixture/service-test':
+            STATE['service_test_fixture'] = True
+            return self.send_json({'fixture': True})
         if p == '/__fixture/reset':
-            STATE.update(fail_next=False, no_model=False, fail_path='', fail_write=False)
+            STATE.update(fail_next=False, no_model=False, fail_path='', fail_write=False, usage_sample=False, service_test_fixture=False)
             return self.send_json({'fixture': True})
         if STATE['fail_path'] and p == STATE['fail_path']:
             STATE['fail_path'] = ''
             return self.send_json({'detail': 'Offline fixture: temporary settings failure'}, 503)
+        if p == '/api/usage/summary' and STATE['usage_sample']:
+            row = lambda name, calls, inp, out: {'name': name, 'calls': calls, 'input_tokens': inp,
+                                                  'output_tokens': out, 'total_tokens': inp + out}
+            return self.send_json({
+                'total': {'calls': 3, 'input_tokens': 240, 'output_tokens': 60, 'total_tokens': 300},
+                'months_scanned': 3,
+                'by_core': [row('codex', 2, 160, 40), row('deepagents', 1, 80, 20)],
+                'by_model': [row('codex:gpt-5', 2, 160, 40), row('openai:gpt-4.1', 1, 80, 20)],
+                'by_service': [row('主链路（Admin）', 3, 240, 60)],
+                'by_key': [row('—（无 Key）', 3, 240, 60)],
+                'by_provider': [row('codex', 2, 160, 40), row('openai', 1, 80, 20)],
+                'by_channel': [row('web', 2, 200, 50), row('wechat', 1, 40, 10)],
+                'by_day': [row(date.today().isoformat(), 3, 240, 60)],
+                'coverage': {'unreported_runs': 1, 'unreported_by_core': {'cursor': 1},
+                             'runtime_read_error': False},
+            })
         routes = {
             '/api/runtime/capabilities': {'enabled': False, 'available': False, 'can_manage_connections': False, 'reason': 'Offline fixture', 'access_mode': 'disabled', 'execution_backend': 'local'},
             '/api/runtime/profiles': [], '/api/runtime/preferences': {'runtime': 'deepagents'},
@@ -71,6 +96,7 @@ class Handler(SimpleHTTPRequestHandler):
             '/api/models': {'models': [] if STATE['no_model'] else [{'id': 'fixture', 'name': '离线预览 · 无模型调用', 'provider': 'openai'}], 'default': '' if STATE['no_model'] else 'fixture'},
             '/api/chat/streaming-status': {'streaming': [], 'interrupted': []},
             '/api/conversations': CONVS,
+            '/api/projects': [],
             '/api/workspace/locks': {'processes': []},
             '/api/inbox/unread-count': {'count': 0},
             '/api/user-profile': {'profile': {'name': 'UI Review', 'custom_notes': STATE['rules']}},
@@ -88,7 +114,7 @@ class Handler(SimpleHTTPRequestHandler):
             '/api/settings/aggregators/siliconflow/enabled-models': {'models': []},
             '/api/settings/aggregators/openrouter/remote-models': {'data': []},
             '/api/settings/aggregators/siliconflow/remote-models': {'data': []},
-            '/api/services': [], '/api/subagents': {'subagents': [{'id': 'review-assistant', 'name': '交付检查助手', 'description': '检查文档是否包含结论、依据与下一步。此条为离线预览数据。', 'system_prompt': '检查交付完整性。', 'tools': ['read_file'], 'enabled': True}, {'id': 'research-assistant', 'name': '资料整理助手', 'description': '把已有资料整理成可复用的结构。', 'system_prompt': '整理资料。', 'tools': [], 'enabled': False}], 'available_tools': ['read_file']},
+            '/api/services': [TEST_SERVICE] if STATE['service_test_fixture'] else [], '/api/subagents': {'subagents': [{'id': 'review-assistant', 'name': '交付检查助手', 'description': '检查文档是否包含结论、依据与下一步。此条为离线预览数据。', 'system_prompt': '检查交付完整性。', 'tools': ['read_file'], 'enabled': True}, {'id': 'research-assistant', 'name': '资料整理助手', 'description': '把已有资料整理成可复用的结构。', 'system_prompt': '整理资料。', 'tools': [], 'enabled': False}], 'available_tools': ['read_file']},
             '/api/settings/api-keys': {}, '/api/models/visibility': {'models': [], 'hidden': []},
         }
         if p.startswith(('/api/conversations/', '/api/v1/conversations/')):
@@ -124,7 +150,7 @@ class Handler(SimpleHTTPRequestHandler):
         if p in ('/api/auth/login' , '/api/auth/register'):
             return self.send_json({'token': 'offline-ui-fixture', 'user_id': 'ui-review', 'username': data.get('username', 'UI Review')})
         if p in ('/api/conversations', '/api/v1/conversations'):
-            conv = {'id': 'fixture-' + uuid.uuid4().hex[:8], 'title': data.get('title') or '新对话', 'created_at': '2026-09-19T10:00:00', 'updated_at': '2026-09-19T10:00:00'}
+            conv = {'id': 'fixture-' + uuid.uuid4().hex[:8], 'title': data.get('title') or '新对话', 'created_at': '2026-09-19T10:00:00', 'updated_at': '2026-09-19T10:00:00', 'test_service_id': None}
             CONVS.insert(0, conv)
             MESSAGES[conv['id']] = []
             return self.send_json(conv)
@@ -133,18 +159,20 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({'success': True})
         if p in ('/api/chat', '/api/v1/chat'):
             cid = data['conversation_id']
-            MESSAGES.setdefault(cid, []).append({'role': 'user', 'content': str(data['message'])})
+            conv = next((c for c in CONVS if c['id'] == cid), None)
+            sid = conv.get('test_service_id') if conv else None
+            MESSAGES.setdefault(cid, []).append({'role': 'user', 'content': str(data['message']), **({'test_service_id': sid} if sid else {})})
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
             self.end_headers()
-            answer = '这是离线预览回复。\n\n打开 **客户服务指南.md**，可以核对和编辑文档。此流程用于验证界面与 API 协议，不代表真实模型结果。'
+            answer = ('这是客户服务演示的离线测试回复。\n\n只验证测试模式的界面和切换，不代表真实 Service 推理。' if sid else '这是离线预览回复。\n\n打开 **客户服务指南.md**，可以核对和编辑文档。此流程用于验证界面与 API 协议，不代表真实模型结果。')
             try:
                 for token in [answer[i:i+5] for i in range(0, len(answer), 5)]:
                     self.wfile.write(('data: ' + json.dumps({'type': 'token', 'content': token}, ensure_ascii=False) + '\n\n').encode())
                     self.wfile.flush()
                     time.sleep(0.18)
-                MESSAGES[cid].append({'role': 'assistant', 'content': answer})
+                MESSAGES[cid].append({'role': 'assistant', 'content': answer, **({'test_service_id': sid} if sid else {})})
                 self.wfile.write(b'data: {"type":"done"}\n\n')
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -174,6 +202,21 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(data)
         return self.send_json({'detail': 'Unsupported fixture write'}, 404)
 
+    def do_PATCH(self):
+        p = urlparse(self.path).path
+        data = self.body()
+        if p.startswith('/api/conversations/') and p.endswith('/test-mode'):
+            cid = p.split('/')[3]
+            conv = next((c for c in CONVS if c['id'] == cid), None)
+            if not conv:
+                return self.send_json({'detail': '对话不存在'}, 404)
+            sid = data.get('service_id')
+            if sid is not None and (not STATE['service_test_fixture'] or sid != TEST_SERVICE['id']):
+                return self.send_json({'detail': 'Service 不存在'}, 404)
+            conv['test_service_id'] = sid
+            return self.send_json(conv)
+        return self.send_json({'detail': 'Unsupported fixture write'}, 404)
+
     def do_DELETE(self):
         p = urlparse(self.path).path
         if p.startswith(('/api/conversations/', '/api/v1/conversations/')):
@@ -184,5 +227,6 @@ class Handler(SimpleHTTPRequestHandler):
         return self.send_json({'detail': 'Unsupported fixture write'}, 404)
 
 if __name__ == '__main__':
-    print('OFFLINE UI FIXTURE — http://127.0.0.1:8767 — no real credentials or models', flush=True)
-    ThreadingHTTPServer(('127.0.0.1', 8767), Handler).serve_forever()
+    preview_port = int(os.environ.get('JELLYFISH_UI_PREVIEW_PORT', '8767'))
+    print(f'OFFLINE UI FIXTURE — http://127.0.0.1:{preview_port} — no real credentials or models', flush=True)
+    ThreadingHTTPServer(('127.0.0.1', preview_port), Handler).serve_forever()

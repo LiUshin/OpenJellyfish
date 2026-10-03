@@ -3,8 +3,9 @@
 import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Header
 from pydantic import BaseModel
+from functools import wraps
 
 from app.deps import get_current_user
 from app.services.scheduler import (
@@ -14,10 +15,26 @@ from app.services.scheduler import (
     update_service_task, delete_service_task, get_service_task_runs,
     list_all_service_tasks,
 )
+from app.execution.context import get_store, overlay
+from app.execution.store import Conflict
 from app.services import scheduler_tree as _st
 from app.services import spawn_limits as _sl
 
 router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
+
+
+def _validation_errors(fn):
+    @wraps(fn)
+    async def call(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except Conflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return call
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────
@@ -68,6 +85,73 @@ class UpdateServiceTaskRequest(BaseModel):
     tz_offset_hours: Optional[float] = None
 
 
+# Runtime identifiers are scoped to the authenticated owner; no fencing tokens or credentials leave this API.
+def _public_run(row):
+    return {k: v for k, v in row.items() if k not in ('token', 'snapshot', 'task_key', 'uid')}
+
+
+@router.get('/runs/{run_id}')
+async def api_run_detail(run_id: str, user=Depends(get_current_user)):
+    row = get_store().get(run_id, user['user_id'])
+    if not row:
+        raise HTTPException(404, 'Run not found')
+    return {**_public_run(row), 'effects': get_store().effects(run_id, user['user_id']), 'deliveries': [
+        {k: d[k] for k in ('id', 'channel', 'status', 'attempt', 'error')}
+        for d in get_store().deliveries(run_id, user['user_id'])]}
+
+
+@router.get('/runs/{run_id}/events')
+async def api_run_events(run_id: str, after: int = Query(0, ge=0), user=Depends(get_current_user)):
+    if not get_store().get(run_id, user['user_id']):
+        raise HTTPException(404, 'Run not found')
+    return get_store().events(run_id, user['user_id'], after)
+
+
+@router.post('/runs/{run_id}/cancel')
+async def api_cancel_run(run_id: str, user=Depends(get_current_user)):
+    row = get_scheduler().cancel_run(run_id, user['user_id'])
+    if not row:
+        raise HTTPException(404, 'Run not found')
+    return _public_run(row)
+
+
+class RecoveryReview(BaseModel):
+    confirmed_stopped_and_effects_reviewed: bool
+    note: str
+
+
+@router.post('/runs/{run_id}/resolve-recovery')
+@_validation_errors
+async def api_resolve_recovery(run_id: str, req: RecoveryReview, user=Depends(get_current_user)):
+    row = get_store().get(run_id, user['user_id'])
+    if not row:
+        raise HTTPException(404, 'Run not found')
+    if row['status'] != 'interrupted' or not req.confirmed_stopped_and_effects_reviewed:
+        raise Conflict('Explicit confirmation of executor exit and reviewed effects is required')
+    if not req.note.strip():
+        raise ValueError('A recovery review note is required')
+    latest = get_store().list_runs(row['task_key'], 1)
+    if not latest or latest[0]['id'] != run_id:
+        raise Conflict('Only the latest interrupted run can be reviewed')
+    import json
+    scope, uid, sid, tid = json.loads(row['task_key'])
+    with _st.TASK_STORAGE_LOCK:
+        if scope == 'admin':
+            update_task(uid, tid, {'enabled': False})
+        else:
+            update_service_task(uid, sid, tid, {'enabled': False})
+        get_store().resolve_recovery(row['task_key'], user['user_id'], req.note, run_id)
+    # Resolving uncertainty never immediately starts another run. Editing/re-enabling the task is explicit.
+    return {'success': True}
+
+
+@router.post('/deliveries/{delivery_id}/retry')
+@_validation_errors
+async def api_retry_delivery(delivery_id: str, user=Depends(get_current_user)):
+    get_store().retry_delivery(delivery_id, user['user_id'])
+    return {'success': True}
+
+
 # ── Admin task endpoints ──────────────────────────────────────────────────
 
 @router.get("")
@@ -86,6 +170,7 @@ async def api_list_tasks(
 
 
 @router.post("")
+@_validation_errors
 async def api_create_task(req: CreateTaskRequest, user=Depends(get_current_user)):
     task = create_task(user["user_id"], req.dict())
     return task
@@ -126,6 +211,7 @@ async def api_list_service_tasks(
 
 
 @router.post("/services/{service_id}")
+@_validation_errors
 async def api_create_service_task(
     service_id: str, req: CreateServiceTaskRequest, user=Depends(get_current_user)
 ):
@@ -144,11 +230,13 @@ async def api_get_service_task(
 
 
 @router.put("/services/{service_id}/{task_id}")
+@_validation_errors
 async def api_update_service_task(
     service_id: str, task_id: str, req: UpdateServiceTaskRequest,
     user=Depends(get_current_user),
 ):
-    updates = {k: v for k, v in req.dict().items() if v is not None}
+    updates = {k: v for k, v in req.dict(exclude_unset=True).items()
+               if v is not None or k == "reply_to"}
     task = update_service_task(user["user_id"], service_id, task_id, updates)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -175,14 +263,14 @@ async def api_get_service_task_runs(
 
 
 @router.post("/services/{service_id}/{task_id}/run-now")
-async def api_run_service_task_now(
-    service_id: str, task_id: str, user=Depends(get_current_user)
-):
-    task = get_service_task(user["user_id"], service_id, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    get_scheduler().run_service_task_now(user["user_id"], service_id, task_id)
-    return {"success": True, "message": "任务已触发，稍后可在运行记录中查看结果"}
+@_validation_errors
+async def api_run_service_task_now(service_id: str, task_id: str, user=Depends(get_current_user),
+                                   request_id: Optional[str] = Header(None, alias='Idempotency-Key')):
+    if not get_service_task(user['user_id'], service_id, task_id):
+        raise HTTPException(404, '任务不存在')
+    row = get_scheduler().submit_run('service', user['user_id'], task_id, service_id,
+                                    request_id=request_id if isinstance(request_id, str) else None)
+    return {'success': True, 'run_id': row['id'], 'status': row['status']}
 
 
 # ── Admin task detail endpoints (/{task_id} catch-all, must be last) ──────
@@ -196,8 +284,10 @@ async def api_get_task(task_id: str, user=Depends(get_current_user)):
 
 
 @router.put("/{task_id}")
+@_validation_errors
 async def api_update_task(task_id: str, req: UpdateTaskRequest, user=Depends(get_current_user)):
-    updates = {k: v for k, v in req.dict().items() if v is not None}
+    updates = {k: v for k, v in req.dict(exclude_unset=True).items()
+               if v is not None or k == "reply_to"}
     task = update_task(user["user_id"], task_id, updates)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -220,13 +310,14 @@ async def api_get_runs(task_id: str, user=Depends(get_current_user)):
 
 
 @router.post("/{task_id}/run-now")
-async def api_run_now(task_id: str, user=Depends(get_current_user)):
-    """Trigger a task immediately regardless of schedule."""
-    task = get_task(user["user_id"], task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    get_scheduler().run_now(user["user_id"], task_id)
-    return {"success": True, "message": "任务已触发，稍后可在运行记录中查看结果"}
+@_validation_errors
+async def api_run_now(task_id: str, user=Depends(get_current_user),
+                      request_id: Optional[str] = Header(None, alias='Idempotency-Key')):
+    if not get_task(user['user_id'], task_id):
+        raise HTTPException(404, '任务不存在')
+    row = get_scheduler().submit_run('admin', user['user_id'], task_id,
+                                    request_id=request_id if isinstance(request_id, str) else None)
+    return {'success': True, 'run_id': row['id'], 'status': row['status']}
 
 
 # ── v2 spawn-tree endpoints ───────────────────────────────────────────────
@@ -252,6 +343,11 @@ async def api_admin_task_tree(
                          max_depth=max_depth)
     if not tree:
         raise HTTPException(status_code=404, detail="任务不存在")
+    def refresh(node):
+        node['meta'] = overlay('service' if node['meta'].get('service_id') else 'admin', user['user_id'], node['meta'].get('service_id'), node['meta'])
+        for child in node.get('children', []):
+            refresh(child)
+    refresh(tree)
     return tree
 
 
@@ -267,7 +363,7 @@ async def api_admin_task_children(task_id: str, user=Depends(get_current_user)):
         if m:
             # Drop heavy `runs` for list payload; clients fetch /runs separately
             m = {k: v for k, v in m.items() if k != "runs"}
-            m["run_count"] = len((_st.load_task_meta(sub) or {}).get("runs", []))
+            m["run_count"] = m.get("run_count", len((_st.load_task_meta(sub) or {}).get("runs", [])))
             children.append(m)
     children.sort(key=lambda c: c.get("created_at", ""))
     return children
@@ -324,11 +420,10 @@ async def api_admin_migrate_v1_to_v2(
             "scope": "admin",
             "user_id": user["user_id"],
             "legacy_count": len(legacy),
-            "legacy_files": [os.path.basename(p) for p in legacy],
+            "legacy_files": [os.path.basename(p) for _, p in legacy],
         }
     migrated: List[str] = []
-    for f in legacy:
-        task_id = os.path.splitext(os.path.basename(f))[0]
+    for task_id, _ in legacy:
         dest = _st.migrate_legacy_task("admin", user["user_id"], task_id)
         if dest:
             migrated.append(task_id)
@@ -353,6 +448,11 @@ async def api_service_task_tree(
                          service_id, max_depth=max_depth)
     if not tree:
         raise HTTPException(status_code=404, detail="任务不存在")
+    def refresh(node):
+        node['meta'] = overlay('service' if node['meta'].get('service_id') else 'admin', user['user_id'], node['meta'].get('service_id'), node['meta'])
+        for child in node.get('children', []):
+            refresh(child)
+    refresh(tree)
     return tree
 
 
@@ -369,7 +469,7 @@ async def api_service_task_children(
         m = _st.load_task_meta(sub)
         if m:
             m = {k: v for k, v in m.items() if k != "runs"}
-            m["run_count"] = len((_st.load_task_meta(sub) or {}).get("runs", []))
+            m["run_count"] = m.get("run_count", len((_st.load_task_meta(sub) or {}).get("runs", [])))
             children.append(m)
     children.sort(key=lambda c: c.get("created_at", ""))
     return children

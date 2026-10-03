@@ -22,7 +22,7 @@ export function appendRuntimeEvent(previous: StreamBlock[], event: RuntimeEvent)
     let block: Tool | undefined = index < 0 ? undefined : blocks[index] as Tool;
     if (block && type === 'business_tool' && payload.status === 'running' && block.done) { block = undefined; index = -1; }
     block = block ? { ...block } : { type: 'tool', event_key: key, name: payload.name || (payload.kind === 'other' ? payload.command : undefined) || payload.kind || '工具', args: '', result: '', done: false, resultCollapsed: true };
-    block.name = ({ webSearch: '网页搜索', search: '网页搜索', imageGeneration: '生成图片', fetch: '读取网页' } as Record<string, string>)[block.name] || block.name;
+    block.name = ({ webSearch: '网页搜索', search: '搜索', imageGeneration: '生成图片', fetch: '读取网页' } as Record<string, string>)[block.name] || block.name;
     if (payload.name) block.name = payload.name;
     const display = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
     if ('input' in payload) { block.args = display(payload.input); block.has_input = true; }

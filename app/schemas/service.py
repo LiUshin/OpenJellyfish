@@ -76,3 +76,5 @@ class ConsumerCompletionsRequest(ByokFields):
 
 class CreateConsumerConversationRequest(BaseModel):
     title: str = ""
+    # A presentation label, never an authorization or recipient identity.
+    source: Literal["api", "web"] = "api"

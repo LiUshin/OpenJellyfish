@@ -186,6 +186,7 @@
 .twoCol { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
 
 .footer { text-align: center; font-family: var(--jf-font-code); font-size: 11px; color: var(--jf-text-dim); margin-top: 24px; letter-spacing: 0.04em; }
+.coverageNotice { margin-bottom: 16px; }
 
 .emptyWrap { padding: 60px 0; }
 .loadingWrap { text-align: center; padding: 60px 0; }

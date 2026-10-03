@@ -339,6 +339,11 @@ class S3StorageService(StorageService):
     def write_bytes(self, user_id: str, path: str, data: bytes) -> None:
         self._put_object_bytes(self._key(user_id, path), data)
 
+    def write_bytes_durable(self, user_id: str, path: str, data: bytes) -> None:
+        # The successful S3 PutObject response is this backend's acknowledgement;
+        # it does not promise local filesystem-style fsync semantics.
+        self.write_bytes(user_id, path, data)
+
     # ── edit ──
 
     def edit_text(self, user_id: str, path: str, old_string: str, new_string: str) -> None:

@@ -62,6 +62,7 @@ git merge   # fuse two agents into one
 - **Multi-model** — Claude 4.x (w/ Thinking), GPT-5.x, GPT-4o, o3-mini, and any OpenAI-compatible endpoint.
 - **Self-hosted** — runs on your laptop, cloud server, or Raspberry Pi. One Docker command for the full platform. Your data is just files.
 - **Two-tier delivery** — Admins configure agents; publish them as Services with API Keys; optional WeChat iLink for mobile conversations.
+- **Service messaging** — durable feedback, replies bound to the original conversation, and immediate or scheduled text notices for web, API, and WeChat, with per-recipient delivery status.
 - **Scheduler & sandbox** — cron / interval / once tasks, AST-checked script sandbox, per-user Python venv.
 - **Desktop app** — Tauri v2 launcher, double-click to start, no CLI needed.
 
@@ -128,7 +129,7 @@ v1.3.0 added Codex and Cursor to the main admin chat; v1.3.1 extends authorized 
 
 Open `/superadmin` and enter the host key obtained with `python3 launcher.py --superadmin-key` (Docker: `docker compose exec openjellyfish python launcher.py --superadmin-key`). Complete supplier login, probe models, then grant selected models to existing admins. Admins select an authorized engine/model in chat; they do not manage supplier credentials. Supplier accounts and quota are shared only within a trusted team; this mode is not OS isolation between tenants.
 
-Follow the [deployment and login guide](docs/superadmin-console.md) and [runtime scope / recovery guide](docs/runtime-standard-mode.md). Codex/Cursor support admin web chat and [internal Services over web, API and WeChat](docs/runtime-service-distribution.md). Admin WeChat, scheduled tasks and voice retain their existing engine paths. Source updates do not imply new desktop installers have been published.
+Follow the [deployment and login guide](docs/superadmin-console.md) and [runtime scope / recovery guide](docs/runtime-standard-mode.md). Codex/Cursor have code paths for admin web chat, admin WeChat, authorized scheduled agent tasks, voice background delegation, and [internal Services over web, API and WeChat](docs/runtime-service-distribution.md). The voice foreground keeps its low-latency model; channel end-to-end validation is tracked in the runtime guide. See the [Plan and CLI mode contract draft](docs/runtime-plan-mode-contract.md) for the current architecture and remaining mode work. Source updates do not imply new desktop installers have been published.
 
 ### 🏗️ Architecture
 
@@ -150,7 +151,7 @@ Follow the [deployment and login guide](docs/superadmin-console.md) and [runtime
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Release notes: [v1.3.1](docs/release-v1.3.1.md).
+Release notes: [v1.4.0](docs/release-v1.4.0.md): projects with shared briefs, in-chat Service tests, Tracing playback, durable scheduled runs and contact replies.
 
 ### 📚 Documentation
 
@@ -161,6 +162,7 @@ Release notes: [v1.3.1](docs/release-v1.3.1.md).
 | [Developer Guide](docs/DEVELOPER_GUIDE_EN.md) | Architecture, APIs, extension guide |
 | [Filesystem Architecture](docs/filesystem-architecture.md) | Filesystem layout, JSON schemas, message flows |
 | [WeChat Integration](docs/wechat-integration-guide.md) | iLink WeChat integration deep-dive |
+| [Service Messaging](docs/service-messaging.md) | Feedback, bound replies, notices, API event cursors, and recovery (Chinese) |
 
 ### License
 
@@ -211,6 +213,7 @@ git merge   # 融合两个 Agent
 - **多模型** —— Claude 4.x（含 Thinking）、GPT-5.x、GPT-4o、o3-mini，以及任意 OpenAI 兼容端点。
 - **自托管** —— 跑在笔记本、云服务器或树莓派上，一条 Docker 命令启动完整平台，数据只属于你。
 - **两层分发** —— 管理员配置 Agent，发布为带 API Key 的 Service，可选微信 iLink 移动端接入。
+- **Service 消息闭环** —— 持久化反馈、绑定原会话的管理员回复，以及面向网页、API、微信的即时或定时文字通知，逐对象查看投递状态。
 - **定时任务与沙箱** —— cron / interval / once 调度，AST 检查的脚本沙箱，per-user Python venv。
 - **桌面 App** —— Tauri v2 启动器，双击即用，无需命令行。
 
@@ -277,9 +280,9 @@ v1.3.0 将 Codex 与 Cursor 接入管理员主聊天；v1.3.1 新增授权套餐
 
 进入 `/superadmin`，输入 `python3 launcher.py --superadmin-key` 查看得到的主机 key（Docker 使用 `docker compose exec openjellyfish python launcher.py --superadmin-key`）。完成供应商登录、探测模型，再将指定模型授权给已有 admin。admin 在聊天中选择获授权的引擎 / 模型，不管理供应商凭据。共享账号和额度仅面向可信团队，不提供恶意租户之间的操作系统隔离。
 
-完整步骤见 [超管部署与登录](docs/superadmin-console.md)、[标准模式与故障恢复](docs/runtime-standard-mode.md)。Codex / Cursor 支持管理员 Web 聊天和[内部 Service 的网页、API、微信分发](docs/runtime-service-distribution.md)。管理员个人微信、定时任务和语音沿用原有执行路径。源码更新不代表已发布新版桌面安装包。
+完整步骤见 [超管部署与登录](docs/superadmin-console.md)、[标准模式与故障恢复](docs/runtime-standard-mode.md)。Codex / Cursor 已有管理员 Web 聊天、个人微信、授权的 Agent 定时任务、语音后台委派，以及[内部 Service 的网页、API、微信分发](docs/runtime-service-distribution.md)代码路径；语音前台仍由低延迟模型处理。[Plan 与 CLI mode 契约草案](docs/runtime-plan-mode-contract.md)说明当前架构及待接入范围。源码更新不代表已发布新版桌面安装包。
 
-版本说明：[v1.3.1](docs/release-v1.3.1.md)。
+版本说明：[v1.4.0](docs/release-v1.4.0.md)：项目 brief、对话内 Service 测试、Tracing 回放、持久定时执行与反馈回复。
 
 ### 📚 项目文档
 
@@ -290,6 +293,7 @@ v1.3.0 将 Codex 与 Cursor 接入管理员主聊天；v1.3.1 新增授权套餐
 | [开发者指南](docs/DEVELOPER_GUIDE.md) | 架构设计、API 参考、扩展开发 |
 | [文件系统架构](docs/filesystem-architecture.md) | 文件系统布局、JSON Schema、消息流时序 |
 | [微信集成](docs/wechat-integration-guide.md) | iLink 微信集成实战 |
+| [Service 消息](docs/service-messaging.md) | 反馈、绑定回复、直接通知、API 事件游标与故障恢复 |
 
 ### License
 

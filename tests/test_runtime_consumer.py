@@ -279,7 +279,7 @@ class ConsumerRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session=SimpleNamespace(admin_id='alice',service_id=self.svc['id'],conversation_id=self.conv['id'],
                                 session_id='wechat-fixture',from_user_id='fixture-user',context_token='fixture-context')
         mgr=SimpleNamespace(get_session=lambda sid: session if sid==session.session_id else None)
-        client=SimpleNamespace(send_text=AsyncMock(),send_file=AsyncMock())
+        client=SimpleNamespace(send_text=AsyncMock(return_value={'ret': 0}),send_file=AsyncMock(return_value={'ret': 0}))
         with patch('app.channels.wechat.session_manager._manager',mgr), patch('app.channels.wechat.bridge.build_usage_callbacks',return_value=[]):
             await _run_agent_and_reply(session,client,'fixture-user','fixture-context','make-artifact')
             client.send_text.assert_awaited_once()

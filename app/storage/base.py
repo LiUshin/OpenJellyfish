@@ -49,6 +49,18 @@ class StorageService(ABC):
     def write_bytes(self, user_id: str, path: str, data: bytes) -> None:
         ...
 
+    def write_text_durable(self, user_id: str, path: str, content: str) -> None:
+        """Return after the backend acknowledges the write (local overrides with fsync)."""
+        self.write_text(user_id, path, content)
+
+    def write_bytes_durable(self, user_id: str, path: str, data: bytes) -> None:
+        """Return after a binary write is durable under the backend's semantics."""
+        self.write_bytes(user_id, path, data)
+
+    def write_consumer_bytes_durable(self, admin_id: str, service_id: str, conv_id: str,
+                                     path: str, data: bytes) -> None:
+        self.write_consumer_bytes(admin_id, service_id, conv_id, path, data)
+
     # ── edit ──
 
     @abstractmethod

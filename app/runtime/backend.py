@@ -127,6 +127,7 @@ class LocalBackend:
         entry['session'] = session
         adapter = entry['adapter']
         adapter.model, adapter.reused, adapter.reusable = session['binding']['model'], reused, False
+        adapter.image_mode = session['binding'].get('image_mode', 'native')
         ok = False
         try:
             yield adapter
