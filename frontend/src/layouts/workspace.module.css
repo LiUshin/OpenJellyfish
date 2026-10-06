@@ -1,11 +1,66 @@
 .brandButton { display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 0; flex: 1; padding: 0; border: 0; background: none; color: var(--jf-text); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 .brandButton span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brandButton:hover { color: var(--jf-primary); }
-.brandButton:focus-visible, .fileTab:focus-visible { outline: 2px solid var(--jf-primary); outline-offset: -2px; }
+.brandButton:focus-visible { outline: 2px solid var(--jf-primary); outline-offset: -2px; }
 .divider { background: var(--jf-border); }
 .divider:hover, .divider:focus-visible { background: var(--jf-primary); outline: none; box-shadow: 0 0 8px rgba(var(--jf-primary-rgb), .3); }
-.fileToolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 8px 10px; min-height: 48px; flex-shrink: 0; border-bottom: 1px solid var(--jf-border); }
-.fileToolbarGroup { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.filePreview { display: flex; flex-direction: column; height: 100%; min-width: 0; min-height: 0; background: var(--jf-bg-panel); container: file-preview / inline-size; }
+.fileToolbar { position: relative; z-index: 5; display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap; gap: 8px; padding: 0 10px; height: 52px; flex-shrink: 0; border-bottom: 1px solid var(--jf-border); }
+.fileToolbarGroup { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; min-width: 0; flex-shrink: 0; }
 .fileToolbar :global(.ant-btn) { min-width: 28px; }
-.fileTab:hover { background: rgba(var(--jf-primary-rgb), .06) !important; }
-.fileTab button:focus-visible { outline: 2px solid var(--jf-primary); outline-offset: 1px; }
+.filePreviewBody, .filePreviewContent { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+
+/* The dock reserves only its collapsed width. Expanded ticks float over the toolbar. */
+.fileTabDock { position: relative; width: 118px; height: 34px; flex: 0 0 118px; }
+.fileTabsRail { --file-tick: #8e96ff; --file-tick-hover: #b2baff; position: absolute; top: 0; left: 0; z-index: 8; width: 118px; max-width: calc(100cqw - 20px); height: 34px; overflow: hidden; border: 1px solid rgba(143, 151, 190, .26); border-radius: 999px; background: var(--jf-bg-deep); box-shadow: 0 4px 14px rgba(0, 0, 0, .12); transition: width .52s cubic-bezier(.22,1,.36,1), box-shadow .34s ease; }
+.fileTabsRailExpanded { width: var(--file-expanded-width); box-shadow: 0 12px 30px rgba(0, 0, 0, .22), 0 0 0 1px rgba(142, 150, 255, .08); }
+.fileTabCollapsed { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 5px; width: 100%; padding: 0 8px; border: 0; background: transparent; color: var(--jf-text); cursor: pointer; transition: opacity .28s ease .09s; }
+.fileTabsRailExpanded .fileTabCollapsed { opacity: 0; pointer-events: none; transition-delay: 0s; }
+.fileTabCollapsedTicks { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.fileTabCollapsedTicks i { display: block; width: 2px; height: 11px; border-radius: 3px; background: #727b9b; }
+.fileTabCollapsedChip { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 84px; height: 24px; padding: 0 8px; border-radius: 8px; background: #e2e4ff; color: #2d3150; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.fileTabType { color: #5962aa; font-size: 9px; letter-spacing: .04em; }
+.fileTabCollapsedName { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fileTabsScroller { position: absolute; inset: 0; overflow-x: auto; overflow-y: hidden; opacity: 0; visibility: hidden; pointer-events: none; scrollbar-width: none; transition: opacity .28s ease, visibility 0s linear .28s; }
+.fileTabsScroller::-webkit-scrollbar { display: none; }
+.fileTabsRailExpanded .fileTabsScroller { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity .32s ease .12s, visibility 0s; }
+.fileTabsList { display: flex; align-items: center; justify-content: space-between; gap: 3px; width: max-content; min-width: 100%; height: 100%; padding: 0 1px; }
+.fileTabSlot { position: relative; display: flex; align-items: center; flex: 0 0 22px; height: 28px; border-radius: 8px; transition: flex-basis .44s cubic-bezier(.22,1,.36,1), height .44s cubic-bezier(.22,1,.36,1), background-color .26s ease, border-radius .32s ease; }
+.fileTabSlotHighlight { flex-basis: 96px; height: 30px; background: #e2e4ff; }
+.fileTabSlotHighlight:first-child { border-radius: 999px 9px 9px 999px; }
+.fileTabSlotHighlight:last-child { border-radius: 9px 999px 999px 9px; }
+.fileTabSlotHighlight:only-child { border-radius: 999px; }
+.fileTab { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 0; border-radius: inherit; background: transparent; cursor: pointer; user-select: none; }
+.fileTabMark { position: absolute; left: 50%; display: block; width: 3px; height: 11px; border-radius: 4px; background: #68718e; transform: translateX(-50%); transition: height .3s cubic-bezier(.22,1,.36,1), width .3s ease, background-color .3s ease, opacity .18s ease; }
+.fileTabActive .fileTabMark { width: 4px; height: 18px; background: var(--file-tick); }
+.fileTabSlot:has(+ .fileTabSlotHighlight) .fileTabMark, .fileTabSlotHighlight + .fileTabSlot .fileTabMark { height: 16px; background: #949cba; }
+.fileTabSlot:has(+ .fileTabSlot + .fileTabSlotHighlight) .fileTabMark, .fileTabSlotHighlight + .fileTabSlot + .fileTabSlot .fileTabMark { height: 13px; }
+.fileTabSlotHighlight .fileTabMark { opacity: 0; }
+.fileTabLabel { position: absolute; inset: 0; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 19px 0 9px; color: #292e4d; font-size: 10px; font-weight: 650; text-align: left; text-overflow: ellipsis; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+.fileTabSlotHighlight .fileTabLabel { opacity: 1; transition-delay: .14s; }
+.fileTabClose { position: absolute; top: 7px; right: 6px; display: flex; align-items: center; justify-content: center; width: 15px; height: 15px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #6b7295; cursor: pointer; font-size: 9px; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+.fileTabSlotHighlight .fileTabClose { opacity: 1; pointer-events: auto; transition-delay: .14s; }
+.fileTabClose:hover, .fileTabClose:focus-visible { background: rgba(73, 79, 132, .14); color: #282c4b; outline: none; }
+.fileTab:focus-visible { outline: 2px solid var(--file-tick); outline-offset: -2px; }
+.fileTabDropTarget { background: rgba(142, 150, 255, .2); }
+.fileTabDirty { position: absolute; top: 3px; right: 1px; width: 3px; height: 3px; border-radius: 50%; background: var(--file-tick); }
+.fileTabSlotHighlight .fileTabDirty { display: none; }
+
+.fileTabPopover :global(.ant-popover-inner) { padding: 0; border: 1px solid #5c668b; border-radius: 12px; background: var(--jf-bg-panel); box-shadow: 0 18px 44px rgba(0,0,0,.3), 0 0 0 1px rgba(142,150,255,.05) inset; }
+.fileTabPopover :global(.ant-popover-arrow)::before { background: var(--jf-bg-panel); }
+.fileTabCard { width: 264px; max-width: calc(100vw - 48px); padding: 13px 14px; color: var(--jf-text); }
+.fileTabCardHeader { display: flex; align-items: flex-start; gap: 8px; }
+.fileTabCardHeader strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.fileTabCardPath { margin-top: 4px; max-height: 3.2em; overflow: hidden; overflow-wrap: anywhere; color: #8895c7; font: 10.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.fileTabCardDivider { height: 1px; margin: 10px 0 8px; background: var(--jf-border); }
+.fileTabCardCaption { color: #8792bb; font-size: 10px; letter-spacing: .04em; }
+.fileTabCardPreview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; margin-top: 5px; overflow: hidden; color: var(--jf-text-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.fileTabCardDirty { margin-top: 8px; color: #8792bb; font-size: 10px; }
+:global(html[data-color='light']) .fileTabsRail { background: #f4f5fb; border-color: #d4d9ec; }
+:global(html[data-color='light']) .fileTabCardPath, :global(html[data-color='light']) .fileTabCardCaption { color: #56649a; }
+
+@container file-preview (max-width: 420px) { .fileToolbarDownload { display: none !important; } }
+@container file-preview (max-width: 340px) { .fileToolbarViewSwitch { display: none !important; } }
+@container file-preview (max-width: 260px) { .fileToolbarHeaderControls, .fileToolbarDivider { display: none !important; } }
+@media (max-width: 767px) { .fileToolbar { height: 48px; } }
+@media (prefers-reduced-motion: reduce) { .fileTabsRail, .fileTabsScroller, .fileTabCollapsed, .fileTabSlot, .fileTabMark, .fileTabLabel, .fileTabClose { transition: none; } }

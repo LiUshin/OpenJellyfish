@@ -202,6 +202,21 @@ class CursorAdapter:
     def session_count(self):
         return len(self.loaded_threads)
 
+    def needs_tool_refresh(self, session):
+        """Whether a loaded ACP session needs a fresh MCP registration.
+
+        Cursor may cache tools after session/new or session/load. Updating the
+        loopback server's tools/list alone would leave the native session with
+        its old tool catalog, so the connection backend must restart this idle
+        client and reload the session with the current bridge.
+        """
+        thread_id = session.get('thread_id')
+        if not thread_id or thread_id not in self.loaded_threads:
+            return False
+        bridge = self.bridges.get(session['id'])
+        registered = bridge.tools if bridge else []
+        return registered != session.get('dynamic_tools', [])
+
     async def warm_up(self):
         await self._start_acp()
         # Initialize supplier shared services without creating a dummy chat.

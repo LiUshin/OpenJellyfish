@@ -13,6 +13,7 @@ from app.deps import get_current_user
 from app.routes.runtime import router as runtime_router
 from app.routes.conversations import router as conversations_router
 from app.routes.chat import router as chat_router
+from app.routes.files import router as files_router
 from app.routes.voice_live import router as voice_router, get_voice_worker_session
 from app.runtime.manager import get_runtime
 from app.runtime.profiles import ProfileManager
@@ -29,7 +30,7 @@ from test_runtime_profiles import auth_bytes
 class ChatTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.users = self.root / 'users'; self.users.mkdir()
         (self.users / 'users.json').write_text(json.dumps({uid: {'username': uid} for uid in ['owner','alice','bob']}))
         self.patches = [patch.dict(os.environ, {'JELLYFISH_OWNER_USER_ID': 'owner', 'JELLYFISH_RUNTIME_ENABLED': '1', 'JELLYFISH_RUNTIME_DATA_DIR': str(self.root / 'runtime')}),
@@ -48,7 +49,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         p = self.profiles.create(HOST_ID, 'Shared'); p['models'] = [{'id': 'model', 'name': 'Model'}]
         self.profiles.save_auth(p, auth_bytes()); self.pid = p['id']
         self.profiles.grant(HOST_ID, self.pid, 'alice', ['model'])
-        self.app = FastAPI(); self.app.include_router(runtime_router); self.app.include_router(conversations_router); self.app.include_router(chat_router); self.app.include_router(voice_router)
+        self.app = FastAPI(); self.app.include_router(runtime_router); self.app.include_router(conversations_router); self.app.include_router(chat_router); self.app.include_router(voice_router); self.app.include_router(files_router)
         def actor(authorization: str = Header()):
             uid = authorization.removeprefix('Bearer ')
             if uid not in ('owner','alice','bob'): raise HTTPException(401)
@@ -177,6 +178,148 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError): bridge.invoke('alice','jellyfish_read_service_document',ServiceDocument(service_id='s1',path='/docs/private.txt'))
         with patch('app.services.published.get_service', return_value={**service,'admin_id':'bob'}):
             with self.assertRaises(ValueError): bridge.invoke('alice','jellyfish_read_service_document',ServiceDocument(service_id='s1',path='/docs/public.txt'))
+
+    async def test_admin_document_write_is_visible_in_library_and_idempotent(self):
+        bridge = BusinessTools(self.storage, self.profiles.authorize, self.store)
+        binding = self.profiles.binding('alice', self.pid, 'model')
+        session = {'actor_id': 'alice', 'binding': binding, 'conversation_id': 'admin-chat'}
+        run = {'id': 'admin-document-write', 'actor_id': 'alice', 'binding': binding,
+               'seq': 0, 'status': 'running', 'channel': 'web'}
+        self.store.put('run', run)
+        path = '/docs/菜单/寻味江南-2026年十月菜单.md'
+        content = '# 寻味江南\n\n桂花糖藕。\n'
+
+        async def write(value, **options):
+            result = await bridge(session, run, {'tool': 'jellyfish_write_document',
+                                                 'arguments': {'path': path, 'content': value, **options}})
+            return result, json.loads(result['contentItems'][0]['text']) if result['success'] else None
+
+        first, metadata = await write(content)
+        self.assertTrue(first['success'], first)
+        self.assertEqual(metadata['path'], path)
+        self.assertEqual(metadata['size'], len(content.encode('utf-8')))
+        self.assertTrue(metadata['created'])
+        self.assertFalse(metadata['updated'])
+        listed = await self.client.get('/api/files', params={'path': '/docs/菜单'})
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertIn(path, {entry['path'] for entry in listed.json()})
+        read = await self.client.get('/api/files/read', params={'path': path})
+        self.assertEqual(read.status_code, 200, read.text)
+        self.assertEqual(read.json()['content'], content)
+        self.assertEqual(bridge.invoke('alice', 'jellyfish_read_document', Document(path=path)), content)
+        self.assertIn('寻味江南-2026年十月菜单.md',
+                      {entry['name'] for entry in bridge.invoke('alice', 'jellyfish_list_documents',
+                                                                SimpleNamespace(path='/docs/菜单'))})
+        bob_list = await self.client.get('/api/files', params={'path': '/docs/菜单'},
+                                         headers={'Authorization': 'Bearer bob'})
+        self.assertNotIn(path, {entry['path'] for entry in bob_list.json()})
+        self.assertEqual((await self.client.get('/api/files/read', params={'path': path},
+                                                headers={'Authorization': 'Bearer bob'})).status_code, 404)
+
+        retry, metadata = await write(content)
+        self.assertTrue(retry['success'], retry)
+        self.assertFalse(metadata['created'])
+        self.assertFalse(metadata['updated'])
+        conflict, _ = await write('# Different')
+        self.assertFalse(conflict['success'])
+        self.assertEqual(self.storage.read_text('alice', path), content)
+        replacement = '# Updated\n'
+        overwritten, metadata = await write(replacement, overwrite=True)
+        self.assertTrue(overwritten['success'], overwritten)
+        self.assertFalse(metadata['created'])
+        self.assertTrue(metadata['updated'])
+        self.assertEqual((await self.client.get('/api/files/read', params={'path': path})).json()['content'], replacement)
+
+    async def test_admin_document_write_rejects_unsafe_paths_and_oversize_content(self):
+        bridge = BusinessTools(self.storage, self.profiles.authorize, self.store)
+        binding = self.profiles.binding('alice', self.pid, 'model')
+        session = {'actor_id': 'alice', 'binding': binding, 'conversation_id': 'admin-chat'}
+        run = {'id': 'admin-document-invalid', 'actor_id': 'alice', 'binding': binding,
+               'seq': 0, 'status': 'running', 'channel': 'web'}
+        self.store.put('run', run)
+
+        async def write(path, content='unsafe', **options):
+            return await bridge(session, run, {'tool': 'jellyfish_write_document',
+                                               'arguments': {'path': path, 'content': content, **options}})
+
+        for path in ('/docs/../generated/escape.md', '/generated/escape.md',
+                     '/docs/.hidden.md', '/docs/sub\\escape.md', '/docs', 'docs/relative.md'):
+            with self.subTest(path=path):
+                self.assertFalse((await write(path))['success'])
+        self.assertFalse(self.storage.is_file('alice', '/generated/escape.md'))
+        self.assertFalse(self.storage.is_file('alice', '/docs/.hidden.md'))
+
+        fs_root = self.users / 'alice' / 'filesystem'
+        (fs_root / 'docs').mkdir(parents=True, exist_ok=True)
+        (fs_root / 'generated').mkdir(parents=True, exist_ok=True)
+        (fs_root / 'docs' / 'alias').symlink_to(fs_root / 'generated', target_is_directory=True)
+        self.assertFalse((await write('/docs/alias/escape.md'))['success'])
+        self.assertFalse((fs_root / 'generated' / 'escape.md').exists())
+
+        boundary = await write('/docs/max-size.md', 'x' * 65536)
+        self.assertTrue(boundary['success'], boundary)
+        self.assertEqual(len(self.storage.read_bytes('alice', '/docs/max-size.md')), 65536)
+        too_large = await write('/docs/too-large.md', '中' * 21846)
+        self.assertFalse(too_large['success'])
+        self.assertFalse(self.storage.is_file('alice', '/docs/too-large.md'))
+
+    async def test_codex_document_tool_call_waits_for_each_write_approval(self):
+        self.runs.tool_bridge = BusinessTools(self.storage, self.profiles.authorize, self.store)
+        binding = self.profiles.binding('alice', self.pid, 'model')
+        session = self.runs.create_session('alice', binding, conversation_id='admin-chat')
+
+        async def attempt(label, *, decision=None, yolo=False, change_during_approval=False):
+            path = f'/docs/{label}.md'
+            run = {'id': f'approval-{label}', 'session_id': session['id'], 'actor_id': 'alice',
+                   'binding': binding, 'seq': 0, 'status': 'running', 'pending': None,
+                   'channel': 'web', 'yolo': yolo}
+            self.store.put('run', run)
+            adapter = SimpleNamespace(respond=AsyncMock())
+            state = {'run': run, 'adapter': adapter, 'answer': None, 'changes': {},
+                     'cancel': False, 'finalizing': False}
+            self.runs.active[run['id']] = state
+            task = asyncio.create_task(self.runs._request(session, state, {
+                'request_id': label, 'method': 'item/tool/call',
+                'params': {'tool': 'jellyfish_write_document',
+                           'arguments': {'path': path, 'content': label}},
+            }))
+            try:
+                if not yolo:
+                    await self.until(lambda: self.store.get('run', run['id'])['status'] == 'waiting_approval')
+                    pending = self.store.get('run', run['id'])['pending']
+                    self.assertEqual(pending['allowed'], ['accept', 'decline'])
+                    self.assertFalse(self.storage.is_file('alice', path))
+                    if change_during_approval:
+                        self.storage.write_text('alice', path, 'changed during approval')
+                    self.runs.approve('alice', run['id'], pending['id'], decision)
+                await task
+                result = adapter.respond.call_args.args[1]
+                if change_during_approval:
+                    self.assertFalse(result['success'])
+                    self.assertEqual(self.storage.read_text('alice', path), 'changed during approval')
+                else:
+                    self.assertEqual(result['success'], decision == 'accept' or yolo)
+                    self.assertEqual(self.storage.is_file('alice', path), decision == 'accept' or yolo)
+                events = self.store.events(run['id'])
+                if yolo:
+                    self.assertNotIn('approval_requested', [event['type'] for event in events])
+                    self.assertTrue(any(event['type'] == 'approval_resolved' and
+                                        event['payload'].get('automatic') for event in events))
+                else:
+                    self.assertIn('approval_requested', [event['type'] for event in events])
+            finally:
+                if not task.done():
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                self.runs.active.pop(run['id'], None)
+                self.store.emit(run, 'completed', {}, status='completed')
+
+        await attempt('approved', decision='accept')
+        await attempt('declined', decision='decline')
+        await attempt('changed', decision='accept', change_during_approval=True)
+        await attempt('automatic', yolo=True)
+
     async def test_service_directory_allowlist_includes_nested_documents(self):
         bridge = BusinessTools(self.storage, self.profiles.authorize, self.store)
         self.storage.write_text('alice','/docs/team/nested/readme.txt','TEAM')

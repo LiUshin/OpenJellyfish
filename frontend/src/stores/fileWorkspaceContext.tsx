@@ -26,6 +26,8 @@ export interface FileTab {
 export interface FileTabSummary {
   path: string;
   dirty: boolean;
+  title: string;
+  previewText: string | null;
 }
 
 interface FileWorkspaceState {
@@ -48,7 +50,7 @@ interface FileWorkspaceState {
   closeFile: (force?: boolean) => void;
   setEditContent: (s: string) => void;
 
-  /** 打开中的 tab 摘要（路径 + dirty），顺序即 tab 条顺序。 */
+  /** 打开中的 tab 摘要，含有界的悬停预览；顺序即 tab 条顺序。 */
   openTabs: FileTabSummary[];
   activateTab: (path: string) => void;
   /** 关闭单个 tab；dirty 时确认。关闭后激活右邻，否则左邻。 */
@@ -102,6 +104,24 @@ function basename(path: string): string {
   return trimmed.slice(trimmed.lastIndexOf('/') + 1);
 }
 
+function summarizeTab({ path, dirty, content }: FileTab): FileTabSummary {
+  const name = basename(path);
+  const kind = getFileKind(name);
+  if (!shouldLoadText(kind)) return { path, dirty, title: name, previewText: null };
+
+  // The tab already holds the text. Keep the hover card bounded and avoid
+  // another read, especially for large documents or unsaved edits.
+  const sample = content.slice(0, 1400);
+  const heading = kind === 'markdown' ? /^#{1,3}\s+(.+)$/m.exec(sample)?.[1]?.trim() : null;
+  const previewText = sample
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*]\s+/gm, '• ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240) || '空文件';
+  return { path, dirty, title: heading?.slice(0, 90) || name, previewText };
+}
+
 const Ctx = createContext<FileWorkspaceState | null>(null);
 
 export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
@@ -135,7 +155,7 @@ export function FileWorkspaceProvider({ children }: { children: ReactNode }) {
   const editDirty = activeTab?.dirty ?? false;
 
   const openTabs: FileTabSummary[] = useMemo(
-    () => tabs.map(({ path, dirty }) => ({ path, dirty })),
+    () => tabs.map(summarizeTab),
     [tabs],
   );
 

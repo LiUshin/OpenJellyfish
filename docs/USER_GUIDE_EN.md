@@ -391,9 +391,19 @@ Switch admin chat to Tracing to inspect questions, responses and recorded tool a
 
 Tracing visualizes recorded evidence, not hidden model reasoning or a complete system audit. File positions may be approximate or unrecorded; missing coverage does not prove a file was not read. Evidence completeness varies across old conversations, engines and tools.
 
+### 4.15 Save documents with Codex / Cursor (v1.4.2)
+
+Ask the admin Agent to save a result to a document-library path such as `/docs/research.md`. The `jellyfish_write_document` tool shows an approval card with the path, previous-content preview and proposed content. Accept to persist the file; declining or timing out leaves it unchanged. A YOLO turn approves according to that turn's setting.
+
+Each write supports up to 64 KiB of UTF-8 text. Creation is the default; replacing different existing content requires explicit overwrite. Identical retries do not repeat the write. Native edits to `docs/` inside a CLI working copy still become session artifacts and do not automatically update the library.
+
+Existing Cursor chats refresh their tools and resume on the next turn. Existing Codex threads cannot add dynamic tools: start a new chat to use document writes. Upgrading does not import old working-copy files. Service and scheduled-task permissions remain unchanged.
+
 ## 5. File Panel
 
 Click the 📁 button in the top right to open the file panel (available only on the chat page).
+
+The preview toolbar now has a compact capsule showing a short label for the active file. Hover, click, or focus the button and press Enter to expand its file tabs. Hover another file to preview its content without changing the active file; select a tab to switch. Narrow screens retain horizontal tabs and file actions.
 
 ### 5.1 Browsing
 

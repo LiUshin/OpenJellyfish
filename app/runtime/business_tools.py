@@ -1,7 +1,7 @@
 """Small actor-bound bridge. No model-supplied tenant IDs or credential access."""
 import json
 from datetime import datetime, timedelta, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field
 from app.runtime.files import digest
@@ -40,6 +40,11 @@ class ProjectBriefWrite(Empty):
     content: str = Field(max_length=65536)
 
 
+class DocumentWrite(Document):
+    content: str = Field(max_length=65536)
+    overwrite: bool = False
+
+
 class ServiceDocument(Document):
     service_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,64}$')
 
@@ -64,6 +69,7 @@ def scheduler_specifications():
 TOOLS = {
     'jellyfish_list_documents': (AreaDirectory, '列出当前 admin 的 /docs 文档目录，或已启用的虚拟 /service-records Service 记录区；后者支持 offset/limit 分页。'),
     'jellyfish_read_document': (AreaDocument, '读取当前 admin 的 /docs UTF-8 文档（最多 256KB），或已启用的虚拟 /service-records 反馈、会话消息及 Token 用量。记录区支持 offset/limit 分页；长消息设 limit=1，按返回的 next_content_offset 续读，并原样传回 message_ref。'),
+    'jellyfish_write_document': (DocumentWrite, '把 UTF-8 文本持久保存到当前 admin 的 /docs 文档库，最多 64KB。默认只新建；同内容重试安全。若要替换内容不同的已有文件，显式设置 overwrite=true。工作目录 docs/ 中的副本不会自动回写文档库。'),
     'jellyfish_read_memory': (Empty, '读取当前 admin 的长期记忆与 sha256，用于更新前合并。'),
     'jellyfish_update_memory': (MemoryWrite, '更新当前 admin 的长期记忆；先读取并合并旧记忆，传入原 sha256。锁定时拒绝。'),
     'jellyfish_write_project_brief': (ProjectBriefWrite, '完整替换当前管理员对话所属项目的 Markdown brief；项目由会话确定，不能指定其他项目。先合并现有内容再写入。'),
@@ -103,6 +109,53 @@ class BusinessTools:
             raise ValueError('文档超过 256KB')
         return data.decode('utf-8')
 
+    def write_document(self, actor_id, args):
+        from uuid import uuid4
+        from app.services import workspace_lock as wl
+
+        path = docs_path(args.path)
+        if args.path.endswith('/') or any(c in args.path for c in ('\x00', '\r', '\n')):
+            raise ValueError('文档路径必须是 /docs 内的文件')
+        encoded = args.content.encode('utf-8')
+        if len(encoded) > 65536:
+            raise ValueError('文档单次写入不能超过 64KB')
+        sha = digest(encoded)
+        owner = 'runtime-doc-' + uuid4().hex
+        wl.register_process(owner, actor_id, kind='runtime', label='文档写入')
+        try:
+            if not wl.try_acquire(owner, [path]).ok:
+                raise PermissionError('文档路径被其他进程锁定')
+
+            # Local storage resolves paths before writing. Reject symlinked
+            # components inside /docs before even reading the destination; a
+            # symlink to another location under this admin must not bypass the
+            # document-only boundary.
+            from app.storage.local import LocalStorageService, _fs_root
+            if isinstance(self.storage, LocalStorageService):
+                current = Path(_fs_root(actor_id))
+                for part in path.lstrip('/').split('/'):
+                    current = current / part
+                    if current.is_symlink():
+                        raise PermissionError('文档路径不能包含符号链接')
+
+            parent, name = str(PurePosixPath(path).parent), PurePosixPath(path).name
+            entry = next((e for e in self.storage.list_dir(actor_id, parent) if e.name == name), None)
+            if entry and entry.is_dir:
+                raise ValueError('文档路径是目录')
+            if entry is None and self.storage.exists(actor_id, path):
+                raise ValueError('文档路径已被占用')
+            if entry:
+                if entry.size <= 65536 and self.storage.read_bytes(actor_id, path) == encoded:
+                    return {'path': path, 'size': len(encoded), 'sha256': sha,
+                            'created': False, 'updated': False}
+                if not args.overwrite:
+                    raise FileExistsError('文档已存在且内容不同；如需替换，请设置 overwrite=true')
+            self.storage.write_text_durable(actor_id, path, args.content)
+            return {'path': path, 'size': len(encoded), 'sha256': sha,
+                    'created': entry is None, 'updated': entry is not None}
+        finally:
+            wl.unregister_process(owner)
+
     async def __call__(self, session, run, params):
         if session['binding'].get('scheduler_scope'):
             return await ScheduledBusinessTools(self.storage, self.store, self.authorize)(session, run, params)
@@ -121,19 +174,27 @@ class BusinessTools:
             if name == 'jellyfish_write_project_brief' and run.get('channel') == 'voice':
                 raise PermissionError('语音运行不能写入项目 brief')
             args = schema[0].model_validate(params.get('arguments', {}))
-            self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'running', 'input': args.model_dump()})
+            if name == 'jellyfish_write_document':
+                encoded = args.content.encode('utf-8')
+                event_input = {'path': docs_path(args.path), 'size': len(encoded), 'sha256': digest(encoded)}
+            else:
+                event_input = args.model_dump()
+            self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'running', 'input': event_input})
             # These bounded metadata/file operations run in the scheduler thread so
             # permission checks and memory compare/write cannot interleave.
             value = self.invoke(actor_id, name, args,
                                 conversation_id=session.get('conversation_id'))
             self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'completed', 'result': value})
             return self.result(value, True)
-        except Exception:
+        except Exception as exc:
             area = (name in ('jellyfish_list_documents', 'jellyfish_read_document') and
                     isinstance(params.get('arguments'), dict) and
                     str(params['arguments'].get('path', '')).startswith('/service-records'))
-            message = ('Service 记录区读取失败：请检查权限和路径；结果过长时缩小 limit 或调整 offset/content_offset。'
-                       if area else '工具拒绝执行：检查路径、大小、作用域、记忆锁或版本；没有访问其他 admin 的数据。')
+            if name == 'jellyfish_write_document' and isinstance(exc, FileExistsError):
+                message = '文档已存在且内容不同；如需替换，请显式设置 overwrite=true。'
+            else:
+                message = ('Service 记录区读取失败：请检查权限和路径；结果过长时缩小 limit 或调整 offset/content_offset。'
+                           if area else '工具拒绝执行：检查路径、大小、作用域、记忆锁或版本；没有访问其他 admin 的数据。')
             self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'failed', 'result': message})
             return self.result(message, False)
 
@@ -157,6 +218,8 @@ class BusinessTools:
                                  content_offset=getattr(args, 'content_offset', 0),
                                  message_ref=getattr(args, 'message_ref', None))
             return self.read(actor_id, args.path)
+        if name == 'jellyfish_write_document':
+            return self.write_document(actor_id, args)
         if name == 'jellyfish_read_memory':
             notes = get_agent_notes(actor_id)
             return {'content': notes, 'sha256': digest(notes.encode()), 'locked': is_agent_notes_locked(actor_id)}
@@ -248,7 +311,8 @@ class ScheduledBusinessTools:
             return BusinessTools.result('工具拒绝执行：路径、授权、大小或调用 ID 无效。', False)
 
 
-def instructions(actor_id, runtime='codex', *, project_brief_write=True):
+def instructions(actor_id, runtime='codex', *, project_brief_write=True,
+                 document_write_available=True):
     from app.services.prompt import get_user_system_prompt, build_user_profile_prompt
     from app.services.preferences import get_tz_offset
     profile = build_user_profile_prompt(actor_id)[:16000]
@@ -265,12 +329,17 @@ def instructions(actor_id, runtime='codex', *, project_brief_write=True):
         prompt,
         f'你正在 OpenJellyfish 的 {runtime} 运行环境内。遵守当前用户的系统提示和偏好。',
         '可使用注册的 jellyfish_* 业务工具，以及客户端实际提供的网页搜索、生图和文件/命令工具；不要声称拥有旧提示中未注册的工具。',
-        '当前工作目录是该用户本会话的副本。/docs 是业务工具的虚拟路径；导入文件在工作目录的 docs/。'
-        '仅在当前工作目录内读写执行，不访问其他目录或账号配置。新文件在结束后归档到当前用户产物。',
+        '当前工作目录是该用户本会话的副本，导入文档位于其中的 docs/。/docs 是 Jellyfish 文档库的业务工具虚拟路径。'
+        '修改或新建工作目录里的 docs/ 文件只会归档为会话产物，不会自动保存到文档库。'
+        '原生文件和命令工具仅在当前工作目录内执行，不访问其他目录或账号配置。',
         '长期记忆使用 jellyfish_read_memory 和 jellyfish_update_memory；写入前保留旧信息并遵守锁。',
         '管理员启用 Service 记录区后，可用 jellyfish_list_documents / jellyfish_read_document 的 /service-records 虚拟路径只读查看反馈、消费者对话和用量。长消息用 limit=1 读取，随后用同一消息 offset、返回的 next_content_offset 和 message_ref 续读；不要访问宿主上的原始 Service 文件。',
         '网页搜索后使用普通 Markdown 来源链接。原生生图结果由 Jellyfish 自动收集到本聊天 generated/ 并展示；生图完成后无需用命令复制文件，也不需要输出本机绝对路径图片链接。图片附件直接作为视觉输入；普通文件位于本工作区附件路径，应读取内容。语音、视频、发布、定时任务与消费者服务执行不在本运行能力内；不得转用其他付费供应商。',
     ]
     if project_brief_write:
         parts.append('若当前管理员对话属于项目，可用 jellyfish_write_project_brief 完整更新该项目的 Markdown brief；工具只能修改当前对话所属项目，写入前保留已有事实。')
+    if document_write_available:
+        parts.append('需要把 UTF-8 文本保存进文档库 /docs 时，调用 jellyfish_write_document 并传入完整的 /docs/文件路径和内容；默认只创建新文件，覆盖已有不同内容须显式设置 overwrite=true。工具成功返回后才可称文件已保存到文档库。')
+    else:
+        parts.append('当前原生会话没有文档库写入工具；工作目录中的 docs/ 文件只是会话副本，不要称它已保存到文档库。')
     return '\n\n'.join(parts)

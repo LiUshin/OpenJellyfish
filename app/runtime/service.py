@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import HTTPException
-from app.runtime.files import collect_files, import_documents
+from app.runtime.files import collect_files, digest, import_documents
 from app.runtime.rpc import RuntimeFailure
 from app.runtime.store import TERMINAL
 
@@ -122,6 +122,117 @@ class RunService:
     def _emit(self, state, kind, payload=None, status=None):
         return self.store.emit(state['run'], kind, payload, status=status)
 
+    def _document_snapshot(self, actor_id, path):
+        """Read the approved target state without holding a workspace lock."""
+        if self.storage is None:
+            raise ValueError('文档存储不可用')
+        # The storage root check prevents escaping the admin's filesystem, but
+        # an in-root symlink could still cross from /docs to another area.
+        from app.storage.local import LocalStorageService, _fs_root
+        if isinstance(self.storage, LocalStorageService):
+            current = Path(_fs_root(actor_id))
+            for part in path.lstrip('/').split('/'):
+                current = current / part
+                if current.is_symlink():
+                    raise ValueError('文档路径不能包含符号链接')
+        target = Path(path)
+        entries = self.storage.list_dir(actor_id, str(target.parent))
+        entry = next((row for row in entries if row.name == target.name), None)
+        if entry is None:
+            if self.storage.exists(actor_id, path):
+                raise ValueError('文档路径已被占用')
+            return None, ''
+        if entry.is_dir or entry.size > 256 * 1024:
+            raise ValueError('文档是目录或超过可审核的 256KB 上限')
+        data = self.storage.read_bytes(actor_id, path)
+        if len(data) > 256 * 1024:
+            raise ValueError('文档超过可审核的 256KB 上限')
+        preview = data[:2048].decode('utf-8', errors='replace')
+        if len(data) > 2048:
+            preview += '\n…（仅预览前 2048 字节）'
+        return digest(data), preview
+
+    async def _call_business_tool(self, session, state, params):
+        """Apply one admin write approval before either CLI reaches the bridge."""
+        if (params.get('tool') != 'jellyfish_write_document'
+                or session['binding'].get('service_scope')
+                or session['binding'].get('scheduler_scope')):
+            return await self.tool_bridge(session, state['run'], params)
+
+        from app.runtime.business_tools import BusinessTools, DocumentWrite, docs_path
+        from pydantic import ValidationError
+        failure = lambda message: BusinessTools.result(message, False)
+        try:
+            args = DocumentWrite.model_validate(params.get('arguments', {}))
+            path = docs_path(args.path)
+            if args.path.endswith('/') or any(c in args.path for c in ('\x00', '\r', '\n')):
+                raise ValueError('文档路径必须是 /docs 内的文件')
+            encoded = args.content.encode('utf-8')
+            if len(encoded) > 65536:
+                raise ValueError('文档单次写入不能超过 64KB')
+            before, old_preview = self._document_snapshot(session['actor_id'], path)
+            if before is not None and not args.overwrite:
+                # A matching file still goes through approval: it might change
+                # before the bridge checks its idempotent-write condition.
+                current = self.storage.read_bytes(session['actor_id'], path)
+                if current != encoded:
+                    return failure('文档已存在且内容不同；如需替换，请设置 overwrite=true。')
+        except (ValidationError, ValueError, OSError, UnicodeError) as exc:
+            return failure(f'文档写入请求无效：{str(exc)[:200]}')
+
+        if state.get('answer') is not None or state['run'].get('pending'):
+            return failure('已有待处理的审批；请稍后重试文档写入。')
+        self.authorize(session['actor_id'], session['binding'])
+        kind = 'business_tool/jellyfish_write_document'
+        if state['run'].get('yolo'):
+            self._emit(state, 'approval_resolved', {
+                'approval_id': new_id(), 'kind': kind, 'decision': 'accept', 'automatic': True,
+            }, status='running')
+        else:
+            pending = {
+                'id': new_id(), 'kind': kind, 'allowed': ['accept', 'decline'],
+                'command': f'保存文档库文件：{path}',
+                'reason': '请核对文件路径、原内容预览和拟写入的完整内容。',
+                'changes': [{'path': path, 'old_text': old_preview, 'new_text': args.content}],
+            }
+            future = asyncio.get_running_loop().create_future()
+            state['run']['pending'] = pending
+            state['answer'] = future
+            self._emit(state, 'approval_requested', {'approval': pending}, status='waiting_approval')
+            decision = None
+            try:
+                try:
+                    decision = await asyncio.wait_for(future, self.policy.approval_timeout)
+                except asyncio.TimeoutError:
+                    decision = 'decline'
+            finally:
+                state['run']['pending'] = None
+                if state.get('answer') is future:
+                    state['answer'] = None
+                # A cancelled MCP HTTP call must not leave an actionable
+                # approval behind if the native turn keeps running.
+                if state['run']['status'] in TERMINAL:
+                    self.store.put('run', state['run'])
+                else:
+                    self._emit(state, 'approval_resolved', {
+                        'approval_id': pending['id'], 'kind': kind,
+                        'decision': decision or 'decline',
+                    }, status='running')
+            if decision != 'accept':
+                return failure('本次文档写入已拒绝或审批超时，文件未保存。')
+
+        if state['cancel'] or state['finalizing']:
+            return failure('本轮运行已结束，文件未保存。')
+        self.authorize(session['actor_id'], session['binding'])
+        try:
+            after, _ = self._document_snapshot(session['actor_id'], path)
+        except (ValueError, OSError, UnicodeError):
+            return failure('审批期间文档状态发生变化，文件未保存；请重新读取并重试。')
+        if after != before:
+            return failure('审批期间文档状态发生变化，文件未保存；请重新读取并重试。')
+        safe_params = {**params, 'arguments': {**args.model_dump(), 'path': path}}
+        return await self.tool_bridge(session, state['run'], safe_params)
+
     async def _request(self, session, state, payload):
         self.authorize(session['actor_id'], session['binding'])
         method, params, req_id = payload['method'], payload['params'], payload['request_id']
@@ -129,7 +240,7 @@ class RunService:
         if method == 'item/tool/call' and self.tool_bridge:
             if session['binding'].get('scheduler_scope'):
                 params = {**params, 'callId': str(req_id)}
-            result = await self.tool_bridge(session, state['run'], params)
+            result = await self._call_business_tool(session, state, params)
             self.authorize(session['actor_id'], session['binding'])
             await adapter.respond(req_id, result)
             return
@@ -145,6 +256,12 @@ class RunService:
             offered = params.get('availableDecisions') or ['decline']
             await adapter.respond(req_id, {'decision': 'decline' if 'decline' in offered else 'cancel'})
             self._emit(state, 'notice', {'message': '受限运行不支持计划审批' if is_plan else '受限运行仅允许授权的业务工具，已拒绝原生命令或文件修改'})
+            return
+        if state.get('answer') is not None or state['run'].get('pending'):
+            offered = params.get('availableDecisions') or ['decline']
+            decision = 'decline' if 'decline' in offered else 'cancel'
+            await adapter.respond(req_id, {'decision': decision})
+            self._emit(state, 'notice', {'message': '已有待处理的审批，本次操作已拒绝；请稍后重试'})
             return
         workspace = self.backend.workspace(session).resolve()
         allowed = ['accept', 'decline']
@@ -237,7 +354,7 @@ class RunService:
                                and not session['binding'].get('scheduler_scope'))
                 updated_instructions = (not (session['binding'].get('service_scope')
                                              or session['binding'].get('scheduler_scope'))
-                                        and session.get('instructions_version', 1) < 4
+                                        and session.get('instructions_version', 1) < 5
                                         and bool(self.tool_bridge))
                 if admin_scope and self.tool_bridge:
                     from app.runtime.business_tools import specifications
@@ -246,19 +363,30 @@ class RunService:
                     # A live old native thread cannot acquire the new bridge
                     # via thread/resume or turn/start. Preserve its history and
                     # mark the unavailable capability instead of claiming it.
-                    legacy_codex = (session['binding'].get('runtime') == 'codex'
-                                    and bool(session.get('thread_id'))
-                                    and 'jellyfish_write_project_brief' not in previous)
-                    session['project_brief_write_available'] = not legacy_codex
-                    if not legacy_codex:
-                        # Changing the identity closes a warm Cursor client;
-                        # session/load then receives the updated MCP tools.
+                    existing_codex = (session['binding'].get('runtime') == 'codex'
+                                      and bool(session.get('thread_id')))
+                    session['project_brief_write_available'] = (
+                        not existing_codex or 'jellyfish_write_project_brief' in previous)
+                    session['document_write_available'] = (
+                        not existing_codex or 'jellyfish_write_document' in previous)
+                    if not existing_codex:
+                        # Cursor's connection backend restarts an idle ACP client
+                        # when this session's MCP tools change, then session/load
+                        # registers the new bridge against its native history.
                         session['dynamic_tools'] = specifications()
+                    if (updated_instructions and existing_codex
+                            and not session['document_write_available']
+                            and not session.get('document_write_notice_sent')):
+                        self._emit(state, 'notice', {'message':
+                            '这条 Codex 会话无法追加文档库写入工具；如需写入 /docs，请新建 Codex 对话。'})
+                        session['document_write_notice_sent'] = True
+                        self.store.put('session', session)
                 if updated_instructions:
                     from app.runtime.business_tools import instructions
                     session['instructions'] = instructions(
                         session['actor_id'], session['binding']['runtime'],
                         project_brief_write=session.get('project_brief_write_available', False),
+                        document_write_available=session.get('document_write_available', False),
                     )
                 async with self.backend.execution(session) as adapter:
                     state['adapter'] = adapter
@@ -278,7 +406,7 @@ class RunService:
                             if state['finalizing'] or state['adapter'] is not adapter or state['cancel']:
                                 raise HTTPException(409, '本轮工具调用已结束')
                             self.authorize(session['actor_id'], session['binding'])
-                            return await self.tool_bridge(session, run, params)
+                            return await self._call_business_tool(session, state, params)
                         adapter.tool_call = tool_call
                     instructions_sent = session.get('instructions_sent', bool(session['thread_id']))
                     session['thread_id'] = await adapter.open_session(str(workspace), session['instructions'], session['thread_id'])
@@ -406,7 +534,7 @@ class RunService:
                     adapter.reusable = terminal == 'completed' and not state['cancel']
                     if adapter.reusable:
                         session['instructions_sent'] = True
-                        session['instructions_version'] = 4
+                        session['instructions_version'] = 5
                         session['connection_history'] = session.get('connection_history', False) or hasattr(self.backend, 'connection_home')
                         self.store.put('session', session)
                     adapter.tool_call = None
@@ -534,6 +662,9 @@ class RunService:
             await self.backend.release(session_id=run['session_id'])
 
     async def _stop(self, state, rid):
+        answer = state.get('answer')
+        if answer is not None and not answer.done():
+            answer.cancel()
         if state['adapter'] and not state['finalizing']:
             with contextlib.suppress(Exception):
                 await state['adapter'].cancel()

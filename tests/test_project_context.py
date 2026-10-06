@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.runtime.business_tools import BusinessTools, ProjectBriefWrite
+from app.runtime.business_tools import BusinessTools, ProjectBriefWrite, scheduler_specifications
 from app.runtime.consumer_tools import ServiceTools
 from app.runtime.codex import CodexAdapter
 from app.runtime.policy import DeploymentPolicy
@@ -86,7 +86,7 @@ class BriefBudgetTests(unittest.TestCase):
 
 
 class BridgeScopeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_service_registry_and_bridge_reject_project_brief_write(self):
+    async def test_service_and_scheduler_bridges_reject_admin_writes(self):
         bridge = BusinessTools(None, lambda actor, binding: None, SimpleNamespace(emit=lambda *_: None))
         session = {"actor_id": "alice", "conversation_id": "admin-c1",
                    "binding": {"runtime": "codex", "service_scope": {
@@ -99,11 +99,31 @@ class BridgeScopeTests(unittest.IsolatedAsyncioTestCase):
             service_tools = ServiceTools(None, None, lambda actor, binding: None)
             names = {tool["name"] for tool in service_tools.specifications(session["binding"], "alice")}
             self.assertFalse(any("project" in name for name in names))
+            self.assertNotIn("jellyfish_write_document", names)
+            self.assertNotIn("jellyfish_service_write_document", names)
             for name in (params["tool"], "jellyfish_service_write_project_brief"):
                 with self.subTest(tool=name):
                     denied = await bridge(session, {"channel": "web"}, {**params, "tool": name})
                     self.assertFalse(denied["success"])
+            denied = await bridge(session, {"channel": "web"}, {
+                "tool": "jellyfish_write_document",
+                "arguments": {"path": "/docs/forbidden.md", "content": "no"},
+            })
+            self.assertFalse(denied["success"])
+            self.assertIn("未向 Service 开放", denied["contentItems"][0]["text"])
             write.assert_not_called()
+
+        self.assertNotIn("jellyfish_write_document",
+                         {tool["name"] for tool in scheduler_specifications()})
+        scheduled = {"actor_id": "alice", "binding": {"runtime": "codex",
+                     "scheduler_scope": {"run_id": "scheduled-1"}}}
+        with patch("app.runtime.consumer.authorize_scheduler", return_value=object()):
+            denied = await bridge(scheduled, {"channel": "web"}, {
+                "tool": "jellyfish_write_document",
+                "arguments": {"path": "/docs/forbidden.md", "content": "no"},
+            })
+        self.assertFalse(denied["success"])
+        self.assertIn("未向定时任务开放", denied["contentItems"][0]["text"])
 
     async def test_personal_wechat_admin_scope_can_write_without_web_lock(self):
         tool = create_write_project_brief_tool("alice")
@@ -240,9 +260,28 @@ class ProviderContextTests(unittest.IsolatedAsyncioTestCase):
                     await complete(run["id"])
                     updated = store.get("session", codex["id"])
                     self.assertFalse(updated["project_brief_write_available"])
+                    self.assertFalse(updated["document_write_available"])
                     self.assertEqual(updated["dynamic_tools"], [{"name": "old-tool"}])
-                    self.assertEqual(updated["instructions_version"], 4)
-                    instructions.assert_any_call("alice", "codex", project_brief_write=False)
+                    self.assertEqual(updated["instructions_version"], 5)
+                    instructions.assert_any_call("alice", "codex", project_brief_write=False,
+                                                 document_write_available=False)
+
+                    # A native Codex thread with the previous brief tool still
+                    # cannot acquire a newly registered dynamic document tool.
+                    old_codex = service.create_session(
+                        "alice", {"runtime": "codex", "profile_id": "p3", "model": "m"},
+                        conversation_id="c3",
+                        dynamic_tools=[{"name": "jellyfish_write_project_brief"}])
+                    old_codex.update({"thread_id": "native-thread", "instructions_version": 4})
+                    store.put("session", old_codex)
+                    run = service.enqueue("alice", old_codex["id"], "brief-only-codex", "hello")
+                    await complete(run["id"])
+                    updated = store.get("session", old_codex["id"])
+                    self.assertTrue(updated["project_brief_write_available"])
+                    self.assertFalse(updated["document_write_available"])
+                    self.assertEqual(updated["dynamic_tools"], [{"name": "jellyfish_write_project_brief"}])
+                    instructions.assert_any_call("alice", "codex", project_brief_write=True,
+                                                 document_write_available=False)
 
                     cursor = service.create_session(
                         "alice", {"runtime": "cursor", "profile_id": "p2", "model": "m"},
@@ -253,9 +292,13 @@ class ProviderContextTests(unittest.IsolatedAsyncioTestCase):
                     await complete(run["id"])
                     updated = store.get("session", cursor["id"])
                     self.assertTrue(updated["project_brief_write_available"])
+                    self.assertTrue(updated["document_write_available"])
                     self.assertIn("jellyfish_write_project_brief",
                                   {tool["name"] for tool in updated["dynamic_tools"]})
-                    instructions.assert_any_call("alice", "cursor", project_brief_write=True)
+                    self.assertIn("jellyfish_write_document",
+                                  {tool["name"] for tool in updated["dynamic_tools"]})
+                    instructions.assert_any_call("alice", "cursor", project_brief_write=True,
+                                                 document_write_available=True)
             finally:
                 await service.shutdown()
                 store.close()

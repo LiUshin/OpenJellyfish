@@ -98,18 +98,84 @@ const base = process.env.TEST_BASE_URL || 'http://127.0.0.1:3004';
    assert.equal(sent.length, 1); assert.equal(sent[0].model, 'model-b'); assert.equal(sent[0].message, '确认模型切换与发送');
    await list.getByRole('button', { name: conversations[0].title, exact: true }).click();
    await page.locator(`[data-jf-file="${file}"]`).first().click();
-   await page.getByRole('tab', { name: /research.md/ }).waitFor();
+   await page.locator('[data-jf-file-tab-capsule]').waitFor();
    const separator = page.getByRole('separator', { name: '调整聊天与文件宽度' });
    await separator.focus(); await separator.press('Enter');
    assert.equal(await separator.getAttribute('aria-valuenow'), '50');
    await separator.press('ArrowRight'); assert.equal(await separator.getAttribute('aria-valuenow'), '53');
    await separator.press('Enter');
    await page.locator(`[data-jf-file="${second}"]`).first().click();
-   const tab = page.getByRole('tab', { name: /summary.md/ }); await tab.focus(); await tab.press('ArrowLeft');
-   assert.equal(await page.getByRole('tab', { name: /research.md/ }).getAttribute('aria-selected'), 'true');
+   const headers = await Promise.all([
+    page.locator('[class*="chatHeader"]').first().boundingBox(),
+    page.locator('[data-jf-file-preview-toolbar]').boundingBox(),
+    page.locator('[data-jf-file-panel-toolbar]').boundingBox(),
+   ]);
+   assert(headers.every(Boolean), 'chat and file toolbars are visible');
+   assert(headers.every(box => Math.abs(box.y - headers[0].y) <= 1 && Math.abs(box.height - headers[0].height) <= 1), 'chat, preview and browser toolbars align');
+   const capsule = page.locator('[data-jf-file-tab-capsule]');
+   await capsule.waitFor();
+   assert.equal(await capsule.getAttribute('data-expanded'), 'false', 'file switcher starts collapsed');
+   const capsuleBox = await capsule.boundingBox();
+   assert(capsuleBox && capsuleBox.width <= 120 && Math.abs(capsuleBox.y - headers[1].y) < 12, 'small capsule sits at the preview toolbar top left');
+   assert((await capsule.getByRole('button', { name: /打开的文件：summary.md/ }).innerText()).includes('MD'), 'collapsed capsule shows file type');
+   await capsule.hover();
+   await page.waitForFunction(() => document.querySelector('[data-jf-file-tab-capsule]')?.getAttribute('data-expanded') === 'true');
+   const tablist = page.getByRole('tablist', { name: '打开的文件' });
+   assert.equal(await tablist.getAttribute('aria-orientation'), 'horizontal');
+   const firstTab = page.getByRole('tab', { name: /research.md/ });
+   const secondTab = page.getByRole('tab', { name: /summary.md/ });
+   const tabPositions = await Promise.all([
+    firstTab.boundingBox(), secondTab.boundingBox(),
+   ]);
+   assert(tabPositions.every(Boolean) && tabPositions[1].x > tabPositions[0].x, 'file ticks form a horizontal sequence');
+   assert.equal(await tablist.locator('line').count(), 0, 'file ticks have no connector line');
+   await firstTab.click();
+   await secondTab.hover();
+   const card = page.locator('.ant-popover:visible');
+   await card.getByText(second, { exact: true }).waitFor();
+   assert(await card.getByText('研究记录', { exact: true }).isVisible(), 'hover card shows the document title');
+   assert((await card.innerText()).includes('整理资料与已有结论'), 'hover card shows cached content');
+   assert.equal(await firstTab.getAttribute('aria-selected'), 'true', 'hover leaves the active file unchanged');
+   assert(await page.getByRole('button', { name: '关闭 summary.md', exact: true }).isVisible(), 'hovered tick exposes its small close button');
+   if (engine === 'codex') {
+    await page.screenshot({ animations: 'disabled', path: join(tmpdir(), 'jf-workspace-file-capsule.png') });
+    await page.getByRole('button', { name: '切换浅色', exact: true }).click();
+    await capsule.hover();
+    await secondTab.hover();
+    await page.screenshot({ animations: 'disabled', path: join(tmpdir(), 'jf-workspace-file-capsule-light.png') });
+    await page.getByRole('button', { name: '切换深色', exact: true }).click();
+   }
+   await secondTab.click();
+   assert.equal(await secondTab.getAttribute('aria-selected'), 'true', 'click activates the file');
+   await secondTab.focus(); await secondTab.press('ArrowLeft');
+   assert.equal(await firstTab.evaluate(el => el === document.activeElement), true, 'arrow key moves focus');
+   assert.equal(await secondTab.getAttribute('aria-selected'), 'true', 'arrow key does not activate a file');
+   await firstTab.press('Enter');
+   assert.equal(await firstTab.getAttribute('aria-selected'), 'true', 'Enter activates focused file');
+   await secondTab.hover();
+   await page.getByRole('button', { name: '关闭 summary.md', exact: true }).click();
+   assert.equal(await tablist.getByRole('tab', { name: /summary.md/ }).count(), 0, 'close button removes only that file');
+   await page.locator(`[data-jf-file="${second}"]`).first().click();
+   await page.mouse.move(0, 0);
+   await page.waitForFunction(() => document.querySelector('[data-jf-file-tab-capsule]')?.getAttribute('data-expanded') === 'false');
+   await page.setViewportSize({ width: 390, height: 844 });
+   await page.getByRole('button', { name: '关闭面板', exact: true }).click();
+   await capsule.getByRole('button', { name: /展开文件标签/ }).click();
+   assert.equal(await tablist.getAttribute('aria-orientation'), 'horizontal');
+   const mobileTabs = await Promise.all([
+    page.getByRole('tab', { name: /research.md/ }).boundingBox(),
+    page.getByRole('tab', { name: /summary.md/ }).boundingBox(),
+   ]);
+   assert(mobileTabs.every(Boolean) && mobileTabs[1].x > mobileTabs[0].x, 'mobile file tabs scroll horizontally');
+   await page.setViewportSize({ width: 1440, height: 1000 });
+   await separator.focus(); await separator.press('End');
+   assert(await page.getByRole('button', { name: '更多文件操作', exact: true }).isVisible(), 'narrow preview keeps file actions available');
+   await separator.press('Enter');
    await page.getByRole('button', { name: '更多文件操作', exact: true }).click();
    await page.getByRole('menuitem', { name: '关闭当前标签', exact: true }).waitFor(); await page.keyboard.press('Escape');
    assert(await page.getByRole('button', { name: '下载当前文件', exact: true }).isVisible());
+   await page.getByRole('button', { name: '更多文件操作', exact: true }).click();
+   await page.getByRole('menuitem', { name: '打开文件浏览器', exact: true }).click();
    await page.screenshot({ animations: 'disabled', path: join(tmpdir(), `jf-workspace-${engine}.png`) });
    await page.getByRole('button', { name: '对话全屏', exact: true }).click();
    await page.getByRole('button', { name: '关闭文件面板', exact: true }).click();

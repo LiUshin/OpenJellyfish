@@ -55,7 +55,8 @@ export const savePreferences = (choice: RuntimeChoice) => request<RuntimeChoice>
 export interface RuntimeApproval {
   id: string; kind: string; command?: string; reason?: string;
   title?: string; plan?: string;
-  changes?: { path: string; diff?: string }[]; allowed: ('accept' | 'decline')[];
+  changes?: { path: string; diff?: string; old_text?: string; new_text?: string }[];
+  allowed: ('accept' | 'decline')[];
 }
 export interface RuntimeArtifact { id: string; name: string; mime: string; size: number; path: string }
 export interface RuntimeInput { name: string; data_url: string }

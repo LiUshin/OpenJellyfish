@@ -12,7 +12,9 @@ class CursorMCP:
         self.active = False
 
     async def start(self):
-        app = web.Application(client_max_size=65536)
+        # A 64 KiB UTF-8 document can expand several times when JSON-escaped.
+        # Keep the HTTP body bounded while allowing the full document payload.
+        app = web.Application(client_max_size=512 * 1024)
         app.router.add_post('/mcp', self.handle)
         self.runner = web.AppRunner(app, access_log=None, shutdown_timeout=5)
         await self.runner.setup()

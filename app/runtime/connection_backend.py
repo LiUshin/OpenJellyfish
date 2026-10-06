@@ -113,7 +113,7 @@ class ConnectionBackend(LocalBackend):
         entry['task'].add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
         return entry
 
-    async def _ensure(self, pid, scope=None):
+    async def _ensure(self, pid, scope=None, session=None):
         while not self.closed:
             self.changed.clear()
             async with self.guard:
@@ -125,6 +125,12 @@ class ConnectionBackend(LocalBackend):
                         await self._drop_locked(pid)
                         entry = None
                     if entry and not entry['busy'] and entry['task'].done() and (not entry['ready'] or not self.healthy(entry) or entry['profile']['auth_generation'] != p['auth_generation']):
+                        await self._drop_locked(pid)
+                        entry = None
+                    if (entry and not entry['busy'] and session
+                            and session['binding'].get('runtime') == 'cursor'
+                            and entry['task'].done() and entry['ready']
+                            and entry['adapter'].needs_tool_refresh(session)):
                         await self._drop_locked(pid)
                         entry = None
                     if entry is None:
@@ -205,7 +211,7 @@ class ConnectionBackend(LocalBackend):
         pid = session['binding']['profile_id']
         prior = self.clients.get(pid)
         was_ready = self.public_state(pid)['status'] == 'ready'
-        entry = await self._ensure(pid, session['binding'].get('service_scope') or session['binding'].get('scheduler_scope'))
+        entry = await self._ensure(pid, session['binding'].get('service_scope') or session['binding'].get('scheduler_scope'), session)
         adapter = entry['adapter']
         ok = False
         try:

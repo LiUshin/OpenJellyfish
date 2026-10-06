@@ -715,6 +715,12 @@ v1.3.1 的 `app/runtime/consumer.py` 与 `consumer_tools.py` 将授权套餐扩�
 
 `app/services/service_test.py` 将管理员对话持久保存的 `test_service_id` 路由到独立 Service 测试会话；按 Service 当前配置执行并排除真实消费者记录和外部反馈通知。Tracing 由前端 `TracingView.tsx`、`TraceCanvas.tsx` 与 `tracePosition.ts` 从持久消息和工具块推导文件 / 动作视图；缺失位置必须保留未知状态，不能当作读取覆盖率证明。
 
+### 4.13 v1.4.2 管理员文档写入
+
+`business_tools.py` 注册 `jellyfish_write_document`，仅允许 `/docs` 范围内最多 64 KiB 的 UTF-8 写入；使用工作区路径锁与持久存储接口，拒绝路径穿越、符号链接和目录目标。`RunService._call_business_tool` 统一处理 Codex 动态工具与 Cursor MCP 的审批、取消、撤权和审批期间的文档变化；已有不同内容需 `overwrite=true`。YOLO 只自动处理审批，不扩大资源范围。
+
+Cursor 发现会话工具清单变化时会重启空闲客户端并恢复原生会话，MCP 请求上限扩大为 512 KiB 以容纳 JSON 转义，实际文本仍受 64 KiB 字节限制。已有 Codex 线程保留旧工具并提示新建对话。无需新增环境变量，沿用 `.env.example` 的 Runtime 配置；Service 与调度器不自动获得管理员文档写入工具。详见[运行说明](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-standard-mode.md)。
+
 ## 5. 前端架构
 
 ### 5.1 目录结构

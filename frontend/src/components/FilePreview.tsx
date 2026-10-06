@@ -1,5 +1,6 @@
 import { type KeyboardEvent, useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { Button, Tooltip, Segmented, Table, Empty, App, Dropdown } from 'antd';
+import { useLocation } from 'react-router-dom';
 import {
   SaveOutlined,
   MoreOutlined,
@@ -588,6 +589,7 @@ function TextEditor({
 // ────────────────────────────── 主组件 ──────────────────────────────
 
 export default function FilePreview() {
+  const isChatRoute = useLocation().pathname === '/';
   const {
     editingFile,
     editContent,
@@ -600,6 +602,9 @@ export default function FilePreview() {
     openTabs,
     activateTab,
     reorderTabs,
+    setSplitMode,
+    fileBrowserOpen,
+    setFileBrowserOpen,
   } = useFileWorkspace();
 
   // 每个 tab 记住预览/源码模式；切走再回来不丢
@@ -675,73 +680,84 @@ export default function FilePreview() {
   }
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        background: C.bg,
-        minWidth: 0,
-      }}
-    >
-      <FileTabBar
-        tabs={openTabs}
-        activePath={editingFile}
-        onActivate={activateTab}
-        onClose={(path) => closeTab(path)}
-        onReorder={reorderTabs}
-      />
-      <div className={workspace.fileToolbar} aria-label="文件操作">
+    <div className={workspace.filePreview}>
+      <div className={workspace.fileToolbar} data-jf-file-preview-toolbar aria-label="文件操作">
         <div className={workspace.fileToolbarGroup}>
-        {showSaveBtn && (
-          <Tooltip title={editDirty ? '保存 (Ctrl+S)' : '已保存'}>
+          <FileTabBar
+            tabs={openTabs}
+            activePath={editingFile}
+            onActivate={activateTab}
+            onClose={(path) => closeTab(path)}
+            onReorder={reorderTabs}
+          />
+          {showSaveBtn && (
+            <Tooltip title={editDirty ? '保存 (Ctrl+S)' : '已保存'}>
+              <Button
+                type="text"
+                size="small"
+                icon={<SaveOutlined />}
+                aria-label={editDirty ? '保存文件' : '已保存'}
+                disabled={!editDirty}
+                loading={saving}
+                style={{ color: editDirty ? C.accent : C.textDim, flexShrink: 0 }}
+                onClick={saveFile}
+              />
+            </Tooltip>
+          )}
+          {showToggle && (
+            <div className={workspace.fileToolbarViewSwitch}>
+              <Segmented
+                size="small"
+                value={viewMode}
+                onChange={(v) => changeViewMode(v as ViewMode)}
+                options={[
+                  { label: '预览', value: 'preview' },
+                  { label: '源码', value: 'source' },
+                ]}
+                style={{ flexShrink: 0 }}
+              />
+            </div>
+          )}
+        </div>
+        <div className={workspace.fileToolbarGroup}>
+          <Tooltip title="下载当前文件">
             <Button
+              className={workspace.fileToolbarDownload}
               type="text"
               size="small"
-              icon={<SaveOutlined />}
-              aria-label={editDirty ? '保存文件' : '已保存'}
-              disabled={!editDirty}
-              loading={saving}
-              style={{ color: editDirty ? C.accent : C.textDim, flexShrink: 0 }}
-              onClick={saveFile}
-            />
+              icon={<DownloadOutlined />}
+              style={{ color: C.textSec }}
+              aria-label="下载当前文件"
+              onClick={handleDownload}
+            >下载</Button>
           </Tooltip>
-        )}
-        {showToggle && (
-          <Segmented
-            size="small"
-            value={viewMode}
-            onChange={(v) => changeViewMode(v as ViewMode)}
-            options={[
-              { label: '预览', value: 'preview' },
-              { label: '源码', value: 'source' },
-            ]}
-            style={{ flexShrink: 0 }}
-          />
-        )}
-        </div>
-        <div className={workspace.fileToolbarGroup}>
-        <Tooltip title="下载当前文件">
-          <Button
-            type="text"
-            size="small"
-            icon={<DownloadOutlined />}
-            style={{ color: C.textSec }}
-            aria-label="下载当前文件"
-            onClick={handleDownload}
-          >下载</Button>
-        </Tooltip>
-        <Dropdown trigger={['click']} menu={{ items: [
-          { key: 'close', label: '关闭当前标签', onClick: () => closeTab(editingFile) },
-          { key: 'close-all', label: '关闭全部标签', onClick: () => closeFile() },
-        ] }}>
-          <Button type="text" size="small" icon={<MoreOutlined />} aria-label="更多文件操作" title="更多文件操作" />
-        </Dropdown>
-        <div style={{ width: 1, height: 16, background: C.border, flexShrink: 0 }} />
-        <HeaderControls />
+          <Dropdown trigger={['click']} menu={{ items: [
+            { key: 'download', label: '下载文件', onClick: () => { void handleDownload(); } },
+            ...(showSaveBtn && editDirty ? [{ key: 'save', label: '保存文件', onClick: () => { void saveFile(); } }] : []),
+            ...(showToggle ? [
+              { key: 'preview', label: '预览文件', onClick: () => changeViewMode('preview') },
+              { key: 'source', label: '查看源码', onClick: () => changeViewMode('source') },
+            ] : []),
+            { key: 'close', label: '关闭当前标签', onClick: () => closeTab(editingFile) },
+            { key: 'close-all', label: '关闭全部标签', onClick: () => closeFile() },
+            ...(isChatRoute ? [
+              { key: 'show-chat', label: '对话全屏', onClick: () => setSplitMode('chat') },
+              { key: 'show-split', label: '分屏', onClick: () => setSplitMode('split') },
+              { key: 'show-file', label: '文件全屏', onClick: () => setSplitMode('file') },
+            ] : []),
+            { key: 'file-browser', label: fileBrowserOpen ? '关闭文件浏览器' : '打开文件浏览器', onClick: () => setFileBrowserOpen(!fileBrowserOpen) },
+          ] }}>
+            <Button type="text" size="small" icon={<MoreOutlined />} aria-label="更多文件操作" title="更多文件操作" />
+          </Dropdown>
+          <div className={workspace.fileToolbarDivider} style={{ width: 1, height: 16, background: C.border, flexShrink: 0 }} />
+          <div className={workspace.fileToolbarHeaderControls}>
+            <HeaderControls />
+          </div>
         </div>
       </div>
-      {body}
+      <div className={workspace.filePreviewBody}>
+        <div className={workspace.filePreviewContent}>{body}</div>
+      </div>
     </div>
   );
 }

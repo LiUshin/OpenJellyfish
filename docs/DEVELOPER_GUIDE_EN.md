@@ -710,6 +710,12 @@ In v1.3.1, `app/runtime/consumer.py` and `consumer_tools.py` extend authorized p
 
 `app/services/service_test.py` routes the persisted admin conversation `test_service_id` to a separate Service test session using saved Service configuration, excluding real consumer records and external feedback notifications. Frontend `TracingView.tsx`, `TraceCanvas.tsx` and `tracePosition.ts` derive file/action views from recorded messages and tool blocks. Missing locations remain unknown and are not evidence of complete read coverage.
 
+### 4.13 v1.4.2 admin document writes
+
+`business_tools.py` registers `jellyfish_write_document`, restricted to `/docs` and 64 KiB of UTF-8 text. It uses workspace path locks and durable storage, rejecting traversal, symlinks and directory targets. `RunService._call_business_tool` handles approval, cancellation, revocation and document changes during approval for both Codex dynamic tools and Cursor MCP. Replacing different existing content requires `overwrite=true`. YOLO automates approval without widening scope.
+
+Cursor restarts an idle client and resumes the native session when its tool catalog changes. MCP requests allow 512 KiB for JSON escaping; actual text remains limited to 64 KiB. Existing Codex threads keep their original tools and ask users to start a new chat. No new environment variables are required; use the Runtime settings in `.env.example`. Services and schedulers do not acquire this admin tool. See [runtime operation](https://github.com/LiUshin/OpenJellyfish/blob/main/docs/runtime-standard-mode.md).
+
 ## 5. Frontend Architecture
 
 ### 5.1 Directory Structure

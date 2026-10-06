@@ -168,6 +168,21 @@ class MediaTests(unittest.TestCase):
 
 
 class ImageModeAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_codex_thread_registers_admin_document_write_tool(self):
+        from app.runtime.business_tools import specifications
+        from app.runtime.codex import CodexAdapter
+
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = CodexAdapter('unused', Path(tmp), Path(tmp), 'model',
+                                   managed=True, dynamic_tools=specifications())
+            adapter.initialized = True
+            adapter.rpc = SimpleNamespace(request=AsyncMock(return_value={'thread': {'id': 'thread'}}))
+            await adapter.open_session(tmp, 'admin instructions')
+            method, params = adapter.rpc.request.call_args.args
+            self.assertEqual(method, 'thread/start')
+            self.assertIn('jellyfish_write_document',
+                          {tool['name'] for tool in params['dynamicTools']})
+
     async def test_codex_session_config_respects_binding_and_scope(self):
         from app.runtime.codex import CodexAdapter
         with tempfile.TemporaryDirectory() as tmp:

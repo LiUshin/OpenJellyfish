@@ -957,8 +957,8 @@ export default function FilePanel() {
       )}
 
       {/* Toolbar */}
-      <div style={{
-        padding: '0 12px', height: 47, boxSizing: 'border-box',
+      <div data-jf-file-panel-toolbar style={{
+        padding: '0 12px', height: isMobile ? 48 : 52, boxSizing: 'border-box',
         borderBottom: `1px solid ${C.border}`,
         display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
       }}>

@@ -1,11 +1,13 @@
 from app.core.host_auth import HOST_ID
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 import httpx
 from app.runtime.cursor import CursorAdapter, cursor_identity, cursor_environment, credential_path
@@ -42,6 +44,44 @@ class FakeACP:
 
 
 class CursorAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_loaded_session_refreshes_mcp_catalog_before_resume(self):
+        from app.runtime.business_tools import specifications
+        old_tools = [{'name': 'jellyfish_list_documents'}]
+        session = {'id': 'admin-session', 'thread_id': 'thread', 'dynamic_tools': specifications()}
+        previous = CursorAdapter('unused', Path('/tmp/home'), Path('/tmp/work'), 'model',
+                                 dynamic_tools=old_tools)
+        previous.loaded_threads.add('thread')
+        previous.bridges['admin-session'] = SimpleNamespace(tools=old_tools)
+        self.assertTrue(previous.needs_tool_refresh(session))
+        self.assertFalse(previous.needs_tool_refresh({**session, 'dynamic_tools': old_tools}))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home, workspace = root / 'home', root / 'workspace'
+            auth = credential_path(home)
+            auth.parent.mkdir(parents=True)
+            auth.write_bytes(cursor_auth())
+            adapter = CursorAdapter('unused', home, workspace, 'model',
+                                    dynamic_tools=session['dynamic_tools'])
+            adapter.rpc = FakeACP()
+            adapter.session_key = session['id']
+            async def call(_params):
+                return {'contentItems': [{'text': 'ok'}], 'success': True}
+            adapter.tool_call = call
+            try:
+                self.assertEqual(await adapter.open_session(str(workspace), 'instructions', 'thread'), 'thread')
+                loaded = next(params for method, params in adapter.rpc.calls if method == 'session/load')
+                self.assertEqual(len(loaded['mcpServers']), 1)
+                headers = {'Authorization': 'Bearer ' + adapter.mcp.token}
+                async with httpx.AsyncClient(trust_env=False) as client:
+                    response = await client.post(loaded['mcpServers'][0]['url'], headers=headers,
+                                                 json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertIn('jellyfish_write_document',
+                              {tool['name'] for tool in response.json()['result']['tools']})
+            finally:
+                await adapter.close()
+
     async def test_prompt_response_usage_is_forwarded_when_supplier_reports_it(self):
         class MeteredACP(FakeACP):
             async def request(self, method, params, **kwargs):
@@ -150,6 +190,76 @@ class CursorAdapterTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await client.post(server['url'], json=data, headers=headers)).status_code, 400)
                 self.assertEqual(len(calls), 1)
         finally: await bridge.close()
+
+
+class CursorConnectionRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_idle_loaded_cursor_connection_is_rebuilt_for_new_tools(self):
+        from app.runtime.business_tools import specifications
+        from app.runtime.connection_backend import ConnectionBackend
+        from app.runtime.store import RuntimeStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = RuntimeStore(root / 'store')
+            profile = {'id': 'cursor-profile', 'auth_generation': 1,
+                       'credential_owner_id': HOST_ID, 'status': 'ready',
+                       'runtime': 'cursor', 'models': [{'id': 'model'}]}
+            store.put('profile', profile)
+            closed, built = [], []
+
+            @contextlib.asynccontextmanager
+            async def lease(_binding, _home):
+                yield
+
+            async def close_adapter(_pid, adapter):
+                closed.append(adapter)
+
+            credentials = SimpleNamespace(
+                store=store, get=lambda pid: store.get('profile', pid),
+                binding=lambda actor, pid, model: {'runtime': 'cursor', 'profile_id': pid,
+                                                    'model': model, 'auth_generation': 1},
+                lease=lease, close_adapter=close_adapter)
+
+            class FakeCursor:
+                needs_tool_refresh = CursorAdapter.needs_tool_refresh
+
+                def __init__(self):
+                    self.loaded_threads = set()
+                    self.bridges = {}
+                    self.session_count = 1
+                    self.rpc = SimpleNamespace(process=None, failure=None)
+
+                async def warm_up(self):
+                    return {}
+
+                async def prepare_history(self, _session, _legacy_home):
+                    return None
+
+            def factory(*_args, **_kwargs):
+                adapter = FakeCursor()
+                built.append(adapter)
+                return adapter
+
+            backend = ConnectionBackend(root / 'backend', credentials, 'unused',
+                                        max_clients=1, adapter_factory=factory)
+            old_tools = [{'name': 'jellyfish_list_documents'}]
+            session = {'id': 'admin-session', 'actor_id': 'alice',
+                       'thread_id': 'thread', 'dynamic_tools': old_tools,
+                       'binding': credentials.binding('alice', profile['id'], 'model')}
+            try:
+                async with backend.execution(session) as first:
+                    first.loaded_threads.add('thread')
+                    first.bridges[session['id']] = SimpleNamespace(tools=old_tools)
+                    first.reusable = True
+                session['dynamic_tools'] = specifications()
+                async with backend.execution(session) as second:
+                    self.assertIsNot(first, second)
+                    self.assertIn(first, closed)
+                    self.assertEqual(len(built), 2)
+                    second.reusable = True
+            finally:
+                await backend.shutdown()
+                store.close()
 
 from test_runtime_profiles import ProfileFixture
 from app.runtime.providers import CursorProvider
@@ -358,10 +468,47 @@ class CursorChatTests(unittest.IsolatedAsyncioTestCase):
         self.storage.write_bytes('bob','/docs/own.txt',b'bob secret')
         async def call(params):return await business(session,run,params)
         specs=__import__('app.runtime.business_tools',fromlist=['specifications']).specifications()
+        # This instance checks MCP transport and actor binding. Production
+        # wraps tool_call with RunService approval, exercised by the next test.
         bridge=CursorMCP(specs,call);server=await bridge.start()
         try:
             async with httpx.AsyncClient(trust_env=False) as c:
                 headers={'Authorization':'Bearer '+bridge.token}
+                listed=await c.post(server['url'],headers=headers,json={
+                    'jsonrpc':'2.0','id':0,'method':'tools/list'})
+                self.assertIn('jellyfish_write_document',
+                              {tool['name'] for tool in listed.json()['result']['tools']})
+                doc_path='/docs/寻味江南-2026年十月菜单.md'
+                content='# 寻味江南\n\n桂花糖藕。\n'
+                saved=await c.post(server['url'],headers=headers,json={
+                    'jsonrpc':'2.0','id':2,'method':'tools/call','params':{
+                        'name':'jellyfish_write_document',
+                        'arguments':{'path':doc_path,'content':content}}})
+                self.assertEqual(saved.status_code,200,saved.text)
+                self.assertFalse(saved.json()['result']['isError'],saved.text)
+                self.assertEqual(self.storage.read_text('alice',doc_path),content)
+                self.assertFalse(self.storage.is_file('bob',doc_path))
+                documents=await c.post(server['url'],headers=headers,json={
+                    'jsonrpc':'2.0','id':3,'method':'tools/call','params':{
+                        'name':'jellyfish_list_documents','arguments':{'path':'/docs'}}})
+                doc_items=json.loads(documents.json()['result']['content'][0]['text'])
+                self.assertIn('寻味江南-2026年十月菜单.md',
+                              {item['name'] for item in doc_items})
+                saved_read=await c.post(server['url'],headers=headers,json={
+                    'jsonrpc':'2.0','id':4,'method':'tools/call','params':{
+                        'name':'jellyfish_read_document','arguments':{'path':doc_path}}})
+                self.assertEqual(saved_read.json()['result']['content'][0]['text'],content)
+
+                # Cursor's MCP transport must carry the full 64 KiB UTF-8
+                # document even after the JSON-RPC envelope is added.
+                limit_path='/docs/mcp-size-limit.md'
+                boundary=await c.post(server['url'],headers=headers,json={
+                    'jsonrpc':'2.0','id':5,'method':'tools/call','params':{
+                        'name':'jellyfish_write_document',
+                        'arguments':{'path':limit_path,'content':'x'*65536}}})
+                self.assertEqual(boundary.status_code,200,boundary.text[:200])
+                self.assertFalse(boundary.json()['result']['isError'],boundary.text[:200])
+                self.assertEqual(len(self.storage.read_bytes('alice',limit_path)),65536)
                 req={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'jellyfish_read_document','arguments':{'path':'/docs/own.txt'}}}
                 r=await c.post(server['url'],headers=headers,json=req)
                 self.assertIn('alice document',r.text);self.assertNotIn('bob secret',r.text)
@@ -369,9 +516,82 @@ class CursorChatTests(unittest.IsolatedAsyncioTestCase):
                 r=await c.post(server['url'],headers=headers,json=req)
                 self.assertTrue(r.json()['result']['isError'])
                 await self.profiles.revoke(HOST_ID,p['id'],g['id'])
-                r=await c.post(server['url'],headers=headers,json=req)
+                r=await c.post(server['url'],headers=headers,json={
+                    'jsonrpc':'2.0','id':6,'method':'tools/call','params':{
+                        'name':'jellyfish_write_document',
+                        'arguments':{'path':'/docs/after-revocation.md','content':'blocked'}}})
                 self.assertEqual(r.json()['error']['code'],-32001)
+                self.assertFalse(self.storage.is_file('alice','/docs/after-revocation.md'))
         finally:await bridge.close()
+
+    async def test_cursor_mcp_tool_callback_waits_for_document_write_approval(self):
+        from app.runtime.business_tools import BusinessTools
+        from app.runtime.store import TERMINAL
+        from app.runtime.types import RuntimeEvent
+        import test_runtime_service as service_tests
+
+        class ToolAdapter(service_tests.FakeAdapter):
+            def __init__(self, gate, path, content):
+                super().__init__(gate)
+                self.path, self.content, self.result = path, content, None
+
+            async def stream_turn(self, _thread_id, _text):
+                # CursorMCP calls this exact per-turn closure after receiving
+                # tools/call on its loopback endpoint.
+                self.result = await self.tool_call({
+                    'tool': 'jellyfish_write_document',
+                    'arguments': {'path': self.path, 'content': self.content},
+                    'callId': 'cursor-document-write',
+                })
+                yield RuntimeEvent('completed', {})
+
+        class ToolBackend(service_tests.FakeBackend):
+            path, content = '', ''
+
+            @contextlib.asynccontextmanager
+            async def execution(self, _session):
+                adapter = ToolAdapter(self.gate, self.path, self.content)
+                self.adapters.append(adapter)
+                try:
+                    yield adapter
+                finally:
+                    await adapter.close()
+
+        self.profiles.providers['cursor'] = BrowserProvider('unused')
+        profile = self.profiles.create(HOST_ID, 'Cursor', 'cursor')
+        profile['models'] = [{'id': 'model', 'name': 'Model'}]
+        self.profiles.save_auth(profile, cursor_auth())
+        self.profiles.grant(HOST_ID, profile['id'], 'alice', ['model'])
+        binding = self.profiles.binding('alice', profile['id'], 'model')
+        self.backend = self.manager.backend = self.runs.backend = ToolBackend(self.backend.root)
+        self.runs.tool_bridge = BusinessTools(self.storage, self.profiles.authorize, self.store)
+        session = self.runs.create_session('alice', binding, conversation_id='admin-chat')
+
+        for decision, yolo in (('accept', False), ('decline', False), ('accept', True)):
+            label = 'automatic' if yolo else decision
+            with self.subTest(label=label):
+                path = f'/docs/cursor-{label}.md'
+                self.backend.path, self.backend.content = path, label
+                run = self.runs.enqueue('alice', session['id'], f'cursor-{label}',
+                                        f'write {label}', yolo=yolo)
+                if not yolo:
+                    await self.until(lambda: self.store.get('run', run['id'])['status'] == 'waiting_approval')
+                    pending = self.store.get('run', run['id'])['pending']
+                    self.assertEqual(pending['allowed'], ['accept', 'decline'])
+                    self.assertFalse(self.storage.is_file('alice', path))
+                    self.runs.approve('alice', run['id'], pending['id'], decision)
+                await self.until(lambda: self.store.get('run', run['id'])['status'] in TERMINAL)
+                self.assertEqual(self.store.get('run', run['id'])['status'], 'completed')
+                result = self.backend.adapters[-1].result
+                self.assertEqual(result['success'], decision == 'accept')
+                self.assertEqual(self.storage.is_file('alice', path), decision == 'accept')
+                events = self.store.events(run['id'])
+                if yolo:
+                    self.assertNotIn('approval_requested', [event['type'] for event in events])
+                    self.assertTrue(any(event['type'] == 'approval_resolved' and
+                                        event['payload'].get('automatic') for event in events))
+                else:
+                    self.assertIn('approval_requested', [event['type'] for event in events])
 
 
 import test_runtime_service as service_tests
