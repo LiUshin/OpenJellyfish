@@ -65,6 +65,89 @@ class MessagingTests(unittest.TestCase):
         self.assertEqual([d['status'] for d in case['deliveries']], ['pending', 'pending'])
         self.assertEqual(self.store.list_events('owner', 'svc', 'conv')['events'], [])
 
+    def test_send_service_message_direct_is_bound_and_idempotent(self):
+        with patch.object(sm, 'get_store', return_value=self.store), \
+             patch.object(sm, '_consumer_target', return_value=self.target):
+            first = sm.send_service_message('owner', 'svc', 'conv', '管理员回复', idempotency_key='direct-1', expected_target=self.target)
+            again = sm.send_service_message('owner', 'svc', 'conv', '管理员回复', idempotency_key='direct-1', expected_target=self.target)
+            self.assertEqual(first, again)
+            self.assertEqual(first['message']['author_type'], 'admin')
+            self.assertEqual(first['message']['purpose'], 'reply')
+            self.assertEqual([d['channel'] for d in first['deliveries']], ['web'])
+            self.assertEqual(first['deliveries'][0]['status'], 'pending')
+            with self.assertRaises(sm.MessagingConflict):
+                sm.send_service_message('owner', 'svc', 'conv', '另一条回复', idempotency_key='direct-1')
+
+        with self.assertRaises(sm.MessagingConflict):
+            self.store.direct_reply('other', 'svc', 'conv', '无权回复', self.target, request_key='other-owner')
+        with self.assertRaises(sm.MessagingConflict):
+            self.store.direct_reply('owner', 'other-service', 'conv', '目标不匹配', self.target, request_key='wrong-service')
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM sm_messages').fetchone()[0], 1)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM sm_deliveries').fetchone()[0], 1)
+
+    def test_send_service_message_rejects_target_change_before_or_during_enqueue(self):
+        approved = {**self.target, 'source': 'wechat', 'session_id': 'old-ws', 'recipient_id': 'old-user'}
+        rebound = {**approved, 'session_id': 'new-ws', 'recipient_id': 'new-user'}
+        with patch.object(sm, 'get_store', return_value=self.store), \
+             patch.object(sm, '_consumer_target', return_value=rebound):
+            with self.assertRaises(sm.MessagingConflict):
+                sm.send_service_message('owner', 'svc', 'conv', '只给原用户',
+                    idempotency_key='rebound-before', expected_target=approved)
+        with patch.object(sm, 'get_store', return_value=self.store), \
+             patch.object(sm, '_consumer_target', side_effect=[approved, rebound]):
+            with self.assertRaises(sm.MessagingConflict):
+                sm.send_service_message('owner', 'svc', 'conv', '只给原用户',
+                    idempotency_key='rebound-during', expected_target=approved)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM sm_messages').fetchone()[0], 0)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM sm_deliveries').fetchone()[0], 0)
+
+    def test_send_service_message_inbox_requires_exact_case_scope(self):
+        cid = self.case()
+        bad_target_case = self.case(key='mismatched-target', target={**self.target, 'conversation_id': 'other'})
+        with patch.object(sm, 'get_store', return_value=self.store), \
+             patch.object(sm, '_authorize_target'), \
+             patch('app.core.security.USERS_DIR', self.temp.name):
+            with self.assertRaises(sm.MessagingConflict):
+                sm.send_service_message('owner', 'svc', 'another-conv', '回复', idempotency_key='case-reply', inbox_id=cid)
+            with self.assertRaises(sm.MessagingConflict):
+                sm.send_service_message('owner', 'another-svc', 'conv', '回复', idempotency_key='case-reply', inbox_id=cid)
+            with self.assertRaises(KeyError):
+                sm.send_service_message('other', 'svc', 'conv', '回复', idempotency_key='case-reply', inbox_id=cid)
+            with self.assertRaises(sm.MessagingConflict):
+                sm.send_service_message('owner', 'svc', 'conv', '回复', idempotency_key='bad-target', inbox_id=bad_target_case)
+            with self.assertRaises(sm.MessagingConflict):
+                sm.send_service_message('owner', 'svc', 'conv', '回复', idempotency_key='changed-approval',
+                    inbox_id=cid, expected_target={**self.target, 'conversation_id': 'another-conv'})
+            result = sm.send_service_message('owner', 'svc', 'conv', '回复', idempotency_key='case-reply', inbox_id=cid)
+            self.assertEqual(result, sm.send_service_message('owner', 'svc', 'conv', '回复', idempotency_key='case-reply', inbox_id=cid))
+        self.assertEqual(result['message']['case_id'], cid)
+        self.assertEqual([d['status'] for d in result['deliveries']], ['pending'])
+        self.assertEqual(self.store.get_case('owner', cid)['case_status'], 'replied')
+        self.assertEqual(self.store.get_case('owner', cid)['status'], 'read')
+
+    def test_send_service_message_projects_web_history_only_after_worker_claim(self):
+        target = {**self.target, 'source': 'wechat', 'session_id': 'ws', 'recipient_id': 'consumer'}
+        with patch.object(sm, 'get_store', return_value=self.store), \
+             patch.object(sm, '_consumer_target', return_value=target):
+            result = sm.send_service_message('owner', 'svc', 'conv', '稍后送达', idempotency_key='direct-wechat')
+        self.assertEqual([d['channel'] for d in result['deliveries']], ['web', 'wechat'])
+        self.assertTrue(all(d['status'] == 'pending' for d in result['deliveries']))
+        self.assertEqual(self.store.list_events('owner', 'svc', 'conv')['events'], [])
+
+        projected = {}
+        def save(*args, **kwargs):
+            projected.setdefault(kwargs['event_id'], (args, kwargs))
+        with patch.object(sm, '_owner'), patch.object(sm, '_authorize_target'), \
+             patch('app.services.published.save_consumer_message', side_effect=save):
+            delivery = self.store.claim()
+            self.assertEqual(delivery['channel'], 'web')
+            asyncio.run(sm.deliver_one(self.store, delivery))
+        self.assertEqual(set(projected), {result['message']['id']})
+        events = self.store.list_events('owner', 'svc', 'conv')['events']
+        self.assertEqual([e['message']['id'] for e in events], [result['message']['id']])
+        statuses = {d['channel']: d['status'] for d in self.store.get_message_deliveries('owner', result['message']['id'])}
+        self.assertEqual(statuses, {'web': 'delivered', 'wechat': 'pending'})
+
     def test_legacy_import_uses_messages_not_stale_index_and_never_resurrects_deleted(self):
         directory = Path(self.temp.name, 'owner', 'inbox')
         directory.mkdir(parents=True)

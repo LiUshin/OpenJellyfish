@@ -24,7 +24,7 @@ class ServiceRecordsDeepAgentsTests(unittest.TestCase):
         self.config_patch.start()
         self.addCleanup(self.config_patch.stop)
 
-    def _build_agent(self):
+    def _build_agent(self, *, service_message_enabled=True):
         with ExitStack() as stack:
             stack.enter_context(patch.object(agent, "_agent_cache", OrderedDict()))
             stack.enter_context(patch.object(agent, "get_user_filesystem_dir", return_value="/unused"))
@@ -43,12 +43,13 @@ class ServiceRecordsDeepAgentsTests(unittest.TestCase):
                 "create_run_script_tool", "create_list_files_sorted_tool", "create_move_file_tool",
                 "create_update_personal_memory_tool", "create_schedule_tool",
                 "create_manage_scheduled_tasks_tool", "create_spawn_child_task_tool",
-                "create_publish_service_task_tool",
+                "create_publish_service_task_tool", "create_send_service_message_tool",
             ):
                 stack.enter_context(patch(f"app.services.tools.{name}", return_value=SimpleNamespace(name=name)))
             for name in ("create_workspace_lock_tools", "create_web_tools"):
                 stack.enter_context(patch(f"app.services.tools.{name}", return_value=[]))
-            return agent.create_user_agent("owner", model="fake-model")
+            return agent.create_user_agent("owner", model="fake-model",
+                                           service_message_enabled=service_message_enabled)
 
     def test_old_grant_only_keeps_legacy_memory_access(self):
         self.config["include_consumer_conversations"] = True
@@ -56,6 +57,8 @@ class ServiceRecordsDeepAgentsTests(unittest.TestCase):
         names = {tool.name for tool in built["tools"]}
         self.assertNotIn("list_service_records", names)
         self.assertNotIn("read_service_record", names)
+        self.assertIn("create_send_service_message_tool", names)
+        self.assertIn("send_service_message", built["interrupt_on"])
 
         legacy = {tool.name: tool for tool in memory_tools.create_admin_memory_tools("owner")}
         with patch("app.services.published.list_services", return_value=[]) as list_services:
@@ -90,6 +93,11 @@ class ServiceRecordsDeepAgentsTests(unittest.TestCase):
         with patch("app.services.service_records.list_area") as list_area:
             self.assertIn("未开放", tools["list_service_records"].invoke({}))
             list_area.assert_not_called()
+
+    def test_background_agent_does_not_get_direct_reply(self):
+        built = self._build_agent(service_message_enabled=False)
+        self.assertNotIn("create_send_service_message_tool", {tool.name for tool in built["tools"]})
+        self.assertNotIn("send_service_message", built["interrupt_on"])
 
     def test_inbox_is_closed_without_either_grant(self):
         legacy = {tool.name: tool for tool in memory_tools.create_admin_memory_tools("owner")}

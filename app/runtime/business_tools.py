@@ -49,6 +49,13 @@ class ServiceDocument(Document):
     service_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,64}$')
 
 
+class ServiceMessage(Empty):
+    service_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    conversation_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,128}$')
+    message: str = Field(min_length=1, max_length=16000)
+    inbox_id: str | None = Field(default=None, pattern=r'^inbox_[A-Za-z0-9_-]{1,94}$')
+
+
 class ScheduledWrite(Document):
     content: str = Field(max_length=65536)
 
@@ -75,6 +82,7 @@ TOOLS = {
     'jellyfish_write_project_brief': (ProjectBriefWrite, '完整替换当前管理员对话所属项目的 Markdown brief；项目由会话确定，不能指定其他项目。先合并现有内容再写入。'),
     'jellyfish_list_services': (Empty, '列出当前 admin 的服务名称、ID 和文档范围，不返回服务凭据。'),
     'jellyfish_read_service_document': (ServiceDocument, '读取当前 admin 所有、且在指定服务文档范围内的文档。'),
+    'jellyfish_send_service_message': (ServiceMessage, '以当前管理员身份向指定 Service 用户会话回复文字。传入 service_id、conversation_id、完整 message；回复收件箱反馈时另传 inbox_id。提交后返回持久投递队列状态，不能据此声称用户已收到。'),
 }
 
 
@@ -165,7 +173,9 @@ class BusinessTools:
         actor_id = session['actor_id']
         self.authorize(actor_id, session['binding'])
         from uuid import uuid4
-        call_id = params.get('callId') or uuid4().hex
+        call_id = params.get('callId')
+        if call_id is None:
+            call_id = uuid4().hex
         name = params.get('tool')
         schema = TOOLS.get(name)
         if not schema:
@@ -177,20 +187,44 @@ class BusinessTools:
             if name == 'jellyfish_write_document':
                 encoded = args.content.encode('utf-8')
                 event_input = {'path': docs_path(args.path), 'size': len(encoded), 'sha256': digest(encoded)}
+            elif name == 'jellyfish_send_service_message':
+                event_input = {'service_id': args.service_id, 'conversation_id': args.conversation_id,
+                               'inbox_id': args.inbox_id, 'message': args.message}
             else:
                 event_input = args.model_dump()
             self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'running', 'input': event_input})
-            # These bounded metadata/file operations run in the scheduler thread so
-            # permission checks and memory compare/write cannot interleave.
-            value = self.invoke(actor_id, name, args,
-                                conversation_id=session.get('conversation_id'))
+            # Keep business effects behind the actor-bound bridge. Durable
+            # Service replies use the same run/call identity on retries.
+            if name == 'jellyfish_send_service_message':
+                call_id = params.get('callId')
+                if (isinstance(call_id, bool) or not isinstance(call_id, (str, int))
+                        or not str(call_id) or len(str(call_id)) > 128
+                        or not session.get('conversation_id') or not run.get('id')):
+                    raise ValueError('发送回复要求管理员对话与稳定的工具调用 ID')
+                approved_target = params.get('approved_target')
+                if not isinstance(approved_target, dict):
+                    raise PermissionError('发送回复需要经过管理员确认或 YOLO 授权')
+                from app.services.service_messaging import send_service_message
+                sent = send_service_message(actor_id, args.service_id, args.conversation_id,
+                                            args.message, inbox_id=args.inbox_id,
+                                            idempotency_key=f"cli:{run['id']}:{call_id}",
+                                            expected_target=approved_target)
+                value = {'message_id': sent['message']['id'],
+                         'deliveries': [{'id': item['id'], 'channel': item['channel'], 'status': item['status']}
+                                        for item in sent['deliveries']],
+                         'summary': '回复已提交到投递队列；请查看投递状态，不能据此认定用户已收到。'}
+            else:
+                value = self.invoke(actor_id, name, args,
+                                    conversation_id=session.get('conversation_id'))
             self.store.emit(run, 'business_tool', {'item_id': call_id, 'name': name, 'status': 'completed', 'result': value})
             return self.result(value, True)
         except Exception as exc:
             area = (name in ('jellyfish_list_documents', 'jellyfish_read_document') and
                     isinstance(params.get('arguments'), dict) and
                     str(params['arguments'].get('path', '')).startswith('/service-records'))
-            if name == 'jellyfish_write_document' and isinstance(exc, FileExistsError):
+            if name == 'jellyfish_send_service_message':
+                message = f'回复未提交：{str(exc)[:200]}' if isinstance(exc, (ValueError, KeyError, PermissionError)) else '回复未提交：请检查会话归属与投递服务状态。'
+            elif name == 'jellyfish_write_document' and isinstance(exc, FileExistsError):
                 message = '文档已存在且内容不同；如需替换，请显式设置 overwrite=true。'
             else:
                 message = ('Service 记录区读取失败：请检查权限和路径；结果过长时缩小 limit 或调整 offset/content_offset。'
@@ -312,7 +346,7 @@ class ScheduledBusinessTools:
 
 
 def instructions(actor_id, runtime='codex', *, project_brief_write=True,
-                 document_write_available=True):
+                 document_write_available=True, service_message_available=True):
     from app.services.prompt import get_user_system_prompt, build_user_profile_prompt
     from app.services.preferences import get_tz_offset
     profile = build_user_profile_prompt(actor_id)[:16000]
@@ -342,4 +376,8 @@ def instructions(actor_id, runtime='codex', *, project_brief_write=True,
         parts.append('需要把 UTF-8 文本保存进文档库 /docs 时，调用 jellyfish_write_document 并传入完整的 /docs/文件路径和内容；默认只创建新文件，覆盖已有不同内容须显式设置 overwrite=true。工具成功返回后才可称文件已保存到文档库。')
     else:
         parts.append('当前原生会话没有文档库写入工具；工作目录中的 docs/ 文件只是会话副本，不要称它已保存到文档库。')
+    if service_message_available:
+        parts.append('要以管理员身份直接回复某个 Service 用户会话，调用 jellyfish_send_service_message，传入 service_id、conversation_id、要发送的完整 message；若是回复收件箱反馈，再传 inbox_id。工具成功只表示回复已进入持久投递队列；查看投递状态后才能判断是否送达。不要将普通聊天输出当成已发送给 Service 用户。')
+    else:
+        parts.append('当前原生会话没有直接回复 Service 用户的业务工具；不要声称聊天输出已发送给 Service 用户。')
     return '\n\n'.join(parts)

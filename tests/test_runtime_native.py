@@ -182,6 +182,8 @@ class ImageModeAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(method, 'thread/start')
             self.assertIn('jellyfish_write_document',
                           {tool['name'] for tool in params['dynamicTools']})
+            self.assertIn('jellyfish_send_service_message',
+                          {tool['name'] for tool in params['dynamicTools']})
 
     async def test_codex_session_config_respects_binding_and_scope(self):
         from app.runtime.codex import CodexAdapter

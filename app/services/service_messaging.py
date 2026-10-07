@@ -190,6 +190,26 @@ class MessageStore:
             self._remember(db, owner, request_key, fingerprint, {'message_id': msg['id']})
             return msg['id']
 
+    def direct_reply(self, owner, service, conversation, content, target, *, request_key, expected_target=None):
+        """Commit an admin message and its delivery intents for one conversation."""
+        if (target.get('owner_id'), target.get('service_id'), target.get('conversation_id')) != (owner, service, conversation):
+            raise MessagingConflict('消息目标与 Service 会话不匹配')
+        with self.transaction() as db:
+            if expected_target is not None and target != expected_target:
+                raise MessagingConflict('审批后消息目标已变更')
+            prior, fingerprint = self._prior(db, owner, request_key,
+                                             ['direct_reply', service, conversation, content])
+            if prior:
+                return prior['message_id']
+            # Resolve once more next to the outbox insert. A re-scan must not
+            # redirect a message approved for the previous WeChat binding.
+            if _consumer_target(owner, service, conversation) != target:
+                raise MessagingConflict('消息目标已重新绑定，请重新确认')
+            msg = self._message(db, owner, service, conversation, content)
+            self._queue_consumer(db, owner, msg, target)
+            self._remember(db, owner, request_key, fingerprint, {'message_id': msg['id']})
+            return msg['id']
+
     def create_broadcast(self, owner, service, targets, content, *, request_key, scheduled_at=None):
         with self.transaction() as db:
             payload = ['notice', service, content, sorted(targets, key=lambda t: t['conversation_id']), scheduled_at]
@@ -300,6 +320,10 @@ class MessageStore:
         with self.lock:
             row = self.db.execute('SELECT * FROM sm_messages WHERE id=? AND owner=?', (mid, owner)).fetchone()
             return dict(json.loads(row['record']), seq=row['seq']) if row else None
+
+    def get_message_deliveries(self, owner, mid):
+        with self.lock:
+            return self._deliveries(self.db, owner, [mid])
 
     def list_events(self, owner, service, conversation, after=0, limit=100):
         limit = max(1, min(int(limit), 200))
@@ -496,6 +520,42 @@ def reply_to_case(owner_id, case_id, text, *, idempotency_key):
     case = store.get_case(owner_id, case_id)
     return {'case': case, 'message': store.get_message(owner_id, mid),
             'deliveries': [d for d in case['deliveries'] if d['message_id'] == mid]}
+
+
+def send_service_message(owner_id, service_id, conversation_id, text, *, idempotency_key, inbox_id=None, expected_target=None):
+    """Queue a bound admin reply without performing a remote send inline.
+
+    An optional inbox ID links the reply to an existing feedback case. Both
+    paths return the durable message and current delivery states; ``pending``
+    means queued, not received by the consumer.
+    """
+    content = _text(text)
+    request_key = _key(idempotency_key)
+    if inbox_id is not None:
+        from app.core.security import USERS_DIR
+        store = get_store()
+        store.migrate_legacy(owner_id, USERS_DIR)
+        case = store.get_case(owner_id, inbox_id)
+        if case is None:
+            raise KeyError('反馈不存在')
+        if (case['service_id'], case['conversation_id']) != (service_id, conversation_id):
+            raise MessagingConflict('反馈不属于指定的 Service 会话')
+        target = store.case_target(owner_id, inbox_id)
+        if not isinstance(target, dict) or (target.get('owner_id'), target.get('service_id'), target.get('conversation_id')) != (owner_id, service_id, conversation_id):
+            raise MessagingConflict('反馈目标与指定的 Service 会话不匹配')
+        if expected_target is not None and target != expected_target:
+            raise MessagingConflict('审批后反馈目标已变更')
+        result = reply_to_case(owner_id, inbox_id, content, idempotency_key=request_key)
+        return {'message': result['message'], 'deliveries': result['deliveries']}
+
+    target = _consumer_target(owner_id, service_id, conversation_id)
+    if expected_target is not None and target != expected_target:
+        raise MessagingConflict('审批后消息目标已变更')
+    store = get_store()
+    mid = store.direct_reply(owner_id, service_id, conversation_id, content, target,
+                             request_key=request_key, expected_target=expected_target)
+    return {'message': store.get_message(owner_id, mid),
+            'deliveries': store.get_message_deliveries(owner_id, mid)}
 
 
 def create_notice_broadcast(owner_id, service_id, conversation_ids, text, *, idempotency_key, scheduled_at=None):

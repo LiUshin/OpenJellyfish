@@ -434,6 +434,7 @@ Exact time is no longer written to system prompt (daily cache would freeze time)
 | `schedule_task` / `manage_scheduled_tasks` | Scheduled task CRUD | ✅ Always | `scheduler` capability |
 | `spawn_child_task` | Spawn child task from current scheduler context (task tree) | ✅ (scheduler/agent context) | ✅ (scheduler/agent context) |
 | `publish_service_task` | Admin dispatches task to Service | ✅ Always | ❌ |
+| `send_service_message` | Admin replies directly to a specified Service consumer conversation; requires Service and conversation IDs | ✅ Always, with send approval | ❌ |
 | `send_message` | Send to WeChat user | Injected in wechat channel | `humanchat` capability + non-web channel |
 | `contact_admin` | Service notifies admin | ❌ | `humanchat` capability |
 | `soul_list` / `soul_read` / `soul_write` / `soul_delete` | Soul file operations | Memory Subagent only (when `memory_subagent_enabled`) | ❌ |

@@ -320,6 +320,148 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
         await attempt('changed', decision='accept', change_during_approval=True)
         await attempt('automatic', yolo=True)
 
+    async def test_admin_service_reply_uses_shared_approval_and_durable_queue(self):
+        self.runs.tool_bridge = BusinessTools(self.storage, self.profiles.authorize, self.store)
+        binding = self.profiles.binding('alice', self.pid, 'model')
+        session = self.runs.create_session('alice', binding, conversation_id='admin-chat')
+        target = {'owner_id': 'alice', 'service_id': 'svc', 'conversation_id': 'consumer-c1',
+                  'source': 'wechat', 'session_id': 'wx-s1', 'recipient_id': 'recipient-1'}
+        message = '请按这个方案继续。\n第二行原样发送。'
+        queued = {'message': {'id': 'msg-1'}, 'deliveries': [
+            {'id': 'delivery-web', 'channel': 'web', 'status': 'pending'},
+            {'id': 'delivery-wx', 'channel': 'wechat', 'status': 'pending'},
+        ]}
+
+        async def attempt(label, *, decision=None, yolo=False, changed_target=False, cancelled=False):
+            run = {'id': f'reply-{label}', 'session_id': session['id'], 'actor_id': 'alice',
+                   'binding': binding, 'seq': 0, 'status': 'running', 'pending': None,
+                   'channel': 'wechat' if yolo else 'web', 'yolo': yolo}
+            self.store.put('run', run)
+            adapter = SimpleNamespace(respond=AsyncMock())
+            state = {'run': run, 'adapter': adapter, 'answer': None, 'changes': {},
+                     'cancel': False, 'finalizing': False}
+            self.runs.active[run['id']] = state
+            changed = {**target, 'recipient_id': 'recipient-2'}
+            targets = [target, changed] if changed_target else [target, target]
+            with patch.object(self.runs, '_service_message_target', side_effect=targets), \
+                 patch('app.services.service_messaging.send_service_message', return_value=queued) as send:
+                task = asyncio.create_task(self.runs._request(session, state, {
+                    'request_id': label, 'method': 'item/tool/call',
+                    'params': {'tool': 'jellyfish_send_service_message',
+                               'arguments': {'service_id': 'svc', 'conversation_id': 'consumer-c1',
+                                             'message': message, 'inbox_id': 'inbox_case1'}},
+                }))
+                try:
+                    if not yolo:
+                        await self.until(lambda: self.store.get('run', run['id'])['status'] == 'waiting_approval')
+                        pending = self.store.get('run', run['id'])['pending']
+                        self.assertIn('consumer-c1', pending['command'])
+                        self.assertIn('recipient-1', pending['command'])
+                        self.assertIn(message, pending['command'])
+                        send.assert_not_called()
+                        if cancelled:
+                            state['cancel'] = True
+                        self.runs.approve('alice', run['id'], pending['id'], decision)
+                    await task
+                    result = adapter.respond.call_args.args[1]
+                    expected = yolo or decision == 'accept' and not (changed_target or cancelled)
+                    self.assertEqual(result['success'], expected)
+                    self.assertEqual(send.call_count, int(expected))
+                    if expected:
+                        value = json.loads(result['contentItems'][0]['text'])
+                        self.assertEqual(value['message_id'], 'msg-1')
+                        self.assertEqual([d['status'] for d in value['deliveries']], ['pending', 'pending'])
+                        self.assertIn('不能据此认定用户已收到', value['summary'])
+                        send.assert_called_once_with('alice', 'svc', 'consumer-c1', message,
+                            inbox_id='inbox_case1', idempotency_key=f'cli:{run["id"]}:{label}',
+                            expected_target=target)
+                    events = self.store.events(run['id'])
+                    if yolo:
+                        self.assertFalse(any(e['type'] == 'approval_requested' for e in events))
+                        self.assertTrue(any(e['type'] == 'approval_resolved' and
+                                            e['payload'].get('automatic') for e in events))
+                finally:
+                    if not task.done():
+                        task.cancel()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await task
+                    self.runs.active.pop(run['id'], None)
+                    self.store.emit(run, 'completed', {}, status='completed')
+
+        await attempt('accepted', decision='accept')
+        await attempt('declined', decision='decline')
+        await attempt('changed', decision='accept', changed_target=True)
+        await attempt('cancelled', decision='accept', cancelled=True)
+        await attempt('automatic', yolo=True)
+
+    async def test_inbox_reply_preflight_uses_frozen_case_target(self):
+        from app.runtime.business_tools import ServiceMessage
+        target = {'owner_id': 'alice', 'service_id': 'svc', 'conversation_id': 'consumer-c1',
+                  'source': 'wechat', 'session_id': 'wx-frozen', 'recipient_id': 'recipient-1'}
+        case = {'service_id': 'svc', 'conversation_id': 'consumer-c1'}
+        args = ServiceMessage(service_id='svc', conversation_id='consumer-c1',
+                              message='原样回复', inbox_id='inbox_case1')
+        with patch('app.services.inbox.get_inbox_message', return_value=case), \
+             patch('app.services.service_messaging.get_store', return_value=SimpleNamespace(case_target=lambda *_: target)), \
+             patch('app.services.service_messaging._authorize_target') as authorize, \
+             patch('app.services.service_messaging._consumer_target', side_effect=AssertionError('must use frozen case target')):
+            self.assertEqual(self.runs._service_message_target('alice', args), target)
+            authorize.assert_called_once_with(target)
+            wrong = ServiceMessage(service_id='svc', conversation_id='other-conv',
+                                   message='不得发送', inbox_id='inbox_case1')
+            with self.assertRaises(KeyError):
+                self.runs._service_message_target('alice', wrong)
+
+    async def test_old_codex_thread_cannot_call_unregistered_reply_tool(self):
+        binding = self.profiles.binding('alice', self.pid, 'model')
+        session = {'actor_id': 'alice', 'binding': binding, 'conversation_id': 'admin-chat',
+                   'thread_id': 'old-native-thread', 'service_message_available': False}
+        state = {'run': {'id': 'old-reply-run', 'binding': binding, 'status': 'running',
+                         'pending': None}, 'answer': None, 'cancel': False, 'finalizing': False}
+        with patch.object(self.runs, '_service_message_target') as target, \
+             patch('app.services.service_messaging.send_service_message') as send:
+            result = await self.runs._call_business_tool(session, state, {
+                'tool': 'jellyfish_send_service_message', 'callId': 'old-call',
+                'arguments': {'service_id': 'svc', 'conversation_id': 'consumer-c1',
+                              'message': '应被拒绝'},
+            })
+            self.assertFalse(result['success'])
+            self.assertIn('请新建对话', result['contentItems'][0]['text'])
+            target.assert_not_called()
+            send.assert_not_called()
+
+    async def test_admin_service_reply_call_id_prevents_duplicate_queue_entries(self):
+        from app.services import service_messaging as messaging
+        outbox = messaging.MessageStore(self.root / 'service-outbox.sqlite3')
+        self.addCleanup(outbox.close)
+        bridge = BusinessTools(self.storage, self.profiles.authorize, self.store)
+        binding = self.profiles.binding('alice', self.pid, 'model')
+        session = {'actor_id': 'alice', 'binding': binding, 'conversation_id': 'admin-chat'}
+        run = {'id': 'send-run', 'actor_id': 'alice', 'binding': binding,
+               'seq': 0, 'status': 'running', 'channel': 'web'}
+        self.store.put('run', run)
+        target = {'owner_id': 'alice', 'service_id': 'svc',
+                  'conversation_id': 'consumer-c1', 'source': 'web'}
+        params = {'tool': 'jellyfish_send_service_message', 'callId': 'tool-1',
+                  'approved_target': target,
+                  'arguments': {'service_id': 'svc', 'conversation_id': 'consumer-c1',
+                                'message': '只投递一次'}}
+        with patch.object(messaging, 'get_store', return_value=outbox), \
+             patch.object(messaging, '_consumer_target', return_value=target):
+            unapproved = await bridge(session, run, {k: v for k, v in params.items() if k != 'approved_target'})
+            self.assertFalse(unapproved['success'])
+            self.assertEqual(outbox.db.execute('SELECT COUNT(*) FROM sm_messages').fetchone()[0], 0)
+            first = await bridge(session, run, params)
+            retry = await bridge(session, run, params)
+            self.assertTrue(first['success'])
+            self.assertEqual(first, retry)
+            self.assertEqual(outbox.db.execute('SELECT COUNT(*) FROM sm_messages').fetchone()[0], 1)
+            self.assertEqual(outbox.db.execute('SELECT COUNT(*) FROM sm_deliveries').fetchone()[0], 1)
+            conflict = await bridge(session, run, {**params, 'arguments': {**params['arguments'],
+                                                                           'message': '不能复用同一调用 ID'}})
+            self.assertFalse(conflict['success'])
+            self.assertEqual(outbox.db.execute('SELECT COUNT(*) FROM sm_messages').fetchone()[0], 1)
+
     async def test_service_directory_allowlist_includes_nested_documents(self):
         bridge = BusinessTools(self.storage, self.profiles.authorize, self.store)
         self.storage.write_text('alice','/docs/team/nested/readme.txt','TEAM')

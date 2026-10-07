@@ -9,6 +9,7 @@ import os
 from typing import Optional, List, Dict
 
 from langchain_core.tools import tool
+from langchain.tools import ToolRuntime
 
 from app.core.security import get_user_filesystem_dir
 from app.services.ai_tools import (
@@ -234,6 +235,14 @@ Agent 会读取文档内容，按照其中描述的步骤逐步执行。
 - message: 要传达的信息/指令
 - run_now: 在未来/周期计划之外额外立即执行（默认 False）；空的一次性计划会自动立即排程
 - schedule_type / schedule: 可设置定时广播
+""",
+    "service_direct_reply": """
+## 给 Service 用户定向回复
+你拥有 `send_service_message` 工具，可把管理员消息发到一个明确的 Service 用户会话。
+- 先确认 service_id 和 conversation_id；可在已开放的 Service 记录区核对，不要猜测会话或收件人。
+- 管理员要求回复某条反馈时，同时传 inbox_id，把回复关联到该反馈；普通对话不需要 inbox_id。
+- 此工具用于单个用户会话。群发和定时通知仍使用对应的任务流程。
+- 工具成功只代表消息已进入持久投递队列；除非查到投递结果，不要称用户已经收到。
 """,
     "contact_admin": """
 ## 联系管理员
@@ -1492,6 +1501,53 @@ def create_service_manage_tasks_tool(
             return f"错误：未知操作 '{action}'，可选 'list'、'update'、'delete'"
 
     return manage_scheduled_tasks
+
+
+def create_send_service_message_tool(user_id: str):
+    """Create an admin-only, recipient-bound Service reply tool."""
+
+    @tool
+    def send_service_message(
+        service_id: str,
+        conversation_id: str,
+        message: str,
+        runtime: ToolRuntime,
+        inbox_id: Optional[str] = None,
+    ) -> str:
+        """向指定 Service 用户会话发送一条管理员文字回复。
+
+        Args:
+            service_id: 当前管理员拥有的 Service ID
+            conversation_id: 该 Service 下的用户会话 ID，不可用用户名猜测
+            message: 要发送给用户的完整文字，最多 16000 字符
+            inbox_id: 若是回复某条收件箱反馈，填写对应 inbox_ 编号；否则留空
+        """
+        from hashlib import sha256
+        from app.services.service_messaging import send_service_message as enqueue_reply
+
+        call_id = getattr(runtime, 'tool_call_id', None)
+        if not call_id:
+            return '发送失败：缺少本次工具调用编号，消息未入队。'
+        config = getattr(runtime, 'config', None) or {}
+        thread_id = config.get('configurable', {}).get('thread_id', '') if isinstance(config, dict) else ''
+        request_key = sha256(f'admin-agent:{user_id}:{thread_id}:{call_id}'.encode()).hexdigest()
+        try:
+            result = enqueue_reply(user_id, service_id, conversation_id, message,
+                                   idempotency_key=request_key, inbox_id=inbox_id)
+        except (KeyError, PermissionError, ValueError) as exc:
+            return f'发送失败，消息未入队：{exc}'
+        return json.dumps({
+            'status': 'queued',
+            'message_id': result['message']['id'],
+            'service_id': service_id,
+            'conversation_id': conversation_id,
+            'inbox_id': inbox_id,
+            'deliveries': [{'id': delivery['id'], 'channel': delivery['channel'],
+                            'status': delivery['status']}
+                           for delivery in result['deliveries']],
+        }, ensure_ascii=False)
+
+    return send_service_message
 
 
 def create_publish_service_task_tool(user_id: str):

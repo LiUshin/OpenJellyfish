@@ -437,6 +437,7 @@ _resolve_model(model_id, user_id=None) → ChatModel
 | `schedule_task` / `manage_scheduled_tasks` | 定时任务 CRUD | ✅ 始终 | `scheduler` capability |
 | `spawn_child_task` | 从当前定时任务上下文派生子任务（谱系树） | ✅（定时/agent 上下文） | ✅（定时/agent 上下文） |
 | `publish_service_task` | Admin 给 Service 派发任务 | ✅ 始终 | ❌ |
+| `send_service_message` | Admin 向指定 Service 用户会话直接回复；需明确 Service 与会话 ID | ✅ 始终，发送前审批 | ❌ |
 | `send_message` | 发送给微信用户 | wechat 渠道注入 | `humanchat` capability + 非 web channel |
 | `contact_admin` | Service 通知管理员 | ❌ | `humanchat` capability |
 | `soul_list` / `soul_read` / `soul_write` / `soul_delete` | Soul 文件操作 | Memory Subagent 内（且需 `memory_subagent_enabled`） | ❌ |

@@ -387,12 +387,14 @@ def create_user_agent(
     capabilities: Optional[List[str]] = None,
     username: Optional[str] = None,
     project_brief: str = "",
+    service_message_enabled: bool = True,
 ) -> Any:
     from app.services.tools import (
         create_run_script_tool, create_ai_gen_tools, create_send_message_tool,
         create_web_tools, create_schedule_tool, create_manage_scheduled_tasks_tool,
         create_spawn_child_task_tool,
-        create_publish_service_task_tool, create_list_files_sorted_tool,
+        create_publish_service_task_tool, create_send_service_message_tool,
+        create_list_files_sorted_tool,
         create_move_file_tool, create_workspace_lock_tools,
         create_update_personal_memory_tool,
         propose_plan, CAPABILITY_PROMPTS, PLAN_MODE_PROMPT, WORKSPACE_LOCK_PROMPT,
@@ -415,7 +417,7 @@ def create_user_agent(
     # Keep the project brief out of the shared per-user agent cache. A project
     # edit or conversation move must change the model prompt on its next turn.
     brief_key = hashlib.sha256(project_brief.encode("utf-8")).hexdigest()[:16]
-    cache_key = f"{user_id}::{model}::{cap_key}::{date_key}::{brief_key}"
+    cache_key = f"{user_id}::{model}::{cap_key}::{date_key}::{brief_key}::service-reply-{service_message_enabled}"
 
     if cache_key in _agent_cache:
         _touch_admin_agent_cache(cache_key)
@@ -482,11 +484,15 @@ def create_user_agent(
     # prompt is appended below alongside scheduler / service_broadcast.
     tools.append(create_spawn_child_task_tool())
     tools.append(create_publish_service_task_tool(user_id))
+    if service_message_enabled:
+        tools.append(create_send_service_message_tool(user_id))
     if "web" not in capabilities:
         system_prompt += "\n" + _cap("web")
     system_prompt += "\n" + _cap("scheduler")
     system_prompt += "\n" + _cap("spawn")
     system_prompt += "\n" + _cap("service_broadcast")
+    if service_message_enabled:
+        system_prompt += "\n" + _cap("service_direct_reply")
     # documents tool is always injected (read_document + view_pdf_page_or_image),
     # so unconditionally append its prompt; user can still override via
     # capability_prompts.json if they want to customise wording.
@@ -525,6 +531,8 @@ def create_user_agent(
             "write_file": {"allowed_decisions": ["approve", "edit", "reject"]},
             "edit_file": {"allowed_decisions": ["approve", "edit", "reject"]},
             "propose_plan": {"allowed_decisions": ["approve", "edit", "reject"]},
+            **({"send_service_message": {"allowed_decisions": ["approve", "edit", "reject"]}}
+               if service_message_enabled else {}),
         },
     )
 

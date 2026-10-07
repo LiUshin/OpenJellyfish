@@ -1652,7 +1652,8 @@ async def _run_agent_task(user_id: str, config: Dict[str, Any],
         from app.execution.agent import create_scheduled_agent
         agent = create_scheduled_agent(model)
     else:
-        agent = create_user_agent(user_id, model=model, capabilities=capabilities)
+        agent = create_user_agent(user_id, model=model, capabilities=capabilities,
+                                  service_message_enabled=False)
     thread_id = f"scheduled-{execution.current().run['id']}" if cli and execution.current() else f"scheduled-{uuid.uuid4().hex[:8]}"
     agent_config = {
         "configurable": {"thread_id": thread_id},

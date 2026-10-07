@@ -100,6 +100,7 @@ class BridgeScopeTests(unittest.IsolatedAsyncioTestCase):
             names = {tool["name"] for tool in service_tools.specifications(session["binding"], "alice")}
             self.assertFalse(any("project" in name for name in names))
             self.assertNotIn("jellyfish_write_document", names)
+            self.assertNotIn("jellyfish_send_service_message", names)
             self.assertNotIn("jellyfish_service_write_document", names)
             for name in (params["tool"], "jellyfish_service_write_project_brief"):
                 with self.subTest(tool=name):
@@ -111,9 +112,16 @@ class BridgeScopeTests(unittest.IsolatedAsyncioTestCase):
             })
             self.assertFalse(denied["success"])
             self.assertIn("未向 Service 开放", denied["contentItems"][0]["text"])
+            denied = await bridge(session, {"channel": "web"}, {
+                "tool": "jellyfish_send_service_message",
+                "arguments": {"service_id": "svc1", "conversation_id": "consumer-c1", "message": "no"},
+            })
+            self.assertFalse(denied["success"])
             write.assert_not_called()
 
         self.assertNotIn("jellyfish_write_document",
+                         {tool["name"] for tool in scheduler_specifications()})
+        self.assertNotIn("jellyfish_send_service_message",
                          {tool["name"] for tool in scheduler_specifications()})
         scheduled = {"actor_id": "alice", "binding": {"runtime": "codex",
                      "scheduler_scope": {"run_id": "scheduled-1"}}}
@@ -124,6 +132,12 @@ class BridgeScopeTests(unittest.IsolatedAsyncioTestCase):
             })
         self.assertFalse(denied["success"])
         self.assertIn("未向定时任务开放", denied["contentItems"][0]["text"])
+        with patch("app.runtime.consumer.authorize_scheduler", return_value=object()):
+            denied = await bridge(scheduled, {"channel": "web"}, {
+                "tool": "jellyfish_send_service_message",
+                "arguments": {"service_id": "svc1", "conversation_id": "consumer-c1", "message": "no"},
+            })
+        self.assertFalse(denied["success"])
 
     async def test_personal_wechat_admin_scope_can_write_without_web_lock(self):
         tool = create_write_project_brief_tool("alice")
@@ -262,9 +276,11 @@ class ProviderContextTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(updated["project_brief_write_available"])
                     self.assertFalse(updated["document_write_available"])
                     self.assertEqual(updated["dynamic_tools"], [{"name": "old-tool"}])
-                    self.assertEqual(updated["instructions_version"], 5)
+                    self.assertFalse(updated["service_message_available"])
+                    self.assertEqual(updated["instructions_version"], 6)
                     instructions.assert_any_call("alice", "codex", project_brief_write=False,
-                                                 document_write_available=False)
+                                                 document_write_available=False,
+                                                 service_message_available=False)
 
                     # A native Codex thread with the previous brief tool still
                     # cannot acquire a newly registered dynamic document tool.
@@ -279,9 +295,11 @@ class ProviderContextTests(unittest.IsolatedAsyncioTestCase):
                     updated = store.get("session", old_codex["id"])
                     self.assertTrue(updated["project_brief_write_available"])
                     self.assertFalse(updated["document_write_available"])
+                    self.assertFalse(updated["service_message_available"])
                     self.assertEqual(updated["dynamic_tools"], [{"name": "jellyfish_write_project_brief"}])
                     instructions.assert_any_call("alice", "codex", project_brief_write=True,
-                                                 document_write_available=False)
+                                                 document_write_available=False,
+                                                 service_message_available=False)
 
                     cursor = service.create_session(
                         "alice", {"runtime": "cursor", "profile_id": "p2", "model": "m"},
@@ -293,12 +311,16 @@ class ProviderContextTests(unittest.IsolatedAsyncioTestCase):
                     updated = store.get("session", cursor["id"])
                     self.assertTrue(updated["project_brief_write_available"])
                     self.assertTrue(updated["document_write_available"])
+                    self.assertTrue(updated["service_message_available"])
                     self.assertIn("jellyfish_write_project_brief",
                                   {tool["name"] for tool in updated["dynamic_tools"]})
                     self.assertIn("jellyfish_write_document",
                                   {tool["name"] for tool in updated["dynamic_tools"]})
+                    self.assertIn("jellyfish_send_service_message",
+                                  {tool["name"] for tool in updated["dynamic_tools"]})
                     instructions.assert_any_call("alice", "cursor", project_brief_write=True,
-                                                 document_write_available=True)
+                                                 document_write_available=True,
+                                                 service_message_available=True)
             finally:
                 await service.shutdown()
                 store.close()

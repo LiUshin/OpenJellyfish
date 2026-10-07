@@ -460,16 +460,23 @@ class CursorChatTests(unittest.IsolatedAsyncioTestCase):
         self.profiles.providers['cursor']=BrowserProvider('unused')
         p=self.profiles.create(HOST_ID,'Cursor','cursor');p['models']=[{'id':'model'}]
         self.profiles.save_auth(p,cursor_auth());g=self.profiles.grant(HOST_ID,p['id'],'alice',['model'])
-        session=self.runs.create_session('alice',self.profiles.binding('alice',p['id'],'model'))
+        session=self.runs.create_session('alice',self.profiles.binding('alice',p['id'],'model'),
+                                         conversation_id='admin-chat')
         run={'id':'mcp-run','actor_id':'alice','binding':session['binding'],'seq':0,'status':'running'}
         self.store.put('run',run)
         business=__import__('app.runtime.business_tools',fromlist=['BusinessTools']).BusinessTools(self.storage,self.profiles.authorize,self.store)
         self.storage.write_bytes('alice','/docs/own.txt',b'alice document')
         self.storage.write_bytes('bob','/docs/own.txt',b'bob secret')
-        async def call(params):return await business(session,run,params)
+        route_reply_through_approval = False
+        reply_state = {'run': run, 'answer': None, 'cancel': False, 'finalizing': False}
+        self.runs.tool_bridge = business
+        async def call(params):
+            if route_reply_through_approval and params.get('tool') == 'jellyfish_send_service_message':
+                return await self.runs._call_business_tool(session, reply_state, params)
+            return await business(session, run, params)
         specs=__import__('app.runtime.business_tools',fromlist=['specifications']).specifications()
-        # This instance checks MCP transport and actor binding. Production
-        # wraps tool_call with RunService approval, exercised by the next test.
+        # Check actor-bound MCP transport, then enable the production reply
+        # approval gate. The next test covers document-write approval.
         bridge=CursorMCP(specs,call);server=await bridge.start()
         try:
             async with httpx.AsyncClient(trust_env=False) as c:
@@ -478,6 +485,37 @@ class CursorChatTests(unittest.IsolatedAsyncioTestCase):
                     'jsonrpc':'2.0','id':0,'method':'tools/list'})
                 self.assertIn('jellyfish_write_document',
                               {tool['name'] for tool in listed.json()['result']['tools']})
+                self.assertIn('jellyfish_send_service_message',
+                              {tool['name'] for tool in listed.json()['result']['tools']})
+                queued={'message':{'id':'msg-cursor'}, 'deliveries':[
+                    {'id':'delivery-cursor', 'channel':'web', 'status':'pending'}]}
+                target = {'owner_id': 'alice', 'service_id': 'svc',
+                          'conversation_id': 'consumer-c1', 'source': 'web'}
+                with patch('app.services.service_messaging.send_service_message', return_value=queued) as send, \
+                        patch.object(self.runs, '_service_message_target', return_value=target):
+                    request = {'jsonrpc':'2.0','id':8,'method':'tools/call','params':{
+                        'name':'jellyfish_send_service_message',
+                        'arguments':{'service_id':'svc','conversation_id':'consumer-c1',
+                                     'message':'Cursor reply'}}}
+                    reply=await c.post(server['url'],headers=headers,json=request)
+                    self.assertEqual(reply.status_code,200,reply.text)
+                    self.assertTrue(reply.json()['result']['isError'],reply.text)
+                    self.assertIn('确认',reply.json()['result']['content'][0]['text'])
+                    send.assert_not_called()
+
+                    # Route through the real approval gate; only a trusted YOLO
+                    # turn may supply the approved destination to the bridge.
+                    route_reply_through_approval = True
+                    run['yolo'] = True
+                    reply=await c.post(server['url'],headers=headers,json=request)
+                    self.assertEqual(reply.status_code,200,reply.text)
+                    self.assertFalse(reply.json()['result']['isError'],reply.text)
+                    self.assertIn('msg-cursor',reply.text)
+                    send.assert_called_once_with('alice','svc','consumer-c1','Cursor reply',
+                        inbox_id=None,idempotency_key='cli:mcp-run:8',expected_target=target)
+                    resolved = [event for event in self.store.events(run['id'])
+                                if event['type'] == 'approval_resolved']
+                    self.assertTrue(any(event['payload'].get('automatic') for event in resolved))
                 doc_path='/docs/寻味江南-2026年十月菜单.md'
                 content='# 寻味江南\n\n桂花糖藕。\n'
                 saved=await c.post(server['url'],headers=headers,json={

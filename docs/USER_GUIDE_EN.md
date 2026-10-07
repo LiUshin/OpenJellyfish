@@ -856,6 +856,7 @@ Connect your **main Admin Agent** via WeChat iLink protocol, enabling direct WeC
 | Receive scheduled task push | Select "Push to my WeChat" in reply_to for §6.7 task |
 | Receive important Service inbox notifications | Inbox Agent auto-evaluates forwarding (see §6.4) |
 | Let Agent actively report | Admin dispatches task via `publish_service_task`, Service reports back to WeChat when done |
+| Ask the admin Agent to reply to a specific Service consumer | Give the Service and conversation in admin chat or personal WeChat. The Agent queues the full reply via `send_service_message` (or `jellyfish_send_service_message` in a CLI Core); include `inbox_id` when replying to feedback. Queued does not mean delivered. |
 
 ---
 

@@ -860,6 +860,7 @@ Agent 任务可指定**执行模型**（留空 = 创建时 Agent 当前模型）
 | 接收定时任务推送 | 在 §6.7 任务的 reply_to 选「推送到我的微信」 |
 | 接收 Service 反馈 | 每条新反馈持久排队提醒，未连微信时保留待重试（见 §6.4） |
 | 回复原消费者 | 发送 `回复 inbox_反馈编号：正文`，核对身份后按原绑定排队投递 |
+| 让管理员 Agent 回复指定 Service 用户 | 在管理员对话或个人微信中给出 Service 与会话；Agent 通过 `send_service_message` 将完整回复按原绑定排队投递。收件箱反馈还可附 `inbox_id`；CLI Core 使用 `jellyfish_send_service_message`。入队不等于用户已收到。 |
 | 给 Service 消费者派发任务 | 通过 `publish_service_task` 明确目标；运行产生的 `send_message` 意图按任务绑定投递 |
 
 ---

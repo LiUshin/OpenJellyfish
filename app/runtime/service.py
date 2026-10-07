@@ -154,6 +154,10 @@ class RunService:
 
     async def _call_business_tool(self, session, state, params):
         """Apply one admin write approval before either CLI reaches the bridge."""
+        if (params.get('tool') == 'jellyfish_send_service_message'
+                and not session['binding'].get('service_scope')
+                and not session['binding'].get('scheduler_scope')):
+            return await self._call_service_message(session, state, params)
         if (params.get('tool') != 'jellyfish_write_document'
                 or session['binding'].get('service_scope')
                 or session['binding'].get('scheduler_scope')):
@@ -233,12 +237,108 @@ class RunService:
         safe_params = {**params, 'arguments': {**args.model_dump(), 'path': path}}
         return await self.tool_bridge(session, state['run'], safe_params)
 
+    @staticmethod
+    def _service_message_target(actor_id, args):
+        """Resolve the actual consumer destination before showing an approval."""
+        from app.services import service_messaging as messaging
+
+        if not args.inbox_id:
+            return messaging._consumer_target(actor_id, args.service_id, args.conversation_id)
+        from app.services.inbox import get_inbox_message
+        case = get_inbox_message(actor_id, args.inbox_id)
+        if (not case or case.get('service_id') != args.service_id
+                or case.get('conversation_id') != args.conversation_id):
+            raise KeyError('反馈不属于目标 Service 会话')
+        target = messaging.get_store().case_target(actor_id, args.inbox_id)
+        if not target:
+            raise KeyError('反馈不存在')
+        messaging._authorize_target(target)
+        return target
+
+    async def _call_service_message(self, session, state, params):
+        from app.runtime.business_tools import BusinessTools, ServiceMessage
+        from pydantic import ValidationError
+
+        failure = lambda message: BusinessTools.result(message, False)
+        if not session.get('conversation_id'):
+            return failure('只有管理员对话可以向 Service 用户回复。')
+        if session.get('service_message_available') is False:
+            return failure('当前原生会话没有 Service 用户回复工具；请新建对话。')
+        try:
+            args = ServiceMessage.model_validate(params.get('arguments', {}))
+            args.message = args.message.strip()
+            if not args.message:
+                raise ValueError('回复正文不能为空')
+            call_id = params.get('callId')
+            if (isinstance(call_id, bool) or not isinstance(call_id, (str, int))
+                    or not str(call_id) or len(str(call_id)) > 128):
+                raise ValueError('回复需要稳定的工具调用 ID')
+            target = self._service_message_target(session['actor_id'], args)
+        except (ValidationError, ValueError, KeyError, PermissionError, HTTPException) as exc:
+            return failure(f'回复请求无效：{str(exc)[:200]}')
+
+        if state.get('answer') is not None or state['run'].get('pending'):
+            return failure('已有待处理的审批；请稍后重试发送回复。')
+        self.authorize(session['actor_id'], session['binding'])
+        kind = 'business_tool/jellyfish_send_service_message'
+        if state['run'].get('yolo'):
+            self._emit(state, 'approval_resolved', {
+                'approval_id': new_id(), 'kind': kind, 'decision': 'accept', 'automatic': True,
+            }, status='running')
+        else:
+            destination = (f"Service：{args.service_id}\n会话：{args.conversation_id}"
+                           f"\n渠道：{target.get('source', 'unknown')}")
+            if target.get('recipient_id'):
+                destination += f"\n微信收件人：{target['recipient_id']}"
+            if args.inbox_id:
+                destination += f"\n反馈编号：{args.inbox_id}"
+            pending = {
+                'id': new_id(), 'kind': kind, 'allowed': ['accept', 'decline'],
+                'command': f'{destination}\n\n拟发送的完整回复：\n{args.message}',
+                'reason': '确认后提交到持久投递队列；提交不代表用户已经收到。',
+                'changes': None,
+            }
+            future = asyncio.get_running_loop().create_future()
+            state['run']['pending'] = pending
+            state['answer'] = future
+            self._emit(state, 'approval_requested', {'approval': pending}, status='waiting_approval')
+            decision = None
+            try:
+                try:
+                    decision = await asyncio.wait_for(future, self.policy.approval_timeout)
+                except asyncio.TimeoutError:
+                    decision = 'decline'
+            finally:
+                state['run']['pending'] = None
+                if state.get('answer') is future:
+                    state['answer'] = None
+                if state['run']['status'] in TERMINAL:
+                    self.store.put('run', state['run'])
+                else:
+                    self._emit(state, 'approval_resolved', {
+                        'approval_id': pending['id'], 'kind': kind,
+                        'decision': decision or 'decline',
+                    }, status='running')
+            if decision != 'accept':
+                return failure('本次回复已拒绝或审批超时，消息未提交。')
+
+        if state['cancel'] or state['finalizing']:
+            return failure('本轮运行已结束，消息未提交。')
+        self.authorize(session['actor_id'], session['binding'])
+        try:
+            if self._service_message_target(session['actor_id'], args) != target:
+                return failure('审批期间目标会话绑定发生变化，消息未提交。')
+        except (ValueError, KeyError, PermissionError, HTTPException):
+            return failure('审批期间目标会话不可用或绑定发生变化，消息未提交。')
+        safe_params = {**params, 'arguments': args.model_dump(), 'approved_target': target}
+        return await self.tool_bridge(session, state['run'], safe_params)
+
     async def _request(self, session, state, payload):
         self.authorize(session['actor_id'], session['binding'])
         method, params, req_id = payload['method'], payload['params'], payload['request_id']
         adapter = state['adapter']
         if method == 'item/tool/call' and self.tool_bridge:
-            if session['binding'].get('scheduler_scope'):
+            if session['binding'].get('scheduler_scope') or params.get('tool') == 'jellyfish_send_service_message':
                 params = {**params, 'callId': str(req_id)}
             result = await self._call_business_tool(session, state, params)
             self.authorize(session['actor_id'], session['binding'])
@@ -354,7 +454,7 @@ class RunService:
                                and not session['binding'].get('scheduler_scope'))
                 updated_instructions = (not (session['binding'].get('service_scope')
                                              or session['binding'].get('scheduler_scope'))
-                                        and session.get('instructions_version', 1) < 5
+                                        and session.get('instructions_version', 1) < 6
                                         and bool(self.tool_bridge))
                 if admin_scope and self.tool_bridge:
                     from app.runtime.business_tools import specifications
@@ -369,6 +469,8 @@ class RunService:
                         not existing_codex or 'jellyfish_write_project_brief' in previous)
                     session['document_write_available'] = (
                         not existing_codex or 'jellyfish_write_document' in previous)
+                    session['service_message_available'] = (
+                        not existing_codex or 'jellyfish_send_service_message' in previous)
                     if not existing_codex:
                         # Cursor's connection backend restarts an idle ACP client
                         # when this session's MCP tools change, then session/load
@@ -381,12 +483,20 @@ class RunService:
                             '这条 Codex 会话无法追加文档库写入工具；如需写入 /docs，请新建 Codex 对话。'})
                         session['document_write_notice_sent'] = True
                         self.store.put('session', session)
+                    if (updated_instructions and existing_codex
+                            and not session['service_message_available']
+                            and not session.get('service_message_notice_sent')):
+                        self._emit(state, 'notice', {'message':
+                            '这条 Codex 会话无法追加 Service 用户回复工具；如需直接回复，请新建 Codex 对话。'})
+                        session['service_message_notice_sent'] = True
+                        self.store.put('session', session)
                 if updated_instructions:
                     from app.runtime.business_tools import instructions
                     session['instructions'] = instructions(
                         session['actor_id'], session['binding']['runtime'],
                         project_brief_write=session.get('project_brief_write_available', False),
                         document_write_available=session.get('document_write_available', False),
+                        service_message_available=session.get('service_message_available', False),
                     )
                 async with self.backend.execution(session) as adapter:
                     state['adapter'] = adapter
@@ -534,7 +644,7 @@ class RunService:
                     adapter.reusable = terminal == 'completed' and not state['cancel']
                     if adapter.reusable:
                         session['instructions_sent'] = True
-                        session['instructions_version'] = 5
+                        session['instructions_version'] = 6
                         session['connection_history'] = session.get('connection_history', False) or hasattr(self.backend, 'connection_home')
                         self.store.put('session', session)
                     adapter.tool_call = None

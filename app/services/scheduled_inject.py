@@ -664,7 +664,7 @@ def _summarize_pair(pair: Dict[str, Any]) -> str:
 def _admin_agent_factory(user_id: str) -> Callable[[], Awaitable[Any]]:
     async def _make():
         from app.services.agent import create_user_agent
-        return create_user_agent(user_id)
+        return create_user_agent(user_id, service_message_enabled=False)
     return _make
 
 
