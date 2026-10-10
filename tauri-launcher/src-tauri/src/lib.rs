@@ -69,6 +69,19 @@ const KNOWN_ENV_KEYS: &[&str] = &[
     "S2S_BASE_URL",
     "STT_API_KEY",
     "STT_BASE_URL",
+    // —— 主机 Codex / Cursor 连接（保存后重启服务生效）——
+    "JELLYFISH_RUNTIME_ENABLED",
+    "JELLYFISH_RUNTIME_ACCESS_MODE",
+    "JELLYFISH_RUNTIME_BACKEND",
+    "JELLYFISH_RUNTIME_MAX_RUNNING",
+    "JELLYFISH_RUNTIME_MAX_QUEUED",
+    "JELLYFISH_RUNTIME_QUEUE_PER_ADMIN",
+    "JELLYFISH_RUNTIME_RUN_TIMEOUT",
+    "JELLYFISH_RUNTIME_APPROVAL_TIMEOUT",
+    "JELLYFISH_RUNTIME_CODEX_BIN",
+    "JELLYFISH_RUNTIME_CURSOR_BIN",
+    "JELLYFISH_RUNTIME_MAX_CLIENTS",
+    "JELLYFISH_RUNTIME_KEEP_WARM",
     // —— 运维开关（高级）——
     "SAFE_STARTUP",
     "DISABLE_SCHEDULER",
@@ -394,30 +407,39 @@ fn detect_environment(state: State<'_, AppState>) -> EnvStatus {
 }
 
 #[tauri::command]
-fn load_env_config(state: State<'_, AppState>) -> EnvMap {
+fn load_env_config(state: State<'_, AppState>) -> Result<EnvMap, String> {
     let project_dir = state.project_dir.lock().unwrap();
     let env_path = project_dir.join(".env");
 
     let known: HashSet<&str> = KNOWN_ENV_KEYS.iter().copied().collect();
     let mut config: EnvMap = HashMap::new();
 
-    if let Ok(content) = fs::read_to_string(&env_path) {
-        for line in content.lines() {
-            let line = line.trim();
-            if line.starts_with('#') || !line.contains('=') {
-                continue;
-            }
-            let mut parts = line.splitn(2, '=');
-            let key = parts.next().unwrap_or("").trim();
-            let val = parts.next().unwrap_or("").trim().to_string();
-            if val.is_empty() || !known.contains(key) {
-                continue;
-            }
-            config.insert(key.to_string(), val);
+    let content = read_env_file(&env_path)?;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || !line.contains('=') {
+            continue;
         }
+        let mut parts = line.splitn(2, '=');
+        let key = parts.next().unwrap_or("").trim();
+        let val = parts.next().unwrap_or("").trim().to_string();
+        if val.is_empty() || !known.contains(key) {
+            continue;
+        }
+        config.insert(key.to_string(), val);
     }
 
-    config
+    Ok(config)
+}
+
+fn read_env_file(path: &Path) -> Result<String, String> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        // An unreadable existing file is not a blank first-run configuration.
+        // Both load and save must stop rather than replace it with defaults.
+        Err(error) => Err(format!("无法读取主机配置，未进行修改: {}", error)),
+    }
 }
 
 #[tauri::command]
@@ -426,7 +448,7 @@ fn save_env_config(config: EnvMap, state: State<'_, AppState>) -> Result<(), Str
     let env_path = project_dir.join(".env");
 
     let known: HashSet<&str> = KNOWN_ENV_KEYS.iter().copied().collect();
-    let existing = fs::read_to_string(&env_path).unwrap_or_default();
+    let existing = read_env_file(&env_path)?;
     let mut lines: Vec<String> = Vec::new();
     let mut written_keys: HashSet<String> = HashSet::new();
 
@@ -722,9 +744,17 @@ fn open_superadmin(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 fn get_superadmin_key(state: State<'_, AppState>) -> Result<String, String> {
     let root = state.project_dir.lock().unwrap().clone();
-    std::fs::read_to_string(root.join("config").join("superadmin.key"))
+    let configured = std::env::var("JELLYFISH_SUPERADMIN_KEY_FILE").ok();
+    std::fs::read_to_string(superadmin_key_path(&root, configured.as_deref()))
         .map(|key| key.trim().to_string())
         .map_err(|_| "请先启动服务以生成超管 key".to_string())
+}
+
+// Keep the same process-environment and project-relative semantics as
+// app/core/host_auth.py. Do not read .env or change the key location here.
+fn superadmin_key_path(root: &Path, configured: Option<&str>) -> PathBuf {
+    let configured = configured.map(str::trim).filter(|value| !value.is_empty());
+    root.join(configured.unwrap_or("config/superadmin.key"))
 }
 
 // ── About / Tools Commands ───────────────────────────────────────
@@ -1242,11 +1272,7 @@ fn list_admin_users(state: State<'_, AppState>) -> Result<Vec<AdminUserInfo>, St
     let mut result = Vec::new();
 
     for (uid, udata) in obj {
-        let has_api_keys = project_dir
-            .join("users")
-            .join(uid)
-            .join("api_keys.json")
-            .exists();
+        let has_api_keys = !admin_key_providers(&project_dir, uid).is_empty();
 
         result.push(AdminUserInfo {
             user_id: uid.clone(),
@@ -1309,12 +1335,7 @@ fn reset_admin_password(user_id: String, state: State<'_, AppState>) -> Result<R
             chars[rng.gen_range(0..chars.len())]
         })
         .collect();
-    let mut hasher = Sha256::new();
-    hasher.update(format!("{}{}", salt, temp_password));
-    let hash_hex = hex::encode(hasher.finalize());
-    let password_hash = format!("sha256:{}:{}", salt, hash_hex);
-
-    user.insert("password_hash".into(), serde_json::Value::String(password_hash));
+    replace_admin_password(user, &temp_password, &salt);
 
     let json = serde_json::to_string_pretty(&users).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())?;
@@ -1323,6 +1344,20 @@ fn reset_admin_password(user_id: String, state: State<'_, AppState>) -> Result<R
         user_id,
         temp_password,
     })
+}
+
+fn replace_admin_password(
+    user: &mut serde_json::Map<String, serde_json::Value>,
+    password: &str,
+    salt: &str,
+) {
+    let mut hasher = Sha256::new();
+    hasher.update(format!("{}{}", salt, password));
+    let password_hash = format!("sha256:{}:{}", salt, hex::encode(hasher.finalize()));
+    user.insert("password_hash".into(), serde_json::Value::String(password_hash));
+    // Existing browser/API sessions must sign in again after a host password
+    // reset; verify_token() rejects the empty token on the next request.
+    user.insert("token".into(), serde_json::Value::String(String::new()));
 }
 
 #[tauri::command]
@@ -1476,49 +1511,121 @@ fn get_admin_key_status(
     state: State<'_, AppState>,
 ) -> Result<AdminKeyStatus, String> {
     let project_dir = state.project_dir.lock().unwrap().clone();
-    let path = project_dir
-        .join("users")
-        .join(&user_id)
-        .join("api_keys.json");
+    let providers = admin_key_providers(&project_dir, &user_id);
+    Ok(AdminKeyStatus { user_id, providers })
+}
 
-    let mut providers: Vec<String> = Vec::new();
-    if path.exists() {
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(obj) = val.as_object() {
-                    // 字段名 → 友好供应商名（仅密钥字段，密文非空即视为已配置）
-                    let map: &[(&str, &str)] = &[
-                        ("openai_api_key", "OpenAI"),
-                        ("anthropic_api_key", "Anthropic"),
-                        ("tavily_api_key", "Tavily"),
-                        ("cloudsway_search_key", "CloudsWay"),
-                        ("image_api_key", "图像"),
-                        ("tts_api_key", "TTS"),
-                        ("video_api_key", "视频"),
-                        ("s2s_api_key", "实时语音"),
-                        ("stt_api_key", "STT"),
-                        ("kimi_api_key", "Kimi"),
-                        ("minimax_api_key", "MiniMax"),
-                        ("doubao_access_key", "豆包"),
-                        ("bedrock_api_key", "Bedrock"),
-                        ("openrouter_api_key", "OpenRouter"),
-                    ];
-                    for (field, label) in map {
-                        let configured = obj
-                            .get(*field)
-                            .and_then(|v| v.as_str())
-                            .map(|s| !s.is_empty())
-                            .unwrap_or(false);
-                        if configured {
-                            providers.push(label.to_string());
-                        }
-                    }
-                }
-            }
-        }
+fn admin_key_providers(project_dir: &Path, user_id: &str) -> Vec<String> {
+    let path = project_dir.join("users").join(user_id).join("api_keys.json");
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .map(|value| configured_key_providers(&value))
+        .unwrap_or_default()
+}
+
+fn configured_key_providers(value: &serde_json::Value) -> Vec<String> {
+    // Only inspect nonempty stored ciphertext; never decrypt or return a key.
+    // URLs and credential-source preferences alone do not mean a key is stored.
+    let fields = [
+        ("openai_api_key", "OpenAI"),
+        ("anthropic_api_key", "Anthropic"),
+        ("tavily_api_key", "Tavily"),
+        ("cloudsway_search_key", "CloudsWay"),
+        ("image_api_key", "图像"),
+        ("tts_api_key", "TTS"),
+        ("video_api_key", "视频"),
+        ("s2s_api_key", "实时语音"),
+        ("stt_api_key", "STT"),
+        ("kimi_api_key", "Kimi"),
+        ("minimax_api_key", "MiniMax"),
+        ("doubao_access_key", "豆包"),
+        ("bedrock_api_key", "Bedrock"),
+        ("openrouter_api_key", "OpenRouter"),
+        ("siliconflow_api_key", "硅基流动"),
+    ];
+    fields.iter().filter_map(|(field, label)| {
+        value.get(*field).and_then(serde_json::Value::as_str)
+            .filter(|stored| !stored.trim().is_empty())
+            .map(|_| (*label).to_string())
+    }).collect()
+}
+
+#[cfg(test)]
+mod host_management_tests {
+    use super::{configured_key_providers, read_env_file, replace_admin_password, superadmin_key_path};
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn host_key_override_uses_the_backend_project_relative_rules() {
+        let root = std::env::temp_dir().join("jellyfish-path-test");
+        assert_eq!(superadmin_key_path(&root, None), root.join("config/superadmin.key"));
+        assert_eq!(superadmin_key_path(&root, Some(" \t")), root.join("config/superadmin.key"));
+        assert_eq!(superadmin_key_path(&root, Some(" private/host.key ")), root.join("private/host.key"));
+        let absolute = std::env::temp_dir().join("jellyfish-external-path-test/host.key");
+        assert_eq!(superadmin_key_path(&root, absolute.to_str()), absolute);
     }
 
-    Ok(AdminKeyStatus { user_id, providers })
+    #[test]
+    fn password_reset_invalidates_session_and_preserves_other_account_fields() {
+        let mut account = json!({
+            "username": "fixture-user",
+            "disabled": true,
+            "password_hash": "old-fixture-hash",
+            "token": "old-fixture-session"
+        });
+        replace_admin_password(account.as_object_mut().unwrap(), "fixture-password", "fixture-salt");
+        assert_eq!(account["token"], "");
+        assert_eq!(account["username"], "fixture-user");
+        assert_eq!(account["disabled"], true);
+        let stored = account["password_hash"].as_str().unwrap();
+        let parts: Vec<&str> = stored.split(':').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "sha256");
+        let expected = hex::encode(Sha256::digest(format!("{}{}", parts[1], "fixture-password").as_bytes()));
+        assert_eq!(parts[2], expected);
+        let previous = stored.to_string();
+        replace_admin_password(account.as_object_mut().unwrap(), "another-fixture-password", "another-fixture-salt");
+        assert_ne!(account["password_hash"], previous);
+        assert_eq!(account["token"], "");
+    }
+
+    #[test]
+    fn provider_status_ignores_empty_files_and_noncredential_metadata() {
+        for value in [json!({}), json!(null), json!([]), json!({
+            "openai_api_key": "  ",
+            "openai_base_url": "https://example.invalid/v1",
+            "credential_sources": {"openai": "platform"},
+            "anthropic_api_key": false,
+            "unrecognized_secret": "fixture-only"
+        })] {
+            assert!(configured_key_providers(&value).is_empty());
+        }
+        let labels = configured_key_providers(&json!({
+            "openai_api_key": "fixture-ciphertext",
+            "siliconflow_api_key": "different-fixture-ciphertext",
+            "anthropic_api_key": ""
+        }));
+        assert_eq!(labels, ["OpenAI", "硅基流动"]);
+        assert!(labels.iter().all(|label| !label.contains("ciphertext")));
+    }
+
+    #[test]
+    fn config_read_distinguishes_first_run_from_unreadable_existing_file() {
+        let root = std::env::temp_dir().join(format!("jellyfish-config-test-{}", rand::random::<u64>()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("fixture.env");
+        assert_eq!(read_env_file(&path).unwrap(), "");
+        std::fs::write(&path, "# fixture only\nJELLYFISH_RUNTIME_ENABLED=1\n").unwrap();
+        assert!(read_env_file(&path).unwrap().contains("JELLYFISH_RUNTIME_ENABLED=1"));
+        let invalid_utf8 = [0xff, 0xfe, 0xfd];
+        std::fs::write(&path, invalid_utf8).unwrap();
+        assert!(read_env_file(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), invalid_utf8);
+        assert!(read_env_file(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[tauri::command]
@@ -1566,12 +1673,7 @@ fn get_admin_stats(state: State<'_, AppState>) -> Result<AdminStats, String> {
             }
         }
 
-        if project_dir
-            .join("users")
-            .join(uid)
-            .join("api_keys.json")
-            .exists()
-        {
+        if !admin_key_providers(&project_dir, uid).is_empty() {
             keys_configured += 1;
         }
     }

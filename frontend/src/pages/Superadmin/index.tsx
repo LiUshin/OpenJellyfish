@@ -1,47 +1,114 @@
 import { useState } from 'react';
-import { Alert, Button, Form, Input, Space, Tag, Typography } from 'antd';
+import { Alert, Button, Form, Input } from 'antd';
+import { ArrowUpRight, Key, LockKey, Moon, ShieldCheck, Sun } from '@phosphor-icons/react';
 import RuntimeSettingsCard from '../../components/RuntimeSettingsCard';
+import LanguageSwitcher from '../../components/LanguageSwitcher';
+import { useRuntimeCopy } from '../../components/runtimeManagementCopy';
 import { hostClient, type HostClient } from '../../services/superadmin';
+import { useTheme } from '../../stores/themeContext';
+import styles from './superadmin.module.css';
 
 export default function SuperadminPage() {
+  const { text } = useRuntimeCopy();
+  const { isDark, toggleColor } = useTheme();
   const [client, setClient] = useState<HostClient | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [form] = Form.useForm<{ key: string }>();
+
   async function login(values: { key: string }) {
-    setBusy(true); setError('');
-    const next = hostClient(values.key.trim(), () => { setClient(null); setError('超管 key 已失效，请重新登录。'); });
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    const next = hostClient(values.key.trim(), () => {
+      setClient(null);
+      setError(text('主机 key 已失效，请重新登录。', 'Your host key has expired. Sign in again.'));
+    });
     try {
-      await next.capabilities(); setClient(next); form.resetFields();
-    } catch (e) { setError(e instanceof Error ? e.message : '登录失败'); }
-    finally { setBusy(false); }
+      await next.capabilities();
+      setClient(next);
+      form.resetFields();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : text('登录失败', 'Sign-in failed'));
+    } finally {
+      setBusy(false);
+    }
   }
-  return <main style={{ minHeight: '100vh', background: 'var(--jf-bg-deep)', padding: '40px 20px' }}>
-    <div style={{ maxWidth: 1080, margin: '0 auto' }}>
-      <Space wrap style={{ width: '100%', justifyContent: 'space-between', marginBottom: 24 }}>
-        <div><Typography.Title level={2} style={{ margin: 0 }}>OpenJellyfish 超管控制台</Typography.Title>
-          <Typography.Text type="secondary">服务器与个人主机的管理入口</Typography.Text></div>
-        <Space><Button href="/">打开 Jellyfish</Button>{client && <Button onClick={() => { setClient(null); setError(''); }}>退出超管</Button>}</Space>
-      </Space>
+
+  const steps = [
+    [text('连接自己的账号', 'Connect your account'), text('在官方页面登录 Codex / Cursor，连接由主机管理。', 'Sign in to Codex or Cursor on the official site. This host manages the connection.')],
+    [text('授权可信的团队成员', 'Choose who can use it'), text('按 admin 分配可用模型；账号变更后重新授权。', 'Assign models to trusted admins. Renew grants when the provider account changes.')],
+    [text('开始使用与发布', 'Use and publish'), text('admin 在 Jellyfish 中选择引擎，用于聊天或发布服务。', 'Admins select their engine in Jellyfish for conversations and published services.')],
+  ];
+
+  return <main className={styles.page} id="superadmin-main">
+    <div className={styles.container}>
+      <header className={styles.header}>
+        <div className={styles.brand}>
+          <img className={styles.logo} src="/media_resources/jellyfishlogo.png" alt="" />
+          <div><div className={styles.brandName}>OpenJellyfish</div><p className={styles.eyebrow}>{text('主机管理 · 超管控制台', 'Host management · Superadmin')}</p></div>
+        </div>
+        <nav className={styles.toolbar} aria-label={text('控制台导航', 'Console navigation')}>
+          <Button icon={isDark ? <Sun size={18} /> : <Moon size={18} />} onClick={toggleColor} aria-label={text(isDark ? '切换浅色主题' : '切换深色主题', isDark ? 'Switch to light theme' : 'Switch to dark theme')} />
+          <LanguageSwitcher variant="compact" syncBackend={false} />
+          <Button href="/" icon={<ArrowUpRight size={16} />}>{text('打开 Jellyfish', 'Open Jellyfish')}</Button>
+          {client && <Button onClick={() => { setClient(null); setError(''); }}>{text('退出超管', 'Sign out')}</Button>}
+        </nav>
+      </header>
+      <section className={styles.intro} aria-labelledby="host-console-title">
+        <div>
+          <span className={styles.hostBadge}><ShieldCheck size={15} />{text('主机主人专用', 'For the host owner')}</span>
+          <h1 id="host-console-title">{text('把连接管好，让团队专注使用。', 'Your connections. Your team’s possibilities.')}</h1>
+          <p>{text('在这里连接你的 Codex / Cursor 账号，并决定哪些 admin 可以使用哪些模型。主机身份独立于团队成员的 admin 账号。', 'Connect your Codex or Cursor accounts and decide which models each admin can use. The host identity is separate from team members’ admin accounts.')}</p>
+        </div>
+      </section>
+      <ol className={styles.steps} aria-label={text('使用步骤', 'Setup steps')}>
+        {steps.map(([title, description], index) => <li key={index} className={styles.step}>
+          <span className={styles.stepNumber} aria-hidden="true">0{index + 1}</span>
+          <div><h2>{title}</h2><p>{description}</p></div>
+        </li>)}
+      </ol>
       {error && <Alert showIcon type="error" message={error} style={{ marginBottom: 20 }} />}
-      {!client ? <section style={{ maxWidth: 480, margin: '64px auto', padding: 28, background: 'var(--jf-bg-raised)', border: '1px solid var(--jf-border)', borderRadius: 16 }}>
-        <Typography.Title level={3}>使用主机 key 访问</Typography.Title>
-        <Typography.Paragraph type="secondary">此入口属于主机主人，独立于分发给团队成员的 admin 账号。</Typography.Paragraph>
-        <Form form={form} layout="vertical" onFinish={login}>
-          <Form.Item name="key" label="超管 key" rules={[{ required: true, message: '请输入主机 key' }]}>
-            <Input.Password autoComplete="off" placeholder="jf_host_…" aria-label="超管 key" />
-          </Form.Item>
-          <Button type="primary" htmlType="submit" loading={busy} block>进入超管控制台</Button>
-        </Form>
-        <Typography.Paragraph type="secondary" style={{ marginTop: 20 }}>在实际运行后端的环境中查看 key：</Typography.Paragraph>
-        <Typography.Paragraph type="secondary">直接部署：<Typography.Text code>python3 launcher.py --superadmin-key</Typography.Text></Typography.Paragraph>
-        <Typography.Paragraph type="secondary">Docker Compose：<Typography.Text code>docker compose exec openjellyfish python launcher.py --superadmin-key</Typography.Text></Typography.Paragraph>
-        <Typography.Paragraph type="secondary">打包 App 可从控制台查看。刷新或关闭页面后需重新输入。</Typography.Paragraph>
-      </section> : <>
-        <Alert type="info" showIcon message="标准模式 · 可信团队共享" description="连接使用主机的 Codex / Cursor 套餐。只有获授权的 admin 可以使用指定模型；每个 admin 保留各自的聊天和文件目录。本机工作目录不提供 Docker 级隔离。" style={{ marginBottom: 20 }} />
-        <Space style={{ marginBottom: 16 }}><Tag>主机身份</Tag><Typography.Text type="secondary">登录与授权操作在此集中管理</Typography.Text></Space>
-        <RuntimeSettingsCard api={client} host />
-      </>}
+      {!client ? <div className={styles.loginLayout}>
+        <section className={styles.card} aria-labelledby="host-login-title">
+          <span className={styles.cardIcon}><Key size={25} /></span>
+          <h2 id="host-login-title">{text('进入主机控制台', 'Access your host console')}</h2>
+          <p>{text('使用运行后端的这台主机所生成的 key 登录。团队成员请使用 Jellyfish 的普通登录入口。', 'Sign in with the key generated by the host running your backend. Team members use the regular Jellyfish sign-in page.')}</p>
+          <Form form={form} layout="vertical" onFinish={login} disabled={busy}>
+            <Form.Item name="key" label={text('主机 key', 'Host key')} rules={[{ required: true, whitespace: true, message: text('请输入主机 key', 'Enter your host key') }]}>
+              <Input.Password autoComplete="off" placeholder="jf_host_…" aria-label={text('主机 key', 'Host key')} spellCheck={false} />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" loading={busy} block>{text('进入超管控制台', 'Open host console')}</Button>
+          </Form>
+          <div className={styles.memoryHint}><LockKey size={15} /><span>{text('key 仅在当前页面内存中使用。刷新、退出或关闭页面后，需要重新输入。', 'Your key stays in this page’s memory. Enter it again after refreshing, signing out or closing the page.')}</span></div>
+        </section>
+        <aside className={styles.help} aria-labelledby="host-key-help">
+          <h2 id="host-key-help">{text('在哪里找到主机 key？', 'Where can I find my host key?')}</h2>
+          <details open>
+            <summary>{text('使用桌面客户端', 'Desktop app')}</summary>
+            <p>{text('启动服务后，在客户端的「模型连接」点击「读取主机 key」，再粘贴到这里。', 'Start the service, open Model connections in the desktop app, and choose “Read host key”. Paste it here.')}</p>
+          </details>
+          <details>
+            <summary>{text('从源码直接部署', 'Run from source')}</summary>
+            <p>{text('在运行后端的项目目录执行：', 'Run this in the project directory on your backend host:')}</p>
+            <code className={styles.command}>python3 launcher.py --superadmin-key</code>
+          </details>
+          <details>
+            <summary>Docker Compose</summary>
+            <p>{text('在部署服务器上执行：', 'Run this on your deployment server:')}</p>
+            <code className={styles.command}>docker compose exec openjellyfish python launcher.py --superadmin-key</code>
+          </details>
+          <p>{text('网页与 key 必须属于同一个部署。', 'The page and key must belong to the same deployment.')}</p>
+        </aside>
+      </div> : <RuntimeSettingsCard api={client} host />}
+      <aside className={styles.boundary}>
+        <strong>{text('标准模式 · 可信团队共享', 'Standard mode · Trusted team sharing')}</strong><br />
+        {text('共享连接使用同一供应商账号额度；admin 各自保留聊天和文件目录。本机工作目录不提供操作系统或 Docker 级隔离。', 'Shared connections use the same provider account quota. Admins retain their own conversations and file directories. Local working directories do not provide OS or Docker isolation.')}
+      </aside>
+      <footer className={styles.footer}>
+        <span>{text('此页管理引擎连接与模型授权。', 'This page manages engine connections and model grants.')}</span>
+        <span>{text('注册码、账号、用量与系统运维 → 桌面客户端', 'Registration codes, accounts, usage and system operations → Desktop app')}</span>
+      </footer>
     </div>
   </main>;
 }

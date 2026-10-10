@@ -1,22 +1,19 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Input, Popconfirm, Select, Space, Tag, Typography } from 'antd';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Button, Input, Popconfirm, Select, Spin, Tag, Typography } from 'antd';
+import { ArrowsClockwise, Plug, Plus } from '@phosphor-icons/react';
 import * as runtime from '../services/runtime';
 import RuntimeGrants from './RuntimeGrants';
 import RuntimeDefault from './RuntimeDefault';
 import type { HostClient } from '../services/superadmin';
+import { useRuntimeCopy } from './runtimeManagementCopy';
+import styles from './runtimeManagement.module.css';
 
-const statusNames: Record<string, string> = {
-  ready: '已连接', connecting: '等待登录', disconnected: '未连接',
-  disconnecting: '正在断开', error: '连接异常',
-  authorization_required: '需要超管重新授权',
-};
-
-function showLoginPopup(popup: Window | null, title: string, message: string) {
+function showLoginPopup(popup: Window | null, title: string, message: string, english: boolean) {
   if (!popup || popup.closed) return;
   try {
     const doc = popup.document;
     doc.title = title;
-    doc.documentElement.lang = 'zh-CN';
+    doc.documentElement.lang = english ? 'en' : 'zh-CN';
     doc.body.style.cssText = 'max-width:560px;margin:15vh auto;padding:24px;font:16px/1.7 system-ui,sans-serif;color:#24292f;background:#f6f8fa';
     const heading = doc.createElement('h1');
     heading.style.fontSize = '24px';
@@ -24,48 +21,56 @@ function showLoginPopup(popup: Window | null, title: string, message: string) {
     const content = doc.createElement('p');
     content.textContent = message;
     doc.body.replaceChildren(heading, content);
-  } catch { /* The parent console still displays failures if the popup is unavailable. */ }
+  } catch { /* The console also shows failures if the popup is unavailable. */ }
 }
 
 export default function RuntimeSettingsCard({ api = runtime, host = false }: { api?: HostClient; host?: boolean }) {
+  const { text, english } = useRuntimeCopy();
   const [caps, setCaps] = useState<runtime.RuntimeCapabilities | null>(null);
   const [profiles, setProfiles] = useState<runtime.RuntimeProfile[]>([]);
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const [grantRevision, setGrantRevision] = useState(0);
   const [attempt, setAttempt] = useState<runtime.LoginAttempt | null>(null);
   const [engine, setEngine] = useState<'codex' | 'cursor'>('codex');
-  const [name, setName] = useState('团队 Codex');
+  const [name, setName] = useState('');
   const [mode, setMode] = useState<'chatgpt' | 'chatgptDeviceCode'>('chatgptDeviceCode');
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const mounted = useRef(false);
+  const readVersion = useRef(0);
+  const actionPending = useRef(false);
 
   const refresh = useCallback(async () => {
+    const version = ++readVersion.current;
     const capability = await api.capabilities();
+    if (!mounted.current || version !== readVersion.current) return;
     setCaps(capability);
-    if (capability.available) {
-      const items = await api.profiles();
-      setProfiles(items);
-      const pending = items.find(p => p.can_manage && p.login_id);
-      if (pending?.login_id) setAttempt(await api.loginStatus(pending.id, pending.login_id));
+    if (!capability.available) {
+      setProfiles([]);
+      setProfilesLoaded(false);
+      setAttempt(null);
+      return;
     }
+    const items = await api.profiles();
+    if (!mounted.current || version !== readVersion.current) return;
+    setProfiles(items);
+    setProfilesLoaded(true);
+    setGrantRevision(value => value + 1);
+    const pending = items.find(p => p.can_manage && p.login_id);
+    const nextAttempt = pending?.login_id ? await api.loginStatus(pending.id, pending.login_id) : null;
+    if (mounted.current && version === readVersion.current) setAttempt(nextAttempt);
   }, [api]);
 
   useEffect(() => {
-    let disposed = false;
-    // Initial capability fetch is cheap; do not request disabled endpoints.
-    api.capabilities().then(async c => {
-      if (disposed) return;
-      setCaps(c);
-      if (!c.available) return;
-      const items = await api.profiles();
-      if (disposed) return;
-      setProfiles(items);
-      const pending = items.find(p => p.can_manage && p.login_id);
-      if (pending?.login_id) {
-        const a = await api.loginStatus(pending.id, pending.login_id);
-        if (!disposed) setAttempt(a);
-      }
-    }).catch(e => { if (!disposed) setError(String(e.message || e)); });
-    return () => { disposed = true; };
-  }, [api]);
+    mounted.current = true;
+    setLoading(true);
+    setProfilesLoaded(false);
+    void refresh().catch(e => {
+      if (mounted.current) setError(e instanceof Error ? e.message : String(e));
+    }).finally(() => { if (mounted.current) setLoading(false); });
+    return () => { mounted.current = false; readVersion.current++; };
+  }, [refresh]);
 
   useEffect(() => {
     if (!attempt || attempt.status !== 'pending') return;
@@ -78,92 +83,148 @@ export default function RuntimeSettingsCard({ api = runtime, host = false }: { a
         setAttempt(next);
         if (next.status !== 'pending') {
           await refresh();
-          if (next.status !== 'completed') setError(`登录${({ cancelled: '已取消', expired: '已过期', failed: '失败，请重试' } as Record<string, string>)[next.status] || next.status}`);
+          if (mounted.current && next.status !== 'completed') {
+            setError(text('登录未完成，请重新授权。', 'Sign-in did not complete. Please authorize again.'));
+          }
           return;
         }
       } catch (e) {
-        if (!disposed) setError(e instanceof Error ? e.message : '登录状态读取失败');
+        if (!disposed) setError(e instanceof Error ? e.message : text('登录状态读取失败', 'Could not read sign-in status'));
       }
       if (!disposed) timer = setTimeout(poll, 1500);
     };
     timer = setTimeout(poll, 1000);
     return () => { disposed = true; clearTimeout(timer); };
-  }, [attempt?.id, attempt?.status, attempt?.profile_id, refresh, api]);
+  }, [attempt?.id, attempt?.status, attempt?.profile_id, refresh, api, text]);
 
   useEffect(() => {
-    if (!caps?.available) return;
+    if (!caps?.available || loading || busy) return;
     let disposed = false;
-    const timer = setInterval(() => {
-      api.profiles().then(items => { if (!disposed) setProfiles(items); }).catch(() => {});
-    }, 3000);
-    return () => { disposed = true; clearInterval(timer); };
-  }, [caps?.available, api]);
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      const version = ++readVersion.current;
+      try {
+        const items = await api.profiles();
+        if (!disposed && version === readVersion.current) {
+          setProfiles(items);
+          setProfilesLoaded(true);
+        }
+      } catch { /* A manual refresh exposes errors without disrupting the current view. */ }
+      if (!disposed) timer = setTimeout(poll, 3000);
+    };
+    timer = setTimeout(poll, 3000);
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [caps?.available, api, busy, loading]);
 
   async function act(action: () => Promise<unknown>) {
-    setBusy(true); setError('');
-    try { await action(); await refresh(); }
-    catch (e) { setError(e instanceof Error ? e.message : '操作失败'); }
-    finally { setBusy(false); }
+    if (actionPending.current) return;
+    actionPending.current = true;
+    readVersion.current++;
+    setBusy(true);
+    setError('');
+    try { await action(); if (mounted.current) await refresh(); }
+    catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : text('操作失败', 'Action failed')); }
+    finally {
+      actionPending.current = false;
+      if (mounted.current) { setBusy(false); setLoading(false); }
+    }
   }
 
   function startLogin(profile: runtime.RuntimeProfile) {
-    // Open synchronously from the user's click; browsers block window.open
-    // after an awaited request. The inline link remains available as a fallback.
+    if (actionPending.current) return;
+    // Open inside the click event, before the request, to avoid popup blockers.
     let popup: Window | null = null;
     try {
       popup = window.open('about:blank', '_blank');
       if (popup) popup.opener = null;
-      showLoginPopup(popup, '正在准备账号授权…', '正在向服务器请求官方登录地址，准备好后会自动跳转。');
-    } catch { popup = null; } // Embedded browsers may disable popups entirely.
+      showLoginPopup(popup, text('正在准备账号授权…', 'Preparing account authorization…'), text('正在请求官方登录地址，准备好后会自动跳转。', 'Requesting the official sign-in URL. This page will redirect when ready.'), english);
+    } catch { popup = null; }
     void act(async () => {
       try {
         const next = await api.login(profile.id, profile.runtime === 'cursor' ? 'cursorBrowser' : mode);
+        if (!mounted.current) { popup?.close(); return; }
         setAttempt(next);
         if (next.challenge?.url && popup && !popup.closed) popup.location.replace(next.challenge.url);
         else popup?.close();
       } catch (e) {
-        const message = e instanceof Error ? e.message : '登录启动失败';
-        showLoginPopup(popup, '暂时无法开始登录', `${message} 请关闭此页，回到超管控制台处理后重试。`);
+        const message = e instanceof Error ? e.message : text('登录启动失败', 'Could not start sign-in');
+        showLoginPopup(popup, text('暂时无法开始登录', 'Unable to start sign-in'), `${message} ${text('请关闭此页，回到控制台处理后重试。', 'Close this page and return to the console to retry.')}`, english);
         throw e;
       }
     });
   }
 
-  return <section className="runtime-settings-card" aria-label="Agent 引擎连接" style={{ background: 'var(--jf-bg-raised)', border: '1px solid var(--jf-border)', borderRadius: 'var(--jf-radius-lg)', padding: 20, marginBottom: 16 }}>
-    <Typography.Title level={5} style={{ marginTop: 0 }}>Agent 引擎连接</Typography.Title>
-    <Typography.Paragraph type="secondary">{host ? '主机主人连接自己的 Codex / Cursor 账号，并按模型授权给可信 admin。' : 'Codex / Cursor 由超管连接并授权，在这里选择默认引擎。DeepAgents 使用下方的模型配置。'}</Typography.Paragraph>
-    {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} style={{ marginBottom: 12 }} />}
-    {caps && !caps.available && <Alert type="info" message={caps.reason || '外部引擎尚未启用'} />}
-    {caps?.available && <>
-      <Space wrap style={{ marginBottom: 12 }}><Tag>标准模式 · 本机执行</Tag><Tag>连接级预热</Tag><Button size="small" loading={busy} onClick={() => void act(refresh)}>刷新</Button></Space>
-      {!profiles.length && <Typography.Paragraph type="secondary">{caps.can_manage_connections ? '创建连接后登录你的 Codex 或 Cursor 账号。' : '超管授权连接后会显示在这里。'}</Typography.Paragraph>}
-      {profiles.map(p => <div key={p.id} style={{ borderTop: '1px solid var(--jf-border)', padding: '14px 0' }}>
-        <Space wrap><strong>{p.name}</strong><Tag>{p.runtime === 'cursor' ? 'Cursor' : 'Codex'}</Tag><Tag color={p.status === 'ready' ? 'green' : undefined}>{statusNames[p.status] || p.status}</Tag><Tag>{host ? '主机连接' : '团队连接'}</Tag></Space>
-        {p.status === 'ready' && <Space wrap style={{ marginTop: 8 }}>
-          <Tag color={p.worker?.status === 'ready' ? 'green' : undefined}>{({ warming: '预热中', ready: '可服务', busy: '执行中', sleeping: '等待可用客户端', error: '预热失败，将重试' } as Record<string, string>)[p.worker?.status || ''] || '按需启动'}</Tag>
-          {p.capabilities?.web_search && <Tag>网页搜索</Tag>}{p.capabilities?.image_input && <Tag>图片输入</Tag>}
-          {p.capabilities?.file_input && <Tag>文件输入</Tag>}{p.capabilities?.image_generation && <Tag>原生生图</Tag>}
-        </Space>}
-        {p.account && <Typography.Paragraph type="secondary" style={{ margin: '8px 0' }}>{p.account.email} · {p.account.planType}</Typography.Paragraph>}
-        {p.recovery_required && <Alert type="warning" message="上次执行异常退出，请由服务器主人检查旧进程后恢复。" />}
-        {p.can_manage && <Space wrap style={{ marginTop: 10 }}>
-          {p.runtime === 'codex' && <Select aria-label="Codex 登录方式" value={mode} onChange={setMode} options={[{ value: 'chatgptDeviceCode', label: '设备码登录（服务器）' }, { value: 'chatgpt', label: '浏览器登录（本机）' }]} />}
-          <Button disabled={busy || attempt?.status === 'pending' || p.recovery_required} onClick={() => startLogin(p)}>{p.status === 'ready' ? '重新登录' : `登录 ${p.runtime === 'cursor' ? 'Cursor' : 'Codex'}`}</Button>
-          {p.status === 'ready' && <Button disabled={busy} onClick={() => void act(() => api.probe(p.id))}>刷新模型</Button>}
-          {p.status !== 'disconnected' && <Popconfirm title="断开后将停止此连接的所有任务。" onConfirm={() => act(() => api.disconnect(p.id))}><Button danger disabled={busy}>断开</Button></Popconfirm>}
-        </Space>}
-      {attempt?.profile_id === p.id && attempt.status === 'pending' && attempt.challenge && <Alert type="info" showIcon message={`完成 ${p.runtime === 'cursor' ? 'Cursor' : 'Codex'} 授权`} description={<Space direction="vertical">
-        <Button type="primary" href={attempt.challenge.url} target="_blank" rel="noopener noreferrer">打开官方登录页面</Button>
-        <Typography.Text copyable={{ text: attempt.challenge.url }}>复制登录链接</Typography.Text>
-        {attempt.challenge.user_code && <Typography.Text copyable>设备码：{attempt.challenge.user_code}</Typography.Text>}
-        <Typography.Text type="secondary">登录有效期至 {new Date(attempt.expires_at * 1000).toLocaleTimeString()}。{attempt.challenge.mode === 'chatgpt' ? '本机浏览器登录需要在服务器所在电脑完成回调。' : '请在官方页面登录并授权，完成后这里会自动更新。'}</Typography.Text>
-        <Button size="small" disabled={busy} onClick={() => void act(() => api.cancelLogin(attempt.profile_id, attempt.id))}>取消登录</Button>
-      </Space>} style={{ margin: '12px 0' }} />}
-        {p.models.length > 0 && <Typography.Paragraph type="secondary" style={{ margin: '10px 0 0' }}>可用模型：{p.models.map(m => m.name).join('、')}</Typography.Paragraph>}
-        {p.can_manage && <RuntimeGrants profile={p} api={api} />}
-      </div>)}
-      {caps.can_manage_connections && <Space.Compact style={{ maxWidth: 540, width: '100%' }}><Select aria-label="连接引擎" value={engine} style={{ minWidth: 120 }} onChange={v => { setEngine(v); setName(`团队 ${v === 'cursor' ? 'Cursor' : 'Codex'}`); }} options={[{ value: 'codex', label: 'Codex' }, { value: 'cursor', label: 'Cursor' }]} /><Input aria-label="连接名称" maxLength={80} value={name} onChange={e => setName(e.target.value)} /><Button disabled={busy || !name.trim()} onClick={() => void act(() => api.createProfile(name.trim(), engine))}>创建连接</Button></Space.Compact>}
-      {!host && <RuntimeDefault profiles={profiles} />}
+  const statusNames: Record<string, string> = {
+    ready: text('已连接', 'Connected'), connecting: text('等待登录', 'Awaiting sign-in'),
+    disconnected: text('未连接', 'Disconnected'), disconnecting: text('正在断开', 'Disconnecting'),
+    error: text('连接异常', 'Connection error'), authorization_required: text('需要超管重新授权', 'Host authorization required'),
+  };
+  const workerNames: Record<string, string> = {
+    warming: text('预热中', 'Warming up'), ready: text('可服务', 'Ready to serve'), busy: text('执行中', 'Working'),
+    sleeping: text('等待可用客户端', 'Waiting for a client'), error: text('预热失败，将重试', 'Warmup failed; retrying'),
+  };
+  const defaultName = text('团队 ', 'Team ') + (engine === 'cursor' ? 'Cursor' : 'Codex');
+
+  return <section className={styles.card} aria-label={text('Agent 引擎连接', 'Agent engine connections')} aria-busy={loading}>
+    <header className={styles.heading}>
+      <div><h2>{text('Agent 引擎连接', 'Agent engine connections')}</h2>
+        <p className={styles.description}>{host
+          ? text('连接自己的账号，再按模型授权给可信 admin。', 'Connect your accounts, then grant selected models to trusted admins.')
+          : text('Codex / Cursor 由超管连接并授权。DeepAgents 使用下方的模型配置。', 'Your host connects and grants Codex / Cursor. DeepAgents uses the model configuration below.')}</p>
+      </div>
+      <Button icon={<ArrowsClockwise size={15} />} loading={busy} disabled={loading} onClick={() => void act(async () => {})}>{text('刷新', 'Refresh')}</Button>
+    </header>
+    {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} className={styles.notice} />}
+    {loading && <div className={styles.loading}><Spin size="small" /><span>{text('正在读取连接状态…', 'Loading connection status…')}</span></div>}
+    {!loading && caps && !caps.available && <Alert type="info" showIcon message={text('外部引擎尚未启用', 'External engines are unavailable')} description={caps.reason} />}
+    {!loading && caps?.available && <>
+      <div className={styles.meta} style={{ marginBottom: 16 }}><Tag>{text('本机执行', 'Local execution')}</Tag>{profilesLoaded && <Tag>{profiles.filter(p => p.status === 'ready').length} / {profiles.length} {text('已连接', 'connected')}</Tag>}</div>
+      {profilesLoaded && !profiles.length && <div className={styles.empty}>
+        <Plug size={28} /><h3>{text('还没有引擎连接', 'No engine connections yet')}</h3>
+        <p>{caps.can_manage_connections ? text('先创建一条连接，再到官方页面登录你的账号。', 'Create a connection below, then sign in on the provider’s official page.') : text('超管授权连接后会显示在这里。', 'Connections appear here after your host grants access.')}</p>
+      </div>}
+      <div className={styles.list}>{profiles.map(p => <article key={p.id} className={styles.profile} aria-label={p.name}>
+        <div className={styles.profileTop}>
+          <div><h3 className={styles.profileName}>{p.name}</h3><div className={styles.meta}>
+            <Tag>{p.runtime === 'cursor' ? 'Cursor' : 'Codex'}</Tag>
+            <Tag color={p.status === 'ready' ? 'green' : p.status === 'error' ? 'error' : undefined}>{statusNames[p.status] || p.status}</Tag>
+            <Tag>{host ? text('主机连接', 'Host connection') : text('团队连接', 'Team connection')}</Tag>
+          </div></div>
+          {p.status === 'ready' && <div className={styles.meta}>
+            <Tag color={p.worker?.status === 'ready' ? 'green' : undefined}>{workerNames[p.worker?.status || ''] || text('按需启动', 'Starts on demand')}</Tag>
+            {p.capabilities?.web_search && <Tag>{text('网页搜索', 'Web search')}</Tag>}
+            {p.capabilities?.image_input && <Tag>{text('图片输入', 'Image input')}</Tag>}
+            {p.capabilities?.file_input && <Tag>{text('文件输入', 'File input')}</Tag>}
+            {p.capabilities?.image_generation && <Tag>{text('原生生图', 'Image generation')}</Tag>}
+          </div>}
+        </div>
+        {p.account && <p className={styles.account}>{[p.account.email, p.account.planType].filter(Boolean).join(' · ')}</p>}
+        {p.recovery_required && <Alert className={styles.notice} type="warning" showIcon message={text('此连接需要主机恢复', 'Host recovery is required')} description={text('上次执行异常退出。请由主机主人检查并停止旧进程，再通过主机恢复命令解除锁定。', 'The previous execution exited unexpectedly. The host owner must check and stop old processes before using the host recovery command.')} />}
+        {p.can_manage && <div className={styles.actions}>
+          {p.runtime === 'codex' && <Select aria-label={text('Codex 登录方式', 'Codex sign-in method')} value={mode} onChange={setMode} disabled={busy} options={[{ value: 'chatgptDeviceCode', label: text('设备码登录（服务器）', 'Device code (server)') }, { value: 'chatgpt', label: text('浏览器登录（本机）', 'Browser sign-in (local)') }]} />}
+          <Button type={p.status === 'ready' ? 'default' : 'primary'} disabled={busy || attempt?.status === 'pending' || p.recovery_required} onClick={() => startLogin(p)}>{p.status === 'ready' ? text('重新登录', 'Sign in again') : text('登录 ', 'Sign in to ') + (p.runtime === 'cursor' ? 'Cursor' : 'Codex')}</Button>
+          {p.status === 'ready' && <Button disabled={busy || p.recovery_required} onClick={() => void act(() => api.probe(p.id))}>{text('刷新模型', 'Refresh models')}</Button>}
+          {p.status !== 'disconnected' && <Popconfirm title={text('断开此连接？', 'Disconnect this account?')} description={text('此连接的所有任务将停止。', 'All tasks using this connection will stop.')} onConfirm={() => act(() => api.disconnect(p.id))}><Button danger disabled={busy}>{text('断开', 'Disconnect')}</Button></Popconfirm>}
+        </div>}
+        {attempt?.profile_id === p.id && attempt.status === 'pending' && attempt.challenge && <Alert className={styles.notice} type="info" showIcon message={text('完成账号授权', 'Complete account authorization')} description={<div className={styles.loginChallenge}>
+          <Button type="primary" href={attempt.challenge.url} target="_blank" rel="noopener noreferrer">{text('打开官方登录页面', 'Open official sign-in page')}</Button>
+          <Typography.Text copyable={{ text: attempt.challenge.url }}>{text('复制登录链接', 'Copy sign-in link')}</Typography.Text>
+          {attempt.challenge.user_code && <Typography.Text copyable={{ text: attempt.challenge.user_code }}>{text('设备码：', 'Device code: ')}{attempt.challenge.user_code}</Typography.Text>}
+          <Typography.Text type="secondary">{text('登录有效期至 ', 'Valid until ')}{new Date(attempt.expires_at * 1000).toLocaleTimeString(english ? 'en-US' : 'zh-CN')}。{attempt.challenge.mode === 'chatgpt' ? text('请在运行服务器的电脑上完成浏览器回调。', 'Complete the browser callback on the computer running the server.') : text('请在官方页面登录并授权，完成后这里会自动更新。', 'Sign in and authorize on the official page. This console updates automatically.')}</Typography.Text>
+          <Button size="small" disabled={busy} onClick={() => void act(() => api.cancelLogin(attempt.profile_id, attempt.id))}>{text('取消登录', 'Cancel sign-in')}</Button>
+        </div>} />}
+        {p.models.length > 0 && <details className={styles.modelDetails}><summary>{text('可用模型', 'Available models')} · {p.models.length}</summary><div className={styles.modelTags}>{p.models.map(m => <Tag key={m.id}>{m.name}</Tag>)}</div></details>}
+        {p.can_manage && <RuntimeGrants profile={p} api={api} revision={grantRevision} />}
+      </article>)}</div>
+      {caps.can_manage_connections && profilesLoaded && <section className={styles.create} aria-label={text('创建连接', 'Create connection')}>
+        <h3>{text('添加一条引擎连接', 'Add an engine connection')}</h3>
+        <form className={styles.createForm} onSubmit={event => { event.preventDefault(); if (!busy) void act(() => api.createProfile(name.trim() || defaultName, engine)); }}>
+          <label className={styles.field}><span>{text('引擎', 'Engine')}</span><Select aria-label={text('连接引擎', 'Connection engine')} value={engine} disabled={busy} onChange={setEngine} options={[{ value: 'codex', label: 'Codex' }, { value: 'cursor', label: 'Cursor' }]} /></label>
+          <label className={styles.field}><span>{text('连接名称', 'Connection name')}</span><Input aria-label={text('连接名称', 'Connection name')} maxLength={80} value={name} disabled={busy} placeholder={defaultName} onChange={e => setName(e.target.value)} /></label>
+          <Button type="primary" icon={<Plus size={15} />} htmlType="submit" disabled={busy}>{text('创建连接', 'Create connection')}</Button>
+        </form>
+      </section>}
+      {!host && profilesLoaded && <RuntimeDefault profiles={profiles} />}
     </>}
   </section>;
 }

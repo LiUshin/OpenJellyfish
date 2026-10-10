@@ -3,8 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OpenJellyfish Launcher</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<title>OpenJellyfish · 主机控制台</title>
 <style>
 :root {
   --jf-primary: #E89FD9;
@@ -500,119 +499,84 @@ tr.used td { opacity: 0.4; }
 .backup-meta.ok { color: var(--jf-success); }
 .backup-meta.warn { color: var(--jf-warning); }
 </style>
+<link rel="stylesheet" href="./console.css">
 </head>
 <body>
 
 <div class="drag-region"></div>
 
 <!-- Sidebar -->
-<nav>
-  <div class="logo-wrap">
-    <img class="logo-img" src="./jellyfishlogo.png" alt="OpenJellyfish" />
-  </div>
+<nav aria-label="主机管理导航">
+  <div class="logo-wrap"><img class="logo-img" src="./jellyfishlogo.png" alt="" /><div class="brand-name">OpenJellyfish<small>主机控制台</small></div></div>
 
-  <div class="nav-item active" data-page="launcher" title="控制台">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-  </div>
-  <div class="nav-item" data-page="keys" title="注册码">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-  </div>
-  <div class="nav-item" data-page="admin" title="账户">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-  </div>
-  <div class="nav-item" data-page="usage" title="用量统计">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="4" width="3" height="14"/></svg>
-  </div>
-  <div class="nav-item" data-page="health" title="系统健康">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-  </div>
-  <div class="nav-item" data-page="about" title="关于 / 工具">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
-  </div>
+  <button type="button" class="nav-item active" data-page="launcher" title="概览" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg><span>概览</span></button>
+  <button type="button" class="nav-item" data-page="connections" title="模型连接" aria-current="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/><path d="M7 14v3a2 2 0 0 0 2 2h2M17 10V7a2 2 0 0 0-2-2h-2"/></svg><span>模型连接</span></button>
+  <button type="button" class="nav-item" data-page="config" title="主机配置" aria-current="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></svg><span>主机配置</span></button>
+  <button type="button" class="nav-item" data-page="keys" title="注册邀请" aria-current="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><span>注册邀请</span></button>
+  <button type="button" class="nav-item" data-page="admin" title="团队账户" aria-current="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>团队账户</span></button>
+  <button type="button" class="nav-item" data-page="usage" title="用量统计" aria-current="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="4" width="3" height="14"/></svg><span>用量统计</span></button>
+  <button type="button" class="nav-item" data-page="health" title="系统健康" aria-current="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span>系统健康</span></button>
+  <button type="button" class="nav-item" data-page="about" title="备份与版本" aria-current="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><span>备份与版本</span></button>
 
   <div class="nav-spacer"></div>
   <div class="nav-ver" id="navVer">v1.0</div>
 </nav>
 
 <!-- Main content -->
-<main>
+<main id="main-content">
+<div id="previewBanner" class="preview-banner" hidden></div>
 
   <!-- PAGE: Launcher -->
-  <section id="page-launcher" class="page active">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:36px">
-      <div>
-        <h1 style="font-size:30px;font-weight:800;letter-spacing:-0.5px;margin:0">Jellyfish<span style="color:var(--jf-primary)">Bot</span></h1>
-        <p style="color:var(--jf-text-muted);margin:4px 0 0;font-size:13px" id="envSubtitle">检测环境中...</p>
-      </div>
-      <div class="glass-card no-hover" style="padding:8px 18px;margin:0;display:flex;align-items:center;gap:10px;border-radius:12px">
-        <div class="env-dot" id="systemDot"></div>
-        <span class="mono" style="font-size:11px;color:var(--jf-text-muted)" id="systemLabel">CHECKING...</span>
-      </div>
-    </div>
-
+  <section id="page-launcher" class="page active" aria-label="概览">
+    <header class="page-heading"><div><p class="eyebrow">YOUR AGENT, AT HOME</p><h1>让经验，从这里出发。</h1><p class="page-intro">在自己的电脑上运行 Agent，把打磨好的方法交给团队。</p></div><span class="host-badge">本地主机</span></header>
     <div id="firstRunBanner"></div>
-
+    <div class="overview-layout">
+      <div class="service-card">
+        <div class="section-heading"><div><p class="eyebrow">OPENJELLYFISH</p><h2>服务运行状态</h2></div><span id="runBadge" class="status-badge">检查中</span></div>
+        <div class="hero-control">
+          <button class="power-btn" id="powerBtn" onclick="toggleApp()" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10"/></svg><span class="power-label" id="powerLabel">检查中</span></button>
+          <div class="service-description"><h3 id="runTitle">准备你的工作台</h3><p id="runDescription">正在检查本机服务状态。</p><button class="btn btn-secondary" id="openWorkspace" onclick="openBrowser()" disabled>打开工作台 ↗</button></div>
+        </div>
+        <div class="power-sub" id="powerSub"><div class="service-address"><span class="mono" id="powerSubText"></span><button class="btn-text" id="powerSubLink" style="display:none" onclick="openBrowser()">打开 →</button></div><div id="lanRow" class="service-address" style="display:none"><span>局域网</span><span class="mono" id="lanAddr"></span><button class="btn-text" onclick="copyLanAddr()">复制</button></div></div>
+      </div>
+      <aside class="setup-card"><p class="eyebrow">从自己使用，到交给团队</p><h2>开始的三步</h2>
+        <button class="setup-step" onclick="navigatePage('config')"><span class="step-number">01</span><span><strong>选择模型接入方式</strong><small>启用账号套餐，或填写 API Key</small></span><span aria-hidden="true">↗</span></button>
+        <button class="setup-step" onclick="navigatePage('connections')"><span class="step-number">02</span><span><strong>启动并连接模型</strong><small>登录 Codex / Cursor，探测可用模型</small></span><span aria-hidden="true">↗</span></button>
+        <button class="setup-step" onclick="navigatePage('keys')"><span class="step-number">03</span><span><strong>邀请并授权成员</strong><small>成员注册后，为他们分配模型</small></span><span aria-hidden="true">↗</span></button>
+      </aside>
+    </div>
+    <div class="section-heading environment-heading"><h2>本机环境</h2><span class="environment-state"><i class="env-dot" id="systemDot"></i><span id="systemLabel">检查中</span></span></div>
     <div class="env-status">
-      <div class="env-item">
-        <div class="env-dot" id="pyDot"></div>
-        <div>
-          <div class="env-label">Python Runtime</div>
-          <div class="env-val mono" id="pyStatus"><span class="spinner"></span></div>
-        </div>
-      </div>
-      <div class="env-item">
-        <div class="env-dot" id="nodeDot"></div>
-        <div>
-          <div class="env-label">Node.js</div>
-          <div class="env-val mono" id="nodeStatus"><span class="spinner"></span></div>
-        </div>
-      </div>
-      <div class="env-item">
-        <div class="env-dot" id="depsDot"></div>
-        <div>
-          <div class="env-label">项目核心</div>
-          <div class="env-val mono" id="depsStatus"><span class="spinner"></span></div>
-        </div>
-      </div>
+      <div class="env-item"><div class="env-dot" id="pyDot"></div><div><div class="env-label">Python</div><div class="env-val mono" id="pyStatus">检测中…</div></div></div>
+      <div class="env-item"><div class="env-dot" id="nodeDot"></div><div><div class="env-label">Node.js</div><div class="env-val mono" id="nodeStatus">检测中…</div></div></div>
+      <div class="env-item"><div class="env-dot" id="depsDot"></div><div><div class="env-label">项目核心</div><div class="env-val" id="depsStatus">检测中…</div></div></div>
+    </div><p id="envSubtitle" class="environment-note">检测环境中…</p>
+    <div class="overview-footer"><span>主机设置留在这里，日常对话与服务发布在工作台。</span><button class="btn-text" onclick="navigatePage('health')">查看系统健康 →</button></div>
+  </section>
+  <section id="page-connections" class="page" aria-label="模型连接">
+    <header class="page-heading"><div><p class="eyebrow">MODEL CONNECTIONS</p><h1>把熟悉的模型接进来。</h1><p class="page-intro">供应商账号由主机管理，成员只使用你授权的连接与模型。</p></div></header>
+    <div class="connection-card"><div class="connection-brand"><span class="connection-icon">C</span><div><h2>Codex / Cursor</h2><p>使用已有账号套餐</p></div><span class="host-badge">macOS · Linux</span></div>
+      <p class="connection-description">先在主机配置中启用账号套餐，并安装对应 CLI。服务启动后，在超管网页完成登录、探测模型与成员授权。</p>
+      <ol class="connection-flow"><li><b>1</b> 登录供应商账号</li><li><b>2</b> 探测可用模型</li><li><b>3</b> 授权已有成员</li></ol>
+      <div class="connection-actions"><button class="btn btn-main" id="openHostConsole" onclick="openHostConsole()" disabled>打开超管控制台 ↗</button><button class="btn btn-secondary" onclick="navigatePage('config')">配置接入方式</button></div>
+      <p id="hostConsoleHint" class="field-help">先启动本机服务，再打开超管控制台。</p>
     </div>
-
-    <div class="glass-card" style="margin-top:20px">
-      <h3>超管控制台</h3>
-      <p style="color:var(--jf-text-muted);margin:8px 0 16px">连接 Codex / Cursor 套餐并授权给可信 admin。启动服务后可访问。</p>
-      <button class="btn btn-secondary btn-sm" onclick="invoke('open_superadmin').catch(e => showToast(String(e)))">打开超管页面</button>
-      <button class="btn btn-secondary btn-sm" onclick="showHostKey()">查看主机 key</button>
-      <input id="hostKey" type="password" readonly style="display:none;width:100%;margin-top:12px" aria-label="主机 key" onclick="this.select()">
-      <button id="hideHostKey" class="btn-text" style="display:none" onclick="document.getElementById('hostKey').value='';document.getElementById('hostKey').style.display='none';this.style.display='none'">清除显示</button>
+    <div class="glass-card no-hover host-key-card"><div><h3>主机管理 key</h3><p class="field-help">在超管网页中粘贴验证。本机读取，刷新或离开此页后清除显示。</p></div><button class="btn btn-secondary btn-sm" onclick="showHostKey()">读取主机 key</button>
+      <div id="hostKeyPanel" class="host-key-panel" hidden><input id="hostKey" type="password" readonly aria-label="主机管理 key" autocomplete="off"><button class="btn btn-secondary btn-sm" onclick="copyHostKey()">复制 key</button><button class="btn-text" onclick="clearHostKey()">清除</button></div>
     </div>
-    <div class="hero-control">
-      <button class="power-btn" id="powerBtn" onclick="toggleApp()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10"/></svg>
-        <span class="power-label" id="powerLabel">START</span>
-      </button>
-      <div class="power-sub" id="powerSub">
-        <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
-          <div style="display:flex;align-items:center;gap:8px">
-            <span class="mono" id="powerSubText"></span>
-            <a id="powerSubLink" style="display:none" onclick="openBrowser()">打开 →</a>
-          </div>
-          <div id="lanRow" style="display:none;align-items:center;gap:8px">
-            <span style="font-size:11px;color:var(--jf-text-dim)">局域网</span>
-            <span class="mono" id="lanAddr" style="font-size:12px;color:var(--jf-accent)"></span>
-            <button class="btn-text" style="font-size:11px;padding:2px 6px" onclick="copyLanAddr()">复制</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
+    <div class="connection-help"><h3>已有 API Key？</h3><p>在「主机配置」填写默认模型密钥；成员也可在工作台配置自己的 API Key。Windows 目前使用 API 模式。</p><button class="btn-text" onclick="navigatePage('config')">打开配置 →</button></div>
+    <div class="scope-note"><strong>主机超管 ≠ 团队管理员</strong><p>你管理这台主机与共享连接。团队成员使用独立账户管理对话、文档与 Service。账号套餐共享适用于可信团队，仍受供应商额度与使用条款约束。</p></div>
+  </section>
+  <section id="page-config" class="page" aria-label="主机配置"><header class="page-heading"><div><p class="eyebrow">HOST SETTINGS</p><h1>主机配置</h1><p class="page-intro">配置保存在本机。按需展开各组，保存后重启服务生效。</p></div></header>
     <div class="glass-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
         <div>
           <h3 style="font-size:16px;font-weight:700">配置中心</h3>
-          <p style="color:var(--jf-text-dim);margin:4px 0 0;font-size:11px">密钥 / 多模态 / 联网 / 运维开关 / 全局时区 — 保存后重启服务生效</p>
+          <p style="color:var(--jf-text-dim);margin:4px 0 0;font-size:11px">可使用 Codex / Cursor 账号套餐，或自行配置模型 API。修改后保存并重启服务。</p>
         </div>
-        <button class="btn btn-secondary btn-sm" id="btnSave" onclick="saveConfig()">保存配置</button>
+        <button class="btn btn-secondary btn-sm" id="btnSave" onclick="saveConfig()" disabled>保存配置</button>
       </div>
-      <div id="configGroups"></div>
+      <div id="configLoadError" class="banner banner-info" hidden></div><div id="configGroups"></div>
     </div>
   </section>
 
@@ -778,7 +742,7 @@ tr.used td { opacity: 0.4; }
   <!-- PAGE: About / Tools -->
   <section id="page-about" class="page">
     <h2 style="font-size:24px;font-weight:800;letter-spacing:-0.3px;margin-bottom:6px">关于 / 工具</h2>
-    <p class="about-sub">查看版本信息、打开常用目录、跳转最新发布页</p>
+    <p class="about-sub">手动备份主机数据，查看版本与常用目录。</p>
 
     <div class="glass-card no-hover">
       <div class="about-version">
@@ -795,8 +759,9 @@ tr.used td { opacity: 0.4; }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           <span id="backupBtnLabel">打包备份 (config / data / logs / users)</span>
         </button>
-        <span class="help-icon" data-tip="一键把项目根目录下的 config/、data/、logs/、users/ 四个目录压缩成 ZIP，用于备份或迁移到新机器。&#10;&#10;• 弹窗让你选保存位置（默认文件名带时间戳）&#10;• 自动跳过 __pycache__ / node_modules / venv / target 等无用大目录&#10;• 不包含 .env（API Key 出于安全考虑不打包，新机器请重新配置）&#10;• 锁定中的日志文件会被跳过，不影响其他文件备份">?</span>
+        <span tabindex="0" class="help-icon" data-tip="把 config/、data/、logs/、users/ 归档为 ZIP。&#10;&#10;• 请先停止服务，并将 ZIP 保存到项目目录之外&#10;• 包含用户数据和加密凭据，请妥善保管&#10;• 不包含 .env，新机器需另行配置&#10;• 这是文件归档，恢复需手动处理；失败或跳过项目请查看结果">?</span>
       </div>
+      <p class="field-help">备份前请停止服务，将 ZIP 保存到项目目录之外。归档包含用户数据与加密凭据，请妥善保管；不含 .env。恢复需手动操作，本次不提供一键恢复。</p>
       <div id="backupStatus" class="backup-meta"></div>
     </div>
 
@@ -960,10 +925,13 @@ tr.used td { opacity: 0.4; }
 <div id="toast-container"></div>
 
 <script>
-const { invoke } = window.__TAURI__ ? window.__TAURI__.core : { invoke: mockInvoke };
+const isNative = !!window.__TAURI__?.core;
+const isPreview = !isNative && new URLSearchParams(location.search).get('preview') === '1';
+const invoke = isNative ? window.__TAURI__.core.invoke : isPreview ? mockInvoke : () => Promise.reject(new Error('请在桌面客户端中使用此功能'));
+let previewRunning = false;
 
 function mockInvoke(cmd, args) {
-  console.log('[mock]', cmd, args);
+  // Explicit preview data only; never log credentials or command arguments.
   if (cmd === 'detect_environment') return Promise.resolve({
     has_python:true, python_path:'/usr/bin/python3', python_version:'Python 3.12.7',
     python_bundled:false, has_node:true, node_path:'/usr/bin/node', node_version:'v20.18.0',
@@ -972,9 +940,11 @@ function mockInvoke(cmd, args) {
   if (cmd === 'load_env_config') return Promise.resolve({});
   if (cmd === 'save_env_config') return Promise.resolve();
   if (cmd === 'test_api_key') return Promise.resolve({ok:true,message:'连接成功 ✓'});
-  if (cmd === 'start_jellyfish') return Promise.resolve({running:true,backend_port:8000,frontend_port:3000,backend_ready:false,frontend_ready:false,local_ip:'192.168.1.100'});
-  if (cmd === 'stop_jellyfish') return Promise.resolve();
-  if (cmd === 'get_status') return Promise.resolve({running:false,backend_port:8000,frontend_port:3000,backend_ready:false,frontend_ready:false,local_ip:null});
+  if (cmd === 'start_jellyfish') { previewRunning = true; return mockInvoke('get_status'); }
+  if (cmd === 'stop_jellyfish') { previewRunning = false; return Promise.resolve(); }
+  if (cmd === 'get_status') return Promise.resolve({running:previewRunning,backend_port:8000,frontend_port:3000,backend_ready:previewRunning,frontend_ready:previewRunning,local_ip:previewRunning ? '192.0.2.10' : null});
+  if (cmd === 'get_superadmin_key') return Promise.resolve('preview-only-not-a-valid-host-key');
+  if (cmd === 'open_superadmin') { showToast('界面预览：实际客户端会打开本机超管网页', 'info'); return Promise.resolve(); }
   if (cmd === 'get_lan_ip') return Promise.resolve('192.168.1.100');
   if (cmd === 'open_in_browser') return Promise.resolve();
   if (cmd === 'list_registration_keys') return Promise.resolve([
@@ -984,7 +954,7 @@ function mockInvoke(cmd, args) {
   if (cmd === 'generate_registration_keys') return Promise.resolve(['OJF-MOCK-1234-ABCD']);
   if (cmd === 'delete_registration_key') return Promise.resolve();
   if (cmd === 'list_admin_users') return Promise.resolve([
-    {user_id:'9566ceae',username:'test_e2e_user',created_at:'2026-04-09T20:59:45',last_login:'2026-04-09T22:17:59',reg_key:'TEST-E2E-KEY-001',has_api_keys:true,disabled:false},
+    {user_id:'9566ceae',username:"Demo O'Connor",created_at:'2026-04-09T20:59:45',last_login:'2026-04-09T22:17:59',reg_key:'TEST-E2E-KEY-001',has_api_keys:true,disabled:false},
     {user_id:'a1b2c3d4',username:'banned_user',created_at:'2026-03-01T10:00:00',last_login:'2026-03-15T08:00:00',reg_key:'',has_api_keys:false,disabled:true}
   ]);
   if (cmd === 'reset_admin_password') return Promise.resolve({user_id:'mock',temp_password:'abc123xyz789'});
@@ -1054,33 +1024,58 @@ function mockInvoke(cmd, args) {
 }
 
 // ── Navigation ──────────────────────────────────────────────────
+let hostKeyRequest = 0;
 async function showHostKey() {
+  const request = ++hostKeyRequest;
   try {
+    const key = await invoke('get_superadmin_key');
+    if (request !== hostKeyRequest || !document.getElementById('page-connections').classList.contains('active')) return;
     const input = document.getElementById('hostKey');
-    input.value = await invoke('get_superadmin_key');
-    input.style.display = 'block'; input.focus(); input.select();
-    document.getElementById('hideHostKey').style.display = 'inline-block';
-  } catch (e) { showToast(String(e)); }
+    input.value = key;
+    document.getElementById('hostKeyPanel').hidden = false;
+    input.focus(); input.select();
+  } catch (e) { showToast(String(e), 'error'); }
 }
-document.querySelectorAll('.nav-item').forEach(item => {
-  item.addEventListener('click', () => {
-    const page = item.dataset.page;
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    item.classList.add('active');
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    document.getElementById('page-' + page).classList.add('active');
-    if (page === 'keys') loadRegKeys();
-    if (page === 'admin') { loadAdminUsers(); loadAdminStats(); }
-    if (page === 'usage') loadUsageStats();
-    if (page === 'health') loadSystemHealth();
-    if (page === 'about') loadAboutVersion();
+function clearHostKey() {
+  hostKeyRequest++;
+  document.getElementById('hostKey').value = '';
+  document.getElementById('hostKeyPanel').hidden = true;
+}
+async function copyHostKey() {
+  const key = document.getElementById('hostKey').value;
+  if (!key) return;
+  try { await navigator.clipboard.writeText(key); showToast('主机 key 已复制'); }
+  catch { showToast('无法写入剪贴板，请选中输入框手动复制', 'error'); }
+}
+async function openHostConsole() {
+  try { await invoke('open_superadmin'); }
+  catch (e) { showToast('打开失败: ' + e, 'error'); }
+}
+function navigatePage(page) {
+  const target = document.getElementById('page-' + page);
+  if (!target) return;
+  clearHostKey();
+  document.querySelectorAll('.nav-item').forEach(item => {
+    const active = item.dataset.page === page;
+    item.classList.toggle('active', active);
+    item.setAttribute('aria-current', active ? 'page' : 'false');
   });
-});
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p === target));
+  document.querySelector('main').scrollTop = 0;
+  if (page === 'keys') loadRegKeys();
+  if (page === 'admin') { loadAdminUsers(); loadAdminStats(); }
+  if (page === 'usage') loadUsageStats();
+  if (page === 'health') loadSystemHealth();
+  if (page === 'about') loadAboutVersion();
+}
+document.querySelectorAll('.nav-item').forEach(item => item.addEventListener('click', () => navigatePage(item.dataset.page)));
+window.addEventListener('pagehide', clearHostKey);
 
 // ── Toast ────────────────────────────────────────────────────────
 function showToast(msg, type = 'success', dur = 3000) {
   const container = document.getElementById('toast-container');
   const el = document.createElement('div');
+  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
   el.className = 'toast-item' + (type !== 'success' ? ' ' + type : '');
   el.textContent = msg;
   container.appendChild(el);
@@ -1091,8 +1086,31 @@ function showToast(msg, type = 'success', dur = 3000) {
 }
 
 // ── Modal ────────────────────────────────────────────────────────
-function showModal(id) { document.getElementById(id).classList.add('show'); }
-function hideModal(id) { document.getElementById(id).classList.remove('show'); }
+const modalFocus = new Map();
+function showModal(id) {
+  const overlay = document.getElementById(id);
+  modalFocus.set(id, document.activeElement);
+  overlay.classList.add('show');
+  const dialog = overlay.querySelector('.modal');
+  dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true');
+  const title = dialog.querySelector('h3'); title.id = id + 'Title'; dialog.setAttribute('aria-labelledby', title.id);
+  (dialog.querySelector('input:not([type="hidden"]), button') || dialog).focus();
+}
+function hideModal(id) {
+  document.getElementById(id).classList.remove('show');
+  if (id === 'modalTempPwd') document.getElementById('tempPwdDisplay').textContent = '';
+  modalFocus.get(id)?.focus(); modalFocus.delete(id);
+}
+document.addEventListener('keydown', event => {
+  const overlay = document.querySelector('.modal-overlay.show');
+  if (!overlay) return;
+  if (event.key === 'Escape') { event.preventDefault(); hideModal(overlay.id); return; }
+  if (event.key !== 'Tab') return;
+  const focusable = Array.from(overlay.querySelectorAll('button:not(:disabled), input:not([type="hidden"]):not(:disabled), select:not(:disabled)'));
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+});
 
 // ── Copy ─────────────────────────────────────────────────────────
 function copyText(btn, text) {
@@ -1102,6 +1120,13 @@ function copyText(btn, text) {
   });
 }
 
+let environmentReady = false;
+let configLoaded = false;
+let configDirty = false;
+let configRevision = 0;
+let lifecycleBusy = false;
+let statusGeneration = 0;
+let lastStatus = null;
 // ── Environment Detection ────────────────────────────────────────
 async function detectEnv() {
   try {
@@ -1118,17 +1143,18 @@ async function detectEnv() {
     document.getElementById('depsStatus').textContent = depsOk ? '就绪 ✓' : '缺少';
 
     const allOk = pyOk && nodeOk && depsOk;
+    environmentReady = allOk;
     document.getElementById('systemDot').className = 'env-dot ' + (allOk ? 'ok' : 'err');
-    document.getElementById('systemLabel').textContent = allOk ? 'SYSTEM READY' : 'CHECK FAILED';
+    document.getElementById('systemLabel').textContent = allOk ? '环境就绪' : '需要处理';
     document.getElementById('envSubtitle').textContent = allOk
       ? '环境就绪 · ' + env.project_dir.split('/').pop()
       : '环境异常 — 请检查运行时';
 
     if (env.first_run) {
-      document.getElementById('firstRunBanner').innerHTML = '<div class="banner banner-info">首次运行 — 请先在下方配置至少一个 API Key，然后启动服务</div>';
+      document.getElementById('firstRunBanner').innerHTML = '<div class="banner banner-info">首次运行：选择账号套餐或 API 接入方式，然后启动服务。使用已授权套餐无需另填模型 API Key。</div>';
     }
 
-    if (!allOk) document.getElementById('powerBtn').disabled = true;
+    if (lastStatus) updateRunUI(lastStatus);
   } catch(e) {
     document.getElementById('envSubtitle').textContent = '环境检测失败: ' + e;
     document.getElementById('systemDot').className = 'env-dot err';
@@ -1140,7 +1166,23 @@ async function detectEnv() {
 // 单一真相源：键名必须与 src-tauri/src/lib.rs::KNOWN_ENV_KEYS 一致。
 // 新增字段在此追加 + 在 lib.rs 加键名即可，load/save 自动覆盖。
 const CONFIG_SCHEMA = [
-  { title: '大模型 Provider', open: true, fields: [
+  { title: 'Codex / Cursor 账号套餐', open: true, fields: [
+    { key:'JELLYFISH_RUNTIME_ENABLED', label:'启用账号套餐', type:'toggle', hint:'需要安装对应 CLI；macOS / Linux 的可信团队可用。开启后保存并重启。' },
+    { key:'JELLYFISH_RUNTIME_CODEX_BIN', label:'Codex CLI 路径', type:'text', ph:'留空自动查找 codex', hint:'填写可执行文件路径，不是命令或登录凭据。' },
+    { key:'JELLYFISH_RUNTIME_CURSOR_BIN', label:'Cursor CLI 路径', type:'text', ph:'留空自动查找 cursor-agent / agent' },
+    { key:'JELLYFISH_RUNTIME_ACCESS_MODE', label:'共享方式', type:'select', options:['', 'trusted_shared'], hint:'当前仅支持可信团队共享' },
+    { key:'JELLYFISH_RUNTIME_BACKEND', label:'执行环境', type:'select', options:['', 'local'], hint:'当前仅支持本机执行；工作目录不是租户沙箱' },
+  ]},
+  { title: '账号套餐 · 并发与超时', fields: [
+    { key:'JELLYFISH_RUNTIME_MAX_RUNNING', label:'同时运行数', type:'number', min:1, max:32, ph:'默认 2' },
+    { key:'JELLYFISH_RUNTIME_MAX_QUEUED', label:'总排队上限', type:'number', min:1, max:1000, ph:'默认 32' },
+    { key:'JELLYFISH_RUNTIME_QUEUE_PER_ADMIN', label:'每位成员排队上限', type:'number', min:1, max:100, ph:'默认 4' },
+    { key:'JELLYFISH_RUNTIME_RUN_TIMEOUT', label:'执行超时（秒）', type:'number', min:1, max:7200, ph:'默认 1800' },
+    { key:'JELLYFISH_RUNTIME_APPROVAL_TIMEOUT', label:'审批等待超时（秒）', type:'number', min:1, max:1800, ph:'默认 300' },
+    { key:'JELLYFISH_RUNTIME_MAX_CLIENTS', label:'常驻客户端上限', type:'number', min:1, max:16, ph:'默认跟随同时运行数（上限 16）' },
+    { key:'JELLYFISH_RUNTIME_KEEP_WARM', label:'保留预热连接', type:'toggle', defaultOn:true, hint:'保持客户端进程以缩短下一次响应等待' },
+  ]},
+  { title: '模型 API · 可选', fields: [
     { key:'ANTHROPIC_API_KEY', label:'Anthropic API Key', type:'password', ph:'sk-ant-...', test:{provider:'anthropic', urlKey:'ANTHROPIC_BASE_URL'} },
     { key:'ANTHROPIC_BASE_URL', label:'Anthropic Base URL', type:'text', ph:'默认 (留空)' },
     { key:'OPENAI_API_KEY', label:'OpenAI API Key', type:'password', ph:'sk-...', test:{provider:'openai', urlKey:'OPENAI_BASE_URL'} },
@@ -1207,7 +1249,7 @@ function renderConfigForm() {
       if (f.type === 'toggle') {
         return `<div class="input-box"><div class="cfg-toggle-row">
           <div class="cfg-toggle-meta">
-            <label style="font-size:12px;color:var(--jf-text)">${esc(f.label)}</label>
+            <label for="${id}" style="font-size:12px;color:var(--jf-text)">${esc(f.label)}</label>
             ${f.hint ? `<span class="cfg-hint">${esc(f.hint)}</span>` : ''}
           </div>
           <label class="cfg-switch"><input type="checkbox" id="${id}"><span class="slider"></span></label>
@@ -1215,7 +1257,7 @@ function renderConfigForm() {
       }
       if (f.type === 'select') {
         const opts = (f.options || []).map(o => `<option value="${esc(o)}">${esc(o || '(默认)')}</option>`).join('');
-        return `<div class="input-box"><label>${esc(f.label)}</label>
+        return `<div class="input-box"><label for="${id}">${esc(f.label)}</label>
           <select id="${id}">${opts}</select>
           ${f.hint ? `<span class="cfg-hint">${esc(f.hint)}</span>` : ''}</div>`;
       }
@@ -1223,22 +1265,27 @@ function renderConfigForm() {
           <span class="test-result" id="cfgtest_${f.test.provider}"></span>
           <button class="btn-text" onclick="testKey('${f.test.provider}','${f.key}','${f.test.urlKey || ''}')">测试连接</button>
         </div>` : '';
-      return `<div class="input-box"><label>${esc(f.label)}</label>
-        <input type="${f.type === 'password' ? 'password' : 'text'}" id="${id}" placeholder="${esc(f.ph || '')}" class="mono">
+      return `<div class="input-box"><label for="${id}">${esc(f.label)}</label>
+        <input type="${f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}" id="${id}" placeholder="${esc(f.ph || '')}" class="mono" autocomplete="off" ${f.type === 'number' ? `step="1" min="${f.min ?? 1}" ${f.max ? `max="${f.max}"` : ''}` : ''}>
         ${f.hint ? `<span class="cfg-hint">${esc(f.hint)}</span>` : ''}
         ${testRow}</div>`;
     }).join('');
     return `<div class="cfg-group${collapsed}" id="cfggroup_${gi}">
-      <div class="cfg-group-head" onclick="document.getElementById('cfggroup_${gi}').classList.toggle('collapsed')">
+      <button type="button" class="cfg-group-head" aria-expanded="${!!group.open}" aria-controls="cfgbody_${gi}" onclick="toggleConfigGroup(${gi}, this)">
         <span class="cfg-group-title">${esc(group.title)}</span>
         <span class="cfg-group-caret">▾</span>
-      </div>
-      <div class="cfg-group-body"><div class="form-grid">${fieldsHtml}</div></div>
+      </button>
+      <div class="cfg-group-body" id="cfgbody_${gi}"><div class="form-grid">${fieldsHtml}</div></div>
     </div>`;
   }).join('');
+  root.addEventListener('input', () => { configDirty = true; configRevision++; document.getElementById('btnSave').textContent = '保存更改'; });
   _configRendered = true;
 }
 
+function toggleConfigGroup(index, button) {
+  const collapsed = document.getElementById('cfggroup_' + index).classList.toggle('collapsed');
+  button.setAttribute('aria-expanded', String(!collapsed));
+}
 async function loadConfig() {
   if (!_configRendered) renderConfigForm();
   try {
@@ -1251,35 +1298,57 @@ async function loadConfig() {
         if (f.type === 'toggle') {
           el.checked = raw != null ? _TRUTHY.has(String(raw).toLowerCase()) : !!f.defaultOn;
         } else {
+          if (f.type === 'select' && raw && !Array.from(el.options).some(option => option.value === raw)) {
+            const option = document.createElement('option'); option.value = raw;
+            option.textContent = '当前值：' + raw + '（未支持，请勿随意更改）'; el.appendChild(option);
+          }
           el.value = raw != null ? raw : '';
         }
       }
     }
-  } catch(e) { console.error('load config:', e); }
+    configLoaded = true; configDirty = false;
+    document.getElementById('btnSave').disabled = false;
+    document.getElementById('configLoadError').hidden = true;
+    if (lastStatus) updateRunUI(lastStatus);
+  } catch(e) {
+    configLoaded = false;
+    const error = document.getElementById('configLoadError');
+    error.hidden = false; error.textContent = '配置读取失败，为避免覆盖已有配置已暂停保存。请重新打开客户端。';
+    showToast('读取配置失败: ' + e, 'error');
+  }
 }
 
+let configSavePromise = null;
 async function saveConfig() {
+  if (configSavePromise) return configSavePromise;
+  if (!configLoaded) { showToast('配置尚未成功读取，无法保存', 'error'); return false; }
+  const inputs = Array.from(document.querySelectorAll('#configGroups input'));
+  const invalid = inputs.find(input => !input.checkValidity());
+  if (invalid) {
+    invalid.closest('.cfg-group')?.classList.remove('collapsed');
+    invalid.reportValidity(); invalid.focus(); return false;
+  }
   const btn = document.getElementById('btnSave');
-  btn.textContent = '保存中...'; btn.disabled = true;
+  const revision = configRevision;
   const payload = {};
-  for (const group of CONFIG_SCHEMA) {
-    for (const f of group.fields) {
-      const el = document.getElementById('cfg_' + f.key);
-      if (!el) continue;
-      // toggle → 显式 "1"/"0"（确定性，不依赖后端默认）；其余 trim 后原值（空 = 删除该行）
-      payload[f.key] = f.type === 'toggle' ? (el.checked ? '1' : '0') : el.value.trim();
+  for (const group of CONFIG_SCHEMA) for (const f of group.fields) {
+    const el = document.getElementById('cfg_' + f.key);
+    if (el) payload[f.key] = f.type === 'toggle' ? (el.checked ? '1' : '0') : el.value.trim();
+  }
+  btn.textContent = '保存中…'; btn.disabled = true;
+  configSavePromise = (async () => {
+    try {
+      await invoke('save_env_config', { config: payload });
+      configDirty = configRevision !== revision;
+      showToast('配置已保存，重启服务后生效');
+      return true;
+    } catch(e) { showToast('保存失败: ' + e, 'error'); return false; }
+    finally {
+      btn.textContent = configDirty ? '保存更改' : '保存配置'; btn.disabled = false;
+      configSavePromise = null;
     }
-  }
-  try {
-    await invoke('save_env_config', { config: payload });
-    btn.textContent = '✓ 已保存';
-    showToast('配置已保存 — 重启服务生效');
-    setTimeout(() => { btn.textContent = '保存配置'; btn.disabled = false; }, 1500);
-  } catch(e) {
-    btn.textContent = '保存失败';
-    showToast('保存失败: ' + e, 'error');
-    setTimeout(() => { btn.textContent = '保存配置'; btn.disabled = false; }, 2000);
-  }
+  })();
+  return configSavePromise;
 }
 
 async function testKey(provider, keyFieldKey, urlFieldKey) {
@@ -1305,72 +1374,63 @@ let isRunning = false;
 let lastReadyState = false;
 
 async function toggleApp() {
-  const btn = document.getElementById('powerBtn');
-  if (!isRunning) {
-    btn.disabled = true;
-    document.getElementById('powerLabel').textContent = '...';
-    try {
-      await saveConfig();
-      const status = await invoke('start_jellyfish');
-      isRunning = true;
-      updateRunUI(status);
+  if (lifecycleBusy) return;
+  lifecycleBusy = true;
+  statusGeneration++;
+  document.getElementById('powerBtn').disabled = true;
+  try {
+    if (!isRunning) {
+      if (!environmentReady || !configLoaded) throw new Error('请先完成环境与配置检查');
+      if (configDirty && !(await saveConfig())) return;
+      if (configDirty) { showToast('配置在保存时发生变化，请保存后重试', 'error'); return; }
+      updateRunUI(await invoke('start_jellyfish'));
       startPolling();
-    } catch(e) {
-      showToast('启动失败: ' + e, 'error');
-      document.getElementById('powerLabel').textContent = 'START';
-      btn.disabled = false;
+    } else {
+      await invoke('stop_jellyfish');
+      const status = await invoke('get_status');
+      updateRunUI(status);
+      if (status.running) startPolling(); else stopPolling();
     }
-  } else {
-    try { await invoke('stop_jellyfish'); } catch(e) { /* ignore */ }
-    isRunning = false;
-    stopPolling();
-    updateRunUI({ running: false, backend_port: 0, frontend_port: 0, backend_ready: false, frontend_ready: false, local_ip: null });
+  } catch(e) {
+    showToast('操作未完成: ' + e, 'error');
+    try { updateRunUI(await invoke('get_status')); if (isRunning) startPolling(); }
+    catch { showToast('无法确认运行状态，请查看系统健康或日志', 'error'); }
+  } finally {
+    lifecycleBusy = false;
+    if (lastStatus) updateRunUI(lastStatus);
   }
 }
-
 function updateRunUI(s) {
+  lastStatus = s;
+  isRunning = !!s.running;
+  const ready = isRunning && s.backend_ready && s.frontend_ready;
   const btn = document.getElementById('powerBtn');
-  const label = document.getElementById('powerLabel');
+  btn.className = 'power-btn' + (isRunning ? ' running' : '');
+  // A starting service remains stoppable. Missing env must not be undone by polling.
+  btn.disabled = lifecycleBusy || (!isRunning && (!environmentReady || !configLoaded));
+  document.getElementById('powerLabel').textContent = isRunning ? '停止服务' : '启动服务';
+  document.getElementById('runBadge').textContent = ready ? '运行中' : isRunning ? '启动中' : '未启动';
+  document.getElementById('runBadge').className = 'status-badge' + (ready ? ' ready' : '');
+  document.getElementById('runTitle').textContent = ready ? '工作台已就绪' : isRunning ? '正在启动服务' : '准备你的工作台';
+  document.getElementById('runDescription').textContent = ready ? '可以开始对话、发布服务，或管理模型授权。' : isRunning ? '首次启动可能需要更长时间。可查看日志，也可停止后重试。' : '启动本机服务后，即可打开工作台和超管控制台。';
+  document.getElementById('openWorkspace').disabled = !ready;
+  document.getElementById('openHostConsole').disabled = !ready;
+  document.getElementById('hostConsoleHint').textContent = ready ? '服务已就绪。打开后，用下方主机 key 验证身份。' : '先启动本机服务，再打开超管控制台。';
   const sub = document.getElementById('powerSub');
-  const subText = document.getElementById('powerSubText');
-  const subLink = document.getElementById('powerSubLink');
-  const lanRow = document.getElementById('lanRow');
-  const lanAddr = document.getElementById('lanAddr');
-
-  if (s.running) {
-    isRunning = true;
-    const ready = s.backend_ready && s.frontend_ready;
-    if (ready) {
-      btn.className = 'power-btn running'; btn.disabled = false;
-      label.textContent = 'STOP';
-      subText.textContent = 'http://localhost:' + s.frontend_port;
-      subLink.style.display = ''; sub.classList.add('visible');
-      if (s.local_ip) {
-        lanAddr.textContent = 'http://' + s.local_ip + ':' + s.frontend_port;
-        lanRow.style.display = 'flex';
-      } else {
-        lanRow.style.display = 'none';
-      }
-      // 仅在「之前未就绪 → 现在就绪」切换瞬间弹一次，避免每次 polling 都 toast
-      if (!lastReadyState) {
-        showToast('OpenJellyfish 服务已就绪');
-      }
-    } else {
-      btn.className = 'power-btn running'; btn.disabled = true;
-      label.textContent = '...';
-      subText.textContent = (s.backend_ready ? '后端 ✓' : '后端启动中...') + '  ' + (s.frontend_ready ? '前端 ✓' : '前端启动中...');
-      subLink.style.display = 'none'; sub.classList.add('visible');
-      lanRow.style.display = 'none';
-    }
-    lastReadyState = ready;
-  } else {
-    isRunning = false;
-    lastReadyState = false;
-    btn.className = 'power-btn'; btn.disabled = false;
-    label.textContent = 'START';
-    sub.classList.remove('visible');
-    subLink.style.display = 'none';
-    lanRow.style.display = 'none';
+  sub.classList.toggle('visible', isRunning);
+  document.getElementById('powerSubText').textContent = ready ? 'http://localhost:' + s.frontend_port : (s.backend_ready ? '后端 ✓' : '后端启动中…') + ' · ' + (s.frontend_ready ? '前端 ✓' : '前端启动中…');
+  document.getElementById('powerSubLink').style.display = ready ? '' : 'none';
+  document.getElementById('lanRow').style.display = ready && s.local_ip ? 'flex' : 'none';
+  document.getElementById('lanAddr').textContent = ready && s.local_ip ? 'http://' + s.local_ip + ':' + s.frontend_port : '';
+  if (ready && !lastReadyState) showToast('OpenJellyfish 服务已就绪');
+  lastReadyState = ready;
+}
+async function restoreRunStatus() {
+  try { updateRunUI(await invoke('get_status')); if (isRunning) startPolling(); }
+  catch(e) {
+    document.getElementById('runBadge').textContent = '状态未知';
+    document.getElementById('runDescription').textContent = '无法读取服务状态，请重新打开客户端。';
+    showToast('读取服务状态失败: ' + e, 'error');
   }
 }
 
@@ -1383,15 +1443,21 @@ function copyLanAddr() {
 
 function startPolling() {
   stopPolling();
+  const generation = statusGeneration;
+  let polling = false;
   statusInterval = setInterval(async () => {
+    if (lifecycleBusy || polling) return;
+    polling = true;
     try {
       const s = await invoke('get_status');
+      if (generation !== statusGeneration || lifecycleBusy) return;
       updateRunUI(s);
-      if (!s.running) { isRunning = false; stopPolling(); }
-    } catch { /* ignore */ }
+      if (!s.running) stopPolling();
+    } catch { /* Keep the last confirmed state; never imply success on a network error. */ }
+    finally { polling = false; }
   }, 2000);
 }
-function stopPolling() { if (statusInterval) { clearInterval(statusInterval); statusInterval = null; } }
+function stopPolling() { statusGeneration++; if (statusInterval) { clearInterval(statusInterval); statusInterval = null; } }
 
 async function openBrowser() {
   try { await invoke('open_in_browser'); } catch(e) { showToast('打开失败: ' + e, 'error'); }
@@ -1465,31 +1531,33 @@ async function loadAdminUsers() {
       return;
     }
 
-    tbody.innerHTML = users.map(u => {
-      const login = u.last_login ? u.last_login.substring(0, 16).replace('T', ' ') : '从未登录';
-      const apiStatus = u.has_api_keys
-        ? '<button class="btn-text" onclick="showKeyStatus(\'' + esc(u.user_id) + '\',\'' + esc(u.username) + '\')">● 已配置</button>'
-        : '<span style="color:var(--jf-text-dim)">○ 未配置</span>';
-      const stateBadge = u.disabled
-        ? '<span style="color:var(--jf-error);font-weight:600">⛔ 已禁用</span>'
-        : '<span style="color:var(--jf-success)">✓ 正常</span>';
-      const banBtn = u.disabled
-        ? '<button class="btn-text" style="margin-right:14px;color:var(--jf-success)" onclick="toggleDisabled(\'' + esc(u.user_id) + '\',\'' + esc(u.username) + '\',false)">解禁</button>'
-        : '<button class="btn-text" style="margin-right:14px;color:var(--jf-warning)" onclick="toggleDisabled(\'' + esc(u.user_id) + '\',\'' + esc(u.username) + '\',true)">封禁</button>';
-      return '<tr>' +
-        '<td style="font-weight:600">' + esc(u.username) + '</td>' +
-        '<td class="mono">' + esc(u.user_id) + '</td>' +
-        '<td class="mono">' + login + '</td>' +
-        '<td>' + stateBadge + '</td>' +
-        '<td>' + apiStatus + '</td>' +
-        '<td style="white-space:nowrap">' +
-          banBtn +
-          '<button class="btn-text" style="margin-right:14px" onclick="showRenameUser(\'' + esc(u.user_id) + '\',\'' + esc(u.username) + '\')">改名</button>' +
-          '<button class="btn-text" style="margin-right:14px" onclick="showStorage(\'' + esc(u.user_id) + '\',\'' + esc(u.username) + '\')">占用</button>' +
-          '<button class="btn-text" style="margin-right:14px" onclick="resetPassword(\'' + esc(u.user_id) + '\',\'' + esc(u.username) + '\')">重置密码</button>' +
-          '<button class="btn-text danger" onclick="showDeleteUser(\'' + esc(u.user_id) + '\',\'' + esc(u.username) + '\')">删除</button>' +
-        '</td></tr>';
-    }).join('');
+    tbody.replaceChildren();
+    users.forEach(u => {
+      const row = document.createElement('tr');
+      function cell(text, className = '') {
+        const td = document.createElement('td'); td.textContent = text; td.className = className; row.appendChild(td); return td;
+      }
+      function action(parent, label, callback, danger = false) {
+        const button = document.createElement('button'); button.type = 'button';
+        button.className = 'btn-text' + (danger ? ' danger' : '');
+        button.textContent = label; button.addEventListener('click', callback); parent.appendChild(button);
+      }
+      cell(u.username, 'account-name'); cell(u.user_id, 'mono');
+      cell(u.last_login ? u.last_login.substring(0, 16).replace('T', ' ') : '从未登录', 'mono');
+      cell(u.disabled ? '已禁用' : '正常', u.disabled ? 'account-disabled' : 'account-active');
+      const api = cell(u.has_api_keys ? '' : '未配置');
+      if (u.has_api_keys) action(api, '已配置', () => showKeyStatus(u.user_id, u.username));
+      const actions = cell('', 'account-actions');
+      action(actions, '改名', () => showRenameUser(u.user_id, u.username));
+      action(actions, '存储', () => showStorage(u.user_id, u.username));
+      const more = document.createElement('details'); more.className = 'account-more';
+      const summary = document.createElement('summary'); summary.textContent = '更多'; more.appendChild(summary);
+      const menu = document.createElement('div'); menu.className = 'account-menu'; more.appendChild(menu); actions.appendChild(more);
+      action(menu, u.disabled ? '启用账户' : '禁用账户', () => { more.open = false; toggleDisabled(u.user_id, u.username, !u.disabled); });
+      action(menu, '重置密码', () => { more.open = false; resetPassword(u.user_id, u.username); });
+      action(menu, '删除账户', () => { more.open = false; showDeleteUser(u.user_id, u.username); }, true);
+      tbody.appendChild(row);
+    });
   } catch(e) {
     document.getElementById('adminTableBody').innerHTML = '<tr><td colspan="6" style="color:var(--jf-error)">加载失败: ' + esc(String(e)) + '</td></tr>';
   }
@@ -1892,12 +1960,19 @@ async function runBackup() {
 }
 
 // ── Utils ────────────────────────────────────────────────────────
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
 // ── Init ─────────────────────────────────────────────────────────
-detectEnv();
-loadConfig();
-loadAboutVersion();
+if (!isNative) {
+  const banner = document.getElementById('previewBanner'); banner.hidden = false;
+  banner.textContent = isPreview ? '界面预览 · 演示数据，不连接本机服务或真实账户' : '请使用 OpenJellyfish 桌面客户端。此网页不具备本机管理权限。';
+}
+if (isNative || isPreview) {
+  detectEnv(); loadConfig(); loadAboutVersion(); restoreRunStatus();
+}
+window.addEventListener('beforeunload', event => {
+  if (configDirty) { event.preventDefault(); event.returnValue = ''; }
+});
 </script>
 </body>
 </html>

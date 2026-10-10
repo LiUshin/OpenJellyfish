@@ -6,7 +6,8 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "test": "node --test tests/*.test.cjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

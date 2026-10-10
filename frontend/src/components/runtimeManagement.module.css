@@ -1,0 +1,44 @@
+.card { padding: 24px; margin-bottom: 16px; background: var(--jf-bg-panel); border: 1px solid var(--jf-border); border-radius: var(--jf-radius-lg); min-width: 0; }
+.heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.heading h2 { font-size: 18px; margin: 0 0 7px; }
+.description { color: var(--jf-text-muted); line-height: 1.75; margin: 0; font-size: 13px; }
+.meta { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+.meta :global(.ant-tag) { margin-inline-end: 0; }
+.list { display: grid; gap: 16px; }
+.profile { min-width: 0; padding: 20px; border: 1px solid var(--jf-border); border-radius: var(--jf-radius-lg); background: var(--jf-bg-deep); }
+.profileTop { display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.profileName { margin: 0 0 8px; font-size: 16px; overflow-wrap: anywhere; }
+.account { margin: 10px 0 0; color: var(--jf-text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 15px; }
+.actions :global(.ant-select) { min-width: 210px; max-width: 100%; }
+.modelDetails { margin-top: 16px; color: var(--jf-text-muted); font-size: 12px; }
+.modelDetails summary { cursor: pointer; padding: 4px 0; }
+.modelTags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.modelTags :global(.ant-tag) { white-space: normal; overflow-wrap: anywhere; margin: 0; }
+.empty { padding: 28px 16px; text-align: center; border: 1px dashed var(--jf-border); border-radius: var(--jf-radius-lg); background: var(--jf-bg-deep); }
+.empty svg { color: var(--jf-primary); }
+.empty h3 { font-size: 15px; margin: 10px 0 6px; }
+.empty p { color: var(--jf-text-muted); font-size: 13px; line-height: 1.75; margin: 0; }
+.create { padding-top: 20px; margin-top: 20px; border-top: 1px solid var(--jf-border); }
+.create h3 { font-size: 14px; margin: 0 0 12px; }
+.createForm { display: grid; grid-template-columns: minmax(110px, .7fr) minmax(140px, 1.7fr) auto; gap: 10px; align-items: end; }
+.field { display: flex; flex-direction: column; gap: 7px; min-width: 0; color: var(--jf-text-muted); font-size: 12px; }
+.field :global(.ant-select) { width: 100%; min-width: 0; }
+.grants { border-top: 1px solid var(--jf-border); margin-top: 18px; padding-top: 16px; }
+.grants h3 { margin: 0 0 6px; font-size: 14px; }
+.grantRow { margin-top: 12px; padding: 12px; background: var(--jf-bg-panel); border: 1px solid var(--jf-border); border-radius: var(--jf-radius-md); }
+.grantTop { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.grantWho { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; overflow-wrap: anywhere; min-width: 0; }
+.grantActions { display: flex; gap: 8px; flex-wrap: wrap; }
+.grantForm { margin-top: 16px; display: grid; grid-template-columns: minmax(130px, .8fr) minmax(160px, 1.5fr) auto; gap: 10px; align-items: end; }
+.notice { margin: 12px 0; }
+.loginChallenge { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; overflow-wrap: anywhere; }
+.loading { display: flex; align-items: center; gap: 10px; padding: 24px 0; color: var(--jf-text-muted); font-size: 13px; }
+@media (max-width: 700px) {
+  .card { padding: 18px 14px; }
+  .profile { padding: 16px 12px; }
+  .createForm, .grantForm { grid-template-columns: 1fr; }
+  .createForm > button, .grantForm > button { width: 100%; }
+  .actions :global(.ant-select) { width: 100%; }
+  .grantWho { width: 100%; }
+}

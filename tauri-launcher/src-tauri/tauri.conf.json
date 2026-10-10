@@ -10,8 +10,8 @@
     "windows": [
       {
         "title": "OpenJellyfish",
-        "width": 720,
-        "height": 580,
+        "width": 1080,
+        "height": 760,
         "resizable": true,
         "center": true,
         "decorations": true,
@@ -25,7 +25,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "dmg"],
+    "targets": [
+      "nsis",
+      "dmg"
+    ],
     "resources": {
       "../bundle-resources/app": "app",
       "../bundle-resources/config": "config",

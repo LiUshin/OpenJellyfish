@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "legacy": "node server.js",
     "test:chat": "node --test tests/chat-presentation.test.cjs",
-    "test:safety": "node --test tests/async-state-safety.test.cjs tests/runtime-pending.test.cjs"
+    "test:safety": "node --test tests/async-state-safety.test.cjs tests/runtime-pending.test.cjs",
+    "test:runtime-management": "node --test tests/runtime-management.test.cjs"
   },
   "dependencies": {
     "@ant-design/icons": "^5.6.1",

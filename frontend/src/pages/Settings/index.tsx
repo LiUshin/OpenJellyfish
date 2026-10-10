@@ -14,6 +14,7 @@ import {
   GearSix,
   Archive,
   ChartBar,
+  BookOpen,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import './settings.css';
@@ -55,7 +56,12 @@ export default function SettingsLayout() {
       { key: '/settings/usage', icon: <ChartBar size={18} />, label: t('settingsPolish.pages.usage.title') },
       { key: '/settings/backup', icon: <Archive size={18} />, label: t('settingsPolish.pages.backup.title') },
     ] },
-  ], [t]);
+    { key: 'tutorials', icon: <BookOpen size={18} />, label: (
+      <a href="https://openjellyfish.ai/zh/tutorials/" target="_blank" rel="noopener noreferrer">
+        {isChinese ? '教程' : 'Tutorials'} ↗
+      </a>
+    ) },
+  ], [t, isChinese]);
   const navItems = isInbox ? serviceNav : isServices || isScheduler ? null : isEnvironment ? environmentNav : settingsNav;
   const pageId = path.split('/').pop() || 'prompt';
   const pageName = t(`settingsPolish.pages.${pageId}.title`);
@@ -70,7 +76,7 @@ export default function SettingsLayout() {
       <Menu
         mode="inline"
         selectedKeys={[path]}
-        onClick={({ key }) => { navigate(key); closeNavigation(); }}
+        onClick={({ key }) => { if (key !== 'tutorials') navigate(key); closeNavigation(); }}
         style={{ background: 'transparent', borderRight: 'none', fontSize: 13 }}
         items={navItems}
       />
