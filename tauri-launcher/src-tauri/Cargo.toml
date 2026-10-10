@@ -1,6 +1,6 @@
 [package]
 name = "openjellyfish-launcher"
-version = "1.4.2"
+version = "1.4.3"
 edition = "2021"
 description = "OpenJellyfish Desktop Launcher"
 
