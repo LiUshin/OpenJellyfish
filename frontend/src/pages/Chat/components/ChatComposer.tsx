@@ -11,6 +11,7 @@ interface ChatComposerProps {
   tools?: ReactNode;
   model: ReactNode;
   hint?: ReactNode;
+  contextUsage?: ReactNode;
   onUpload: () => void;
   uploadDisabled?: boolean;
   hasAttachments?: boolean;
@@ -25,7 +26,7 @@ interface ChatComposerProps {
 
 /** Shared interaction and layout for API, Codex and Cursor conversations.
  * Each engine supplies supported tools and its existing send/stop handlers. */
-export default function ChatComposer({ input, attachments, tools, model, hint, onUpload, uploadDisabled,
+export default function ChatComposer({ input, attachments, tools, model, hint, contextUsage, onUpload, uploadDisabled,
   hasAttachments, onTranscript, voiceDisabled, onSend, sendDisabled, sending, onStop, stopDisabled }: ChatComposerProps) {
   const { t } = useTranslation();
   return <div data-chat-composer>
@@ -46,6 +47,7 @@ export default function ChatComposer({ input, attachments, tools, model, hint, o
         <VoiceInput onTranscript={onTranscript} disabled={voiceDisabled} />
         {input}
         <div className={styles.composerSend}>
+          {contextUsage}
           {onStop && <Tooltip title={t('chat.stopGeneration')}><Button danger type="primary"
             icon={<Stop size={18} weight="fill" />} aria-label={t('chat.stopGeneration')}
             onClick={onStop} disabled={stopDisabled} /></Tooltip>}

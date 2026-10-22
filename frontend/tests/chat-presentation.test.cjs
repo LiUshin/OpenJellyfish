@@ -15,6 +15,50 @@ function load(name) {
 }
 const { responsePhase, splitResponse, toolOutcome } = load('responsePresentation');
 const { plainPreview, truncatePreview, answerPreview, conversationPreviews } = load('userQueryPreview');
+const { contextCapacity, estimateTextTokens, summarizeMessages, summarizeRuns, latestContextSnapshot } = load('contextUsage');
+
+test('context occupancy preserves zero but never turns missing, invalid or zero-limit data into a percentage', () => {
+  assert.deepEqual(contextCapacity(), { used: null, limit: null, free: null, percent: null });
+  assert.deepEqual(contextCapacity({ used_tokens: 0, limit_tokens: 1000 }), { used: 0, limit: 1000, free: 1000, percent: 0 });
+  for (const invalid of [null, undefined, -1, NaN, Infinity, '100', true]) {
+    assert.equal(contextCapacity({ used_tokens: invalid, limit_tokens: 1000 }).percent, null);
+  }
+  assert.equal(contextCapacity({ used_tokens: 10, limit_tokens: 0 }).percent, null);
+  assert.deepEqual(contextCapacity({ used_tokens: 1100, limit_tokens: 1000 }), { used: 1100, limit: 1000, free: 0, percent: 110 });
+});
+test('a newer run without occupancy never inherits another run or model window, including after compaction', () => {
+  const older = { context_usage: { used_tokens: 900, limit_tokens: 1000, source: 'codex' } };
+  assert.equal(latestContextSnapshot([older, {}]), null);
+  const compacted = { context_usage: { used_tokens: 100, limit_tokens: 1000, source: 'codex' } };
+  assert.equal(latestContextSnapshot([older, compacted]).used_tokens, 100);
+  assert.equal(latestContextSnapshot([older, { context_usage: null }]), null);
+});
+test('changing the selected model or connection hides the previous context window before a new turn', () => {
+  const binding = { runtime: 'codex', profile_id: 'demo', model: 'model-a' };
+  const run = { binding, context_usage: { used_tokens: 600, limit_tokens: 1000, source: 'codex' } };
+  assert.equal(latestContextSnapshot([run], binding), run.context_usage);
+  for (const change of [{ model: 'model-b' }, { profile_id: 'another' }, { runtime: 'cursor' }]) {
+    assert.equal(latestContextSnapshot([run], { ...binding, ...change }), null);
+  }
+});
+test('visible text estimates exclude attachment contents and avoid counting duplicate tool representations', () => {
+  const tool = { name: 'read_file', args: 'abcd', result: 'efgh' };
+  const result = summarizeMessages([{ role: 'assistant', content: '你好abcd', tool_calls: [tool],
+    blocks: [{ type: 'tool', ...tool }], attachments: [{ filename: 'picture.png', dataUrl: 'A'.repeat(5000) }] }]);
+  assert.deepEqual(result, { messages: 3, tools: 2, messageCount: 1, toolCount: 1, attachmentCount: 1 });
+  assert.equal(estimateTextTokens(''), 0);
+  assert.equal(estimateTextTokens('🪼'), 1);
+});
+test('runtime text estimates update with immutable streamed snapshots and do not include billing counters', () => {
+  const block = { type: 'tool', args: '', result: '' };
+  const run = { message: 'abcd', output: 'efgh', usage: { totalTokens: 999999 }, attachments: [], blocks: [block] };
+  assert.equal(summarizeRuns([run]).messages, 2);
+  assert.equal(summarizeRuns([{ ...run, output: 'efghijkl' }]).messages, 3);
+  assert.equal(summarizeRuns([run]).messages, 2);
+  assert.equal(summarizeRuns([run]).tools, 0);
+  assert.equal(summarizeRuns([{ ...run, blocks: [{ ...block, result: 'abcdefgh' }] }]).tools, 2);
+  assert.equal(summarizeRuns([run]).tools, 0);
+});
 const text = content => ({ type: 'text', content });
 const tool = result => ({ type: 'tool', name: 'read_file', args: 'SECRET_ARGUMENT', result, done: true, resultCollapsed: true });
 

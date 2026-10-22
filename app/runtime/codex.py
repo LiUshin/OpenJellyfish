@@ -6,6 +6,7 @@ from pathlib import Path
 from app.runtime.rpc import StdioRPC, RuntimeFailure
 from app.runtime.types import RuntimeEvent
 from app.runtime.tool_details import codex_tool
+from app.runtime.context_usage import codex_context_usage
 
 
 def _usage_pair(value):
@@ -215,6 +216,10 @@ class CodexAdapter:
                 yield RuntimeEvent("request_resolved", {"request_id": p.get("requestId")})
             elif method == "thread/tokenUsage/updated":
                 snapshot = p.get("tokenUsage") or {}
+                # Context occupancy is a latest-response snapshot, separate
+                # from the cumulative billing accounting below.
+                yield RuntimeEvent("context_usage", {"context_usage": codex_context_usage(snapshot)})
+                snapshot = snapshot if isinstance(snapshot, dict) else {}
                 current = _usage_pair(snapshot.get("total"))
                 last_response = _usage_pair(snapshot.get("last"))
                 if supplier_total is not None and current is not None:

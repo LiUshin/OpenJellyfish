@@ -28,6 +28,8 @@ import PlanTracker, { PlanCompactBar } from './components/PlanTracker';
 import ImageAttachment from './components/ImageAttachment';
 import type { ImageAttachmentHandle } from './components/ImageAttachment';
 import ChatComposer from './components/ChatComposer';
+import ContextUsage from './components/ContextUsage';
+import { summarizeMessages } from './utils/contextUsage';
 import MessageList from './components/MessageList';
 import type { MessageListHandle } from './components/MessageList';
 import MentionPicker, { MAX_CANDIDATES as MENTION_MAX } from './components/MentionPicker';
@@ -52,7 +54,9 @@ import QueryQueuePanel from './components/QueryQueuePanel';
 import ChatModelSelect from '../../components/ChatModelSelect';
 import RuntimeConversation, { type RuntimeInitialSubmission } from './components/RuntimeConversation';
 import TracingView from './components/TracingView';
-import ChatWelcome from './components/ChatWelcome';
+import ChatWelcome, { ChatWelcomeActions } from './components/ChatWelcome';
+import AsciiJellyfishBackground from './components/ocean/AsciiJellyfishBackground';
+import { useTheme } from '../../stores/themeContext';
 import ProjectOverview from './components/ProjectOverview';
 import { newQueueItem, type QueryQueueItem } from './types/queryQueue';
 import { readRuntimeQueues, runtimeQueueStorageKey, writeRuntimeQueues, type RuntimeQueuedTurn, type RuntimeQueues } from './types/runtimeQueue';
@@ -132,6 +136,8 @@ const CAPABILITIES = [
 
 export default function ChatPage() {
   const { t } = useTranslation();
+  const { colorMode } = useTheme();
+  const [oceanPaused, setOceanPaused] = useState(false);
   const { closeNavigation, sidebarSlot: siderSlot } = useOutletContext<{ closeNavigation: () => void; sidebarSlot: HTMLElement | null }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -1567,12 +1573,20 @@ export default function ChatPage() {
     </div>
   );
 
+  const showOceanWelcome = !isProjectOverview && !tracingOpen && !loadingConv && !conversationError
+    && !(runtimeSessionId && !testServiceId && currentConvId)
+    && messages.length === 0 && !showStreamBlocks && !viewingDeepagentCreation && !hitlOnCurrent
+    && !(isViewingStream && planSteps.length > 0)
+    && !serverStreaming.includes(currentConvId ?? '') && !serverInterrupted.includes(currentConvId ?? '');
+  const conversationTextUsage = useMemo(() => summarizeMessages(messages), [messages]);
+
   return (
     <div className={styles.chatContainer}>
       {siderSlot && createPortal(sidebarContent, siderSlot)}
 
       {/* ===== Chat Area ===== */}
-      <div className={`${styles.chatArea} ${tracingOpen ? styles.chatAreaTracing : ''}`}>
+      <div className={`${styles.chatArea} ${tracingOpen ? styles.chatAreaTracing : ''} ${showOceanWelcome ? styles.chatAreaWelcome : ''}`}>
+        {showOceanWelcome && <AsciiJellyfishBackground className={styles.oceanBackdrop} theme={colorMode} paused={oceanPaused} />}
         {isProjectOverview && selectedProjectId ? <ProjectOverview
           projectId={selectedProjectId}
           fallbackProject={projects.find(project => project.id === selectedProjectId)}
@@ -1723,8 +1737,8 @@ export default function ChatPage() {
             </div>
           ) : loadingConv ? (
             <LogoLoading size={240} />
-          ) : messages.length === 0 && !showStreamBlocks ? (
-            <ChatWelcome onSuggest={prompt => { setInputValue(prompt); fileTokenInputRef.current?.focus(); }} onConfigure={() => navigate('/settings/environment')} />
+          ) : showOceanWelcome ? (
+            <ChatWelcome ocean onSuggest={prompt => { setInputValue(prompt); fileTokenInputRef.current?.focus(); }} onConfigure={() => navigate('/settings/environment')} />
           ) : (
             <>
               {messages.length > 0 && (
@@ -1882,6 +1896,7 @@ export default function ChatPage() {
             hitlLocked={hitlOnCurrent}
           />
           <ChatComposer
+            contextUsage={<ContextUsage textUsage={conversationTextUsage} draft={inputValue} draftAttachments={attachedImages.length} />}
             attachments={<ImageAttachment
               ref={imageAttachRef}
               allowFiles={!testServiceId && !currentConvId && !!newChoice && newChoice.runtime !== 'deepagents'}
@@ -2013,6 +2028,10 @@ export default function ChatPage() {
               || serverStreaming.includes(currentConvId ?? '')
               || (serverInterrupted.includes(currentConvId ?? '') && !hitlOnCurrent)}
           />
+          {showOceanWelcome && <ChatWelcomeActions
+            onSuggest={prompt => { setInputValue(prompt); fileTokenInputRef.current?.focus(); }}
+            onConfigure={() => navigate('/settings/environment')}
+            paused={oceanPaused} onToggleMotion={() => setOceanPaused(value => !value)} />}
           {!testServiceId && yoloOn && currentConvId && yoloApprovedConvs.has(currentConvId) && (
             <div
               className={styles.yoloFooterTag}

@@ -9,6 +9,8 @@ import MessageBubble from './MessageBubble';
 import ImageAttachment, { type ImageAttachmentHandle } from './ImageAttachment';
 import ChatModelSelect from '../../../components/ChatModelSelect';
 import ChatComposer from './ChatComposer';
+import ContextUsage from './ContextUsage';
+import { latestContextSnapshot, summarizeMessages, summarizeRuns } from '../utils/contextUsage';
 import FileTokenInput from './FileTokenInput';
 import StreamingMessage from './StreamingMessage';
 import RuntimeApprovalCard from './RuntimeApprovalCard';
@@ -187,6 +189,13 @@ export default function RuntimeConversation({ sid, conversationId, history, prof
     && !runs.some(run => run.request_id === initialSubmission.requestId);
   const settledRuns = useMemo(() => runs.filter(r => runtime.terminal(r.status)), [runs]);
   const previewMessages = useMemo(() => history.filter(message => !!message.test_service_id), [history]);
+  const contextTextUsage = useMemo(() => {
+    const usage = summarizeRuns(runs);
+    const extra = summarizeMessages(runs.length ? previewMessages : history);
+    return { messages: usage.messages + extra.messages, tools: usage.tools + extra.tools,
+      messageCount: usage.messageCount + extra.messageCount, toolCount: usage.toolCount + extra.toolCount,
+      attachmentCount: usage.attachmentCount + extra.attachmentCount };
+  }, [runs, previewMessages, history]);
   const timelineRows = useMemo<TimelineRow[]>(() => [
     ...settledRuns.map((run, index) => ({ kind: 'run' as const, key: run.id, time: run.created_at,
       order: index, run })),
@@ -325,6 +334,7 @@ export default function RuntimeConversation({ sid, conversationId, history, prof
         if (r.id !== rid || seq <= r.seq) return r;
         const next = { ...r, seq, blocks: appendRuntimeEvent(r.blocks?.length ? r.blocks : (r.output ? [{ type: 'text', content: r.output }] : []), event) };
         if (type === 'text_delta') next.output += payload.text || '';
+        if (type === 'context_usage') next.context_usage = payload.context_usage ?? null;
         if (statuses[type]) next.status = type;
         if (type === 'running') { next.started_at = payload.started_at; next.client_acquired_at = payload.client_acquired_at; }
         if (type === 'approval_requested') { next.pending = payload.approval || null; next.status = 'waiting_approval'; }
@@ -523,6 +533,7 @@ export default function RuntimeConversation({ sid, conversationId, history, prof
         <span className={styles.backgroundHint}>{t('chat.backgroundRun')}</span>
       </div>}
       <ChatComposer
+        contextUsage={<ContextUsage textUsage={contextTextUsage} snapshot={latestContextSnapshot(runs, session ? { ...session.binding, model: model || session.binding.model } : undefined)} draft={text} draftAttachments={attachments.length} />}
         attachments={<ImageAttachment ref={attachmentRef} images={attachments} onImagesChange={setAttachments} disabled={busy || !!pending || !!active || !!queueItems.length || queueInFlight || showInitialSubmission} allowFiles />}
         model={session && <ChatModelSelect value={{ ...session.binding, model: model || session.binding.model }} profiles={profiles} bound disabled={busy} onChange={choice => setModel(choice.model || null)} />}
         input={<FileTokenInput ref={inputRef} value={text} onChange={setText} onSend={() => void send()} disabled={!!pending}

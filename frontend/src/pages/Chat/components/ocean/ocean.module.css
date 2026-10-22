@@ -1,0 +1,59 @@
+.scene {
+  --ocean-paper: #f3f5f4;
+  --ocean-glow: rgba(114, 174, 209, .2);
+  --ocean-grid: rgba(62, 100, 122, .035);
+  --ocean-vignette: rgba(125, 154, 167, .12);
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  isolation: isolate;
+  contain: paint;
+  pointer-events: none;
+  user-select: none;
+  background: var(--ocean-backdrop, radial-gradient(ellipse 85% 80% at 50% 110%, var(--ocean-glow), transparent 76%), var(--ocean-paper));
+}
+
+.scene[data-theme='dark'] {
+  --ocean-paper: var(--jf-bg-deep, #111214);
+  --ocean-glow: transparent;
+  --ocean-grid: rgba(128, 165, 209, .022);
+  --ocean-vignette: transparent;
+}
+
+.scene::before,
+.scene::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+  pointer-events: none;
+}
+
+.scene::before {
+  background-image: linear-gradient(var(--ocean-grid) 1px, transparent 1px), linear-gradient(90deg, var(--ocean-grid) 1px, transparent 1px);
+  background-size: 8px 8px;
+  mask-image: radial-gradient(ellipse at center, #000 20%, transparent 85%);
+}
+
+.scene::after {
+  background: radial-gradient(ellipse 75% 72% at 50% 48%, transparent 40%, var(--ocean-vignette) 100%);
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  /* Let creatures pass behind the welcome copy without competing with it. */
+  mask-image: radial-gradient(ellipse 35% 27% at 50% 48%, transparent 12%, rgba(0, 0, 0, .22) 48%, #000 100%);
+}
+
+@media (max-width: 767px) {
+  .canvas { mask-image: radial-gradient(ellipse 70% 32% at 50% 44%, transparent 18%, rgba(0, 0, 0, .2) 54%, #000 100%); }
+}
+
+.scene[data-renderer='fallback'] .canvas {
+  display: none;
+}

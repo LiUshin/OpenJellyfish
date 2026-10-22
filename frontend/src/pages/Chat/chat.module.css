@@ -3270,3 +3270,83 @@
 }
 
 @media(prefers-reduced-motion:reduce) { .starterCard { transition:none; } }
+
+/* Empty conversation: a quiet ocean around the real, persistent composer. */
+.chatAreaWelcome {
+  isolation: isolate;
+  overflow-y: auto;
+  background: var(--jf-bg-deep);
+  background-attachment: local;
+  --ocean-backdrop: transparent;
+  --ocean-ink: #e3e9f6;
+  --ocean-muted: #9baac3;
+  --ocean-line: rgba(154, 180, 223, .17);
+  --ocean-surface: var(--jf-bg-panel);
+}
+.chatAreaWelcome > :not([aria-hidden='true']) { position: relative; z-index: 1; }
+.oceanBackdrop { mask-image: linear-gradient(to bottom, #000 70%, transparent 100%); }
+.chatAreaWelcome .chatHeader { background: transparent; border-color: var(--ocean-line); flex-shrink: 0; }
+.chatAreaWelcome .messagesViewport { flex: 0 0 auto; margin-top: auto; }
+.chatAreaWelcome .messagesContainer { overflow: visible; background: transparent; padding: 60px 24px 26px; }
+.chatAreaWelcome .inputArea {
+  width: min(100%, 744px);
+  margin: 0 auto auto;
+  padding: 0 24px 72px;
+  background: transparent;
+  box-sizing: border-box;
+}
+.oceanIntro { text-align: center; color: var(--ocean-ink); }
+.oceanWordmark { display: flex; align-items: center; justify-content: center; gap: 9px; margin-bottom: 22px;
+  color: var(--ocean-muted); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .22em; }
+.oceanWordmark > span { width: 5px; height: 5px; border-radius: 50%; background: #a6bfeb; box-shadow: 0 0 12px #88b5ff80; }
+.oceanIntro h1 { font-size: clamp(27px, 3vw, 38px); font-weight: 500; line-height: 1.35; letter-spacing: -.035em; margin: 0 0 12px; }
+.oceanIntro p { margin: 0; color: var(--ocean-muted); font-size: 13px; line-height: 1.8; }
+.chatAreaWelcome .composerCard {
+  background: var(--ocean-surface);
+  border-color: var(--ocean-line);
+  border-radius: 18px;
+  box-shadow: 0 12px 50px rgba(0, 5, 18, .18), 0 1px 0 rgba(198, 218, 255, .025) inset;
+}
+.chatAreaWelcome .composerCard:focus-within { border-color: rgba(166, 185, 231, .5); box-shadow: 0 0 0 3px rgba(135, 170, 234, .06), 0 12px 50px rgba(0, 5, 18, .18); }
+.chatAreaWelcome .inputToolbar { border-color: var(--ocean-line); }
+.oceanActions { padding-top: 18px; }
+.oceanSuggestions { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; }
+.oceanSuggestions button { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 7px 12px;
+  color: var(--ocean-muted); border: 1px solid var(--ocean-line); border-radius: 9px; background: var(--ocean-surface);
+  font: inherit; font-size: 12px; cursor: pointer; transition: color .15s, border-color .15s; }
+.oceanSuggestions svg { width: 15px; height: 15px; opacity: .8; }
+.oceanSuggestions button:hover { color: var(--ocean-ink); border-color: rgba(166, 185, 231, .45); }
+.oceanActions button:focus-visible { outline: 2px solid var(--jf-primary); outline-offset: 4px; }
+.oceanFootnote { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; margin-top: 18px; color: var(--ocean-muted); }
+.oceanFootnote button { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 4px 0;
+  background: none; border: none; color: inherit; font: inherit; font-size: 11px; cursor: pointer; }
+.oceanFootnote button:hover { color: var(--ocean-ink); }
+:global([data-color='light']) .chatAreaWelcome {
+  background: radial-gradient(ellipse 85% 80% at 50% 110%, rgba(114, 174, 209, .2), transparent 76%), #f3f5f4;
+  background-attachment: local;
+  --ocean-ink: #26364d;
+  --ocean-muted: #586b85;
+  --ocean-line: rgba(65, 94, 135, .19);
+  --ocean-surface: rgba(255, 255, 255, .92);
+}
+:global([data-color='light']) .chatAreaWelcome .composerCard { box-shadow: 0 12px 42px rgba(46, 76, 120, .07); }
+:global([data-style='terminal']) .chatAreaWelcome .composerCard,
+:global([data-style='terminal']) .oceanSuggestions button { border-radius: 0; }
+@media (max-width: 767px) {
+  .chatAreaWelcome .messagesContainer { padding: 40px 20px 22px; }
+  .chatAreaWelcome .inputArea { padding: 0 max(16px, env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+  .oceanWordmark { margin-bottom: 18px; }
+  .oceanIntro p { max-width: 300px; margin: 0 auto; font-size: 12px; }
+  .oceanSuggestions { gap: 7px; }
+  .oceanSuggestions button { min-height: 38px; font-size: 11px; padding: 7px 9px; }
+  .oceanFootnote { margin-top: 12px; }
+}
+@media (max-height: 600px) {
+  .chatAreaWelcome .messagesContainer { padding-top: 24px; padding-bottom: 18px; }
+  .chatAreaWelcome .inputArea { padding-bottom: 24px; }
+  .oceanWordmark { margin-bottom: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oceanMotionControl, .oceanFootnote > span { display: none !important; }
+  .oceanSuggestions button { transition: none; }
+}

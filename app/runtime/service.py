@@ -635,6 +635,8 @@ class RunService:
                                             pass
                                 if event.type == 'usage':
                                     run['usage'] = event.payload.get('usage')
+                                elif event.type == 'context_usage':
+                                    run['context_usage'] = event.payload.get('context_usage')
                                 self._emit(state, event.type, event.payload)
                     finally:
                         reader.cancel()

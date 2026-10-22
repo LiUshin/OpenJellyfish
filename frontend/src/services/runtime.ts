@@ -1,4 +1,5 @@
 import type { StreamBlock, FileChange } from '../pages/Chat/types';
+import type { ContextUsageSnapshot } from '../pages/Chat/utils/contextUsage';
 import { request, getToken } from './api';
 
 export interface RuntimeCapabilities {
@@ -61,6 +62,7 @@ export interface RuntimeApproval {
 export interface RuntimeArtifact { id: string; name: string; mime: string; size: number; path: string }
 export interface RuntimeInput { name: string; data_url: string }
 export interface RuntimeRun {
+  context_usage?: ContextUsageSnapshot | null;
   id: string; request_id?: string; status: string; seq: number; message: string; output: string; yolo?: boolean;
   blocks?: StreamBlock[];
   prepare_timings?: Record<string, number>;
@@ -73,7 +75,7 @@ export interface RuntimeRun {
 export interface RuntimeSession { id: string; binding: RuntimeChoice; runs: RuntimeRun[]; artifacts: RuntimeArtifact[] }
 export interface RuntimeEvent {
   seq: number; type: string;
-  payload: { started_at?: number; client_acquired_at?: number; item_id?: string; text?: string; message?: string; approval?: RuntimeApproval; artifact?: RuntimeArtifact; name?: string; kind?: string; status?: string; command?: string; input?: unknown; result?: unknown; result_delta?: string; changes?: FileChange[]; exit_code?: number | null };
+  payload: { context_usage?: ContextUsageSnapshot | null; started_at?: number; client_acquired_at?: number; item_id?: string; text?: string; message?: string; approval?: RuntimeApproval; artifact?: RuntimeArtifact; name?: string; kind?: string; status?: string; command?: string; input?: unknown; result?: unknown; result_delta?: string; changes?: FileChange[]; exit_code?: number | null };
 }
 export const terminal = (status: string) => ['completed', 'failed', 'cancelled'].includes(status);
 export const session = (sid: string, signal?: AbortSignal) => request<RuntimeSession>('GET', `/runtime/sessions/${sid}`, undefined, signal ? { signal } : {});
